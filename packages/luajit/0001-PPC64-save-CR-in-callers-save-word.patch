@@ -36,27 +36,26 @@ string.format/gsub both returned to C with CR2 and CR3 zeroed; every other
 Lua operation tested was clean.
 
 diff --git a/src/vm_ppc64.dasc b/src/vm_ppc64.dasc
-index b9184091..66e7ba5b 100644
+index b9184091..3180d741 100644
 --- a/src/vm_ppc64.dasc
 +++ b/src/vm_ppc64.dasc
-@@ -127,6 +127,16 @@
+@@ -127,6 +127,15 @@
  |// otherwise destroy the C frame record.  Hence the C frame info and the two
  |// conversion temps sit ABOVE the register saves, not in 32..95.
  |.define SAVE_LR,	480(sp)
-+|// ELFv2: 8(sp) and 16(sp) of *our own* frame are the CR and LR save words
-+|// that *our callees* write into (a C helper prologue does a stw of r12 to
-+|// 8 of r1 and a std of r0 to 16 of r1 against the caller's sp, which is
-+|// ours -- ELFv2 linkage area).  The slots
-+|// we own are the matching ones in our caller's frame, at CFRAME_SPACE+8
-+|// and CFRAME_SPACE+16.  SAVE_LR already uses CFRAME_SPACE+16; SAVE_CR must
-+|// use CFRAME_SPACE+8, not 8(sp), or every C helper that touches a
-+|// non-volatile CR field (CR2-CR4) overwrites our saved CR and restoreregs
-+|// hands the caller back a corrupted CR.
++|// ELFv2: 8(sp) and 16(sp) of *our own* frame are the linkage-area CR and LR
++|// save words that *our callees* write into -- a C prologue does
++|// `stw r12, 8(r1)` and `std r0, 16(r1)` against its caller's sp, which is
++|// ours.  The slots we own are the matching ones in our caller's frame, at
++|// CFRAME_SPACE+8 and CFRAME_SPACE+16.  SAVE_LR already uses CFRAME_SPACE+16;
++|// SAVE_CR must use CFRAME_SPACE+8 and not 8(sp), or every C helper that
++|// itself uses a non-volatile CR field (CR2-CR4) overwrites our saved CR and
++|// restoreregs hands the caller back a corrupted CR.
 +|.define SAVE_CR,	472(sp)	// 64 bit CR save (caller's CR save word).
  |.define CFRAME_SPACE,	464	// Delta for sp.
  |// Back chain for sp:	464(sp)	<-- sp entering interpreter
  |.define SAVE_ERRF,	456(sp)	// |
-@@ -144,9 +154,9 @@
+@@ -144,9 +153,9 @@
  |//			96(sp)	// .. 111: free = JIT spill slots 24..27 (SPS_FIXED).
  |//			32(sp)	// .. 95: callee parameter save area (ABI mandated);
  |//				// callee-scratch, keep nothing here.
