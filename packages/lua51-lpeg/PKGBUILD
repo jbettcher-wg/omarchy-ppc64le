@@ -1,0 +1,41 @@
+# Maintainer: Christian Hesse <mail@eworm.de>
+# Maintainer: Caleb Maclennan <caleb@alerque.com>
+# Contributor: Gustavo Alvarez <sl1pkn07@gmail.com>
+
+pkgbase=lpeg
+# ppc64le: only the Lua 5.1 (LuaJIT ABI) split is built -- it is the one
+# neovim needs, and building the rest would drag lua52/53/54/5.5 and their
+# luarocks trees into the unprivileged sysroot for nothing.
+pkgname=(lua51-$pkgbase)
+pkgver=1.1.0
+pkgrel=5
+_rockrel=2
+pkgdesc='Parsing Expression Grammars For Lua'
+arch=(x86_64 powerpc64le)
+url="https://www.inf.puc-rio.br/~roberto/$pkgbase/"
+license=(MIT)
+depends=(glibc)
+makedepends=(
+  lua51
+  lua-luarocks
+  luarocks)
+_archive="$pkgbase-$pkgver"
+source=("https://luarocks.org/manifests/gvvaughan/$_archive-$_rockrel.src.rock"
+        LICENSE-upstream)
+sha256sums=('836d315b920a5cdd62e21786c6c9fad547c4faa131d5583ebca64f0b6595ee76'
+            '6be7688c9c648e7c7cde693081be938c869a10aa4de09fe0a4c4c1d66b3cf03d')
+
+_package() {
+	pkgdesc+=" for Lua $1"
+	luarocks --lua-version "$1" --tree "$pkgdir/usr/" \
+		install --deps-mode none --no-manifest -- "${source[0]##*/}"
+	install -Dm0664 LICENSE-upstream "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+
+package_lua51-lpeg() {
+	_package 5.1
+}
+
+
+
