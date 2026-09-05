@@ -82,7 +82,10 @@ fi
 # untouched (RULES.md).
 BWRAP=()
 if command -v bwrap >/dev/null && [ -d "$SYSROOT/usr" ]; then
-  BWRAP=(bwrap --dev-bind / / --overlay-src "$SYSROOT/usr" --overlay-src /usr --ro-overlay /usr)
+  # The LAST --overlay-src is the top-most layer, so /usr goes first and the
+  # sysroot on top -- otherwise a staged package that also exists in the live
+  # /usr is shadowed by the system copy, which is the opposite of the point.
+  BWRAP=(bwrap --dev-bind / / --overlay-src /usr --overlay-src "$SYSROOT/usr" --ro-overlay /usr)
 fi
 
 log="$LOGDIR/$pkg.log"

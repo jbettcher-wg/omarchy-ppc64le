@@ -32,8 +32,13 @@ done
 # Unprivileged, process-local; the real /usr is untouched (RULES.md).
 RUN=()
 if command -v bwrap >/dev/null; then
-  RUN=(bwrap --dev-bind / / --overlay-src "$STAGE/usr" --overlay-src "$SYSROOT/usr" \
-       --overlay-src /usr --ro-overlay /usr)
+  # bwrap stacks --overlay-src with the LAST one as the top-most layer, so the
+  # live /usr must be listed FIRST. With the old order (stage, sysroot, /usr)
+  # anything that also exists in the real /usr silently shadowed what we built
+  # -- e.g. verifying neovim against the system libluajit-5.1.so.2 instead of
+  # the one in the sysroot.
+  RUN=(bwrap --dev-bind / / --overlay-src /usr \
+       --overlay-src "$SYSROOT/usr" --overlay-src "$STAGE/usr" --ro-overlay /usr)
 fi
 
 if [ "${1:-}" = "--" ]; then shift; else set -- "$pkg" --version; fi
