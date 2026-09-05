@@ -1,0 +1,50 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Antonio Rojas <arojas@archlinux.org>
+# Contributor: tinywrkb <tinywrkb@gmail.com>
+
+pkgname=power-profiles-daemon
+pkgver=0.30
+pkgrel=1
+pkgdesc='Makes power profiles handling available over D-Bus'
+url='https://gitlab.freedesktop.org/upower/power-profiles-daemon'
+license=(GPL-3.0-only)
+arch=(x86_64 powerpc64le)
+depends=(glib2
+         glibc
+         libgcc
+         libgudev
+         polkit
+         upower)
+optdepends=('python-gobject: for powerprofilesctl')
+makedepends=(bash-completion
+             git
+             glib2-devel
+             python-argparse-manpage
+             python-shtab
+             meson)
+checkdepends=(python-dbusmock
+              python-isort
+              python-mccabe
+              umockdev)
+source=(git+https://gitlab.freedesktop.org/upower/$pkgname#tag=$pkgver)
+sha256sums=('e955e833b01cbff9b5b00349592239e58c559d717eb49f3371f42932676e7a40')
+
+build() {
+  meson $pkgname build \
+    --prefix /usr \
+    --libexec lib \
+    --sysconfdir /usr/share \
+    -Dzshcomp=/usr/share/zsh/site-functions \
+    -Dbashcomp=enabled \
+    -Dmanpage=enabled
+  meson compile -C build
+}
+
+check() {
+  meson test -C build
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}

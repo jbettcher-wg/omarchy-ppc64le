@@ -40,6 +40,10 @@ export LD_LIBRARY_PATH="$SYSROOT/usr/lib:${LD_LIBRARY_PATH:-}"
 for _pd in "$SYSROOT"/usr/lib/python3.*/site-packages; do
   [ -d "$_pd" ] && export PYTHONPATH="$_pd:${PYTHONPATH:-}"
 done
+# xmlto resolves its docbook format scripts from a prefix compiled in at build
+# time (/usr), so a sysroot copy finds nothing and reports only "I don't know
+# how to convert docbook into man". It honours FORMAT_DIR as an override.
+[ -d "$SYSROOT/usr/share/xmlto/format" ] && export FORMAT_DIR="$SYSROOT/usr/share/xmlto/format"
 export PATH="$SYSROOT/usr/bin:$PATH"
 
 log="$LOGDIR/$pkg.log"

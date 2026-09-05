@@ -133,8 +133,47 @@ story all need rethinking rather than porting.
 
 ## Build progress
 
-See `dependency-closure.md` for the resolved closure and the tier ordering that
-the builds follow. Per-clump results are recorded there and in the git log.
+Live count against the queue in `dependency-closure.md`. Every entry listed as
+built was **verified by running it**, not merely by compiling.
+
+| Clump | Built | Failed | Blocked |
+|---|---:|---:|---:|
+| 1 — `arch=any` | 7 | 0 | 1 (`pinta`) |
+| 2 — Rust CLI | 5 | 0 | 0 |
+| 3 — Go CLI | 3 | 0 | 0 |
+| 4 — small C / Wayland | 10 | 0 | 0 |
+| 5 — larger C/C++ | 8 | 0 | 0 |
+| 8 — editor tooling (partial) | 2 | 0 | — |
+
+**43 packages in `repo/`** (excluding `-debug-`), from 38 PKGBUILDs.
+
+Built and verified so far:
+
+- clump 1: `inxi` `kernel-modules-hook` `luarocks` (+5 `lua*-luarocks` splits)
+  `tldr` `udiskie` `uwsm` `woff2-font-awesome` `otf-font-awesome`
+- clump 2: `bat` `eza` `fd` `dua-cli` `zoxide`
+- clump 3: `lazygit` `lazydocker` `fzf`
+- clump 4: `grim` `slurp` `wtype` `brightnessctl` `pamixer` `imv` `foot`
+  `foot-terminfo`, plus deps `tllist` `fcft` `cxxopts` and the unplanned
+  `libde265`
+- clump 5: `plocate` `bluez-tools` `bolt` `cups-pk-helper`
+  `power-profiles-daemon` `plymouth` `system-config-printer`, plus dep
+  `python-pycups`
+- editor tooling: `stylua` `shfmt` — between them the entire binary surface of
+  `omarchy-nvim`
+
+### What the diffs actually look like
+
+| Kind of change | Packages |
+|---|---:|
+| No change at all (`arch=any`) | 7 |
+| `powerpc64le` added to `arch()` and nothing else | 25 |
+| `arch()` + a packaging substitution | 4 |
+| `arch()` + a checksum refresh | 2 |
+| Source patches to upstream code | **0** |
+
+Zero source patches through 38 packages, across Perl, Python, Lua, Rust, Go, C
+and C++. See `upstreamable-patches.md`.
 
 ## Method
 
