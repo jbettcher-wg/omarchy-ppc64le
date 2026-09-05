@@ -1,0 +1,62 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Peter Jung <ptr1337@archlinux.org>
+# Contributor: dec05eba <dec05eba@protonmail.com>
+
+pkgname=gpu-screen-recorder
+pkgver=6.1.0
+pkgrel=1
+pkgdesc='A shadowplay-like screen recorder for Linux. The fastest screen recorder for Linux'
+arch=('x86_64' 'powerpc64le')
+url="https://git.dec05eba.com/gpu-screen-recorder"
+license=('GPL-3.0-only')
+install=gpu-screen-recorder.install
+makedepends=(
+  meson
+  vulkan-headers
+  git
+)
+depends=(
+  bash
+  glibc
+  libstdc++
+  libgcc
+  ffmpeg
+  libglvnd
+  libxcomposite
+  libxrandr
+  libxfixes
+  libxdamage
+  libx11
+  libpulse
+  libva
+  libdrm
+  libcap
+  wayland
+  libpipewire
+  dbus
+  libjpeg-turbo
+  ffmpeg
+)
+optdepends=(
+    'nvidia-utils: Required to record your screen on NVIDIA'
+    'libxnvctrl: Required when using the -oc option to overclock the NVIDIA GPU to workaround NVIDIA p2 state bug'
+    'mesa: Required to record your screen on AMD/Intel'
+    'libva-mesa-driver: Required to record your screen on AMD'
+    'libva-intel-driver: Required to record your screen on Intel G45 and HD Graphics family'
+    'intel-media-driver: Required to record your screen on Intel Broadwell or later iGPUs or Intel Arc'
+    'linux-firmware-intel: Required to record your screen on Intel Skylake or later iGPUs'
+)
+source=(git+https://repo.dec05eba.com/gpu-screen-recorder#tag=$pkgver)
+sha512sums=('9521851495e85884a53d71351b3ebf30b8013d036846dbd3b427b49df0752c9e9afa952fdc0683c8fe791ef12ad294f92f1bb98de01b778f21fd4ab81980bd9b')
+
+build() {
+  cd "$srcdir"/$pkgname
+  arch-meson build -Dsystemd=true -Dffmpeg_static=false --buildtype=release -Dstrip=true
+  meson compile -C build
+}
+
+package() {
+  cd "$srcdir"/$pkgname
+  meson install -C build --destdir "$pkgdir"
+}

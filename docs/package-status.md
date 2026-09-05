@@ -127,9 +127,10 @@ story all need rethinking rather than porting.
 |---|---|---|
 | `obsidian` | Electron; no ppc64le target | run under FEX, or drop |
 | `localsend` | Flutter; no ppc64le target | drop or substitute |
-| `gpu-screen-recorder` | NVENC/VAAPI paths | V100s present, but driver support on POWER is the question |
-| `quickshell` | Qt6/QML, large | should build; volume of work |
-| `plymouth` | early-boot graphics | interacts with petitboot, not GRUB/limine |
+| `pinta` | needs `dotnet-sdk-10.0`; Arch POWER is on .NET 9, and the .NET 10 PKGBUILD itself wants LLVM 20 against a distro on LLVM 22 | two nested bootstraps, or an older Pinta targeting .NET 9 |
+| `gpu-screen-recorder` | NVENC/VAAPI paths | **built**, `arch()` only. Runtime capture on POWER still untested. |
+| `quickshell` | Qt6/QML, large | **built**, `arch()` only |
+| `plymouth` | early-boot graphics | **built**; still interacts with petitboot rather than GRUB/limine, which is a boot-integration question, not a build one |
 
 ## Build progress
 
@@ -146,11 +147,20 @@ merely by compiling. Ordering follows the tiers in `dependency-closure.md`.
 | 6 — Hyprland stack | 19 | 0 | — |
 | 7 — GNOME / desktop apps | 20 | 0 | — |
 | 8 — editor tooling | 9 | 0 | `prettier`, `typescript-language-server`, `vtsls` |
+| beyond the clumps | 6 | 0 | — |
 
-**99 packages in `repo/`** (excluding `-debug-`), from **87 PKGBUILDs**.
+The last row is the remainder of the "missing — Arch official" list that the
+clumps did not name: `mpv-mpris` 1.2, `usage` 5.1.0, `fcitx5-gtk` 5.1.7,
+`fcitx5-qt` 5.1.14, `moonlight-qt` 6.1.0 and `gpu-screen-recorder` 6.1.0. All
+six were `arch()` and nothing else — including `gpu-screen-recorder`, which the
+known-hard table below had flagged for its NVENC/VAAPI paths.
 
-Everything on the original target list is built except `pinta`, `obsidian` and
-`localsend`, all three of which were blocked before a compiler was ever invoked.
+**105 packages in `repo/`** (excluding `-debug-`), from **93 PKGBUILDs**.
+
+**Of the 50 missing Arch-official packages, 47 are built.** The three that are
+not — `pinta`, `obsidian`, `localsend` — were all blocked before a compiler was
+ever invoked, by a missing prebuilt runtime rather than by anything about the
+architecture.
 
 ### What the diffs actually look like
 
