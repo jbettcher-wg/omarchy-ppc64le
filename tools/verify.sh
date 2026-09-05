@@ -26,7 +26,17 @@ for d in "$STAGE" "$SYSROOT"; do
   done
 done
 
+# Run under a read-only overlay of the staged package (and the sysroot) on
+# /usr, so wrapper scripts and binaries that hardcode /usr paths resolve to what
+# we built rather than failing or, worse, silently testing the system copy.
+# Unprivileged, process-local; the real /usr is untouched (RULES.md).
+RUN=()
+if command -v bwrap >/dev/null; then
+  RUN=(bwrap --dev-bind / / --overlay-src "$STAGE/usr" --overlay-src "$SYSROOT/usr" \
+       --overlay-src /usr --ro-overlay /usr)
+fi
+
 if [ "${1:-}" = "--" ]; then shift; else set -- "$pkg" --version; fi
 echo "--- $pkg: $* ---"
-"$@" 2>&1 | head -4
+"${RUN[@]}" "$@" 2>&1 | head -4
 echo "   (exit ${PIPESTATUS[0]})  ELF: $(file -b "$STAGE/usr/bin/${1}" 2>/dev/null | cut -d, -f1-2)"

@@ -133,47 +133,55 @@ story all need rethinking rather than porting.
 
 ## Build progress
 
-Live count against the queue in `dependency-closure.md`. Every entry listed as
-built was **verified by running it**, not merely by compiling.
+Live count. Every entry listed as built was **verified by running it**, not
+merely by compiling. Ordering follows the tiers in `dependency-closure.md`.
 
-| Clump | Built | Failed | Blocked |
-|---|---:|---:|---:|
-| 1 — `arch=any` | 7 | 0 | 1 (`pinta`) |
-| 2 — Rust CLI | 5 | 0 | 0 |
-| 3 — Go CLI | 3 | 0 | 0 |
-| 4 — small C / Wayland | 10 | 0 | 0 |
-| 5 — larger C/C++ | 8 | 0 | 0 |
-| 8 — editor tooling (partial) | 2 | 0 | — |
+| Clump | Built | Failed | Blocked / parked |
+|---|---:|---:|---|
+| 1 — `arch=any` | 7 | 0 | `pinta` (.NET 10) |
+| 2 — Rust CLI | 5 | 0 | — |
+| 3 — Go CLI | 3 | 0 | — |
+| 4 — small C / Wayland | 12 | 0 | — |
+| 5 — larger C/C++ | 8 | 0 | — |
+| 6 — Hyprland stack | 19 | 0 | — |
+| 7 — GNOME / desktop apps | 20 | 0 | — |
+| 8 — editor tooling | 9 | 0 | `prettier`, `typescript-language-server`, `vtsls` |
 
-**43 packages in `repo/`** (excluding `-debug-`), from 38 PKGBUILDs.
+**99 packages in `repo/`** (excluding `-debug-`), from **87 PKGBUILDs**.
 
-Built and verified so far:
-
-- clump 1: `inxi` `kernel-modules-hook` `luarocks` (+5 `lua*-luarocks` splits)
-  `tldr` `udiskie` `uwsm` `woff2-font-awesome` `otf-font-awesome`
-- clump 2: `bat` `eza` `fd` `dua-cli` `zoxide`
-- clump 3: `lazygit` `lazydocker` `fzf`
-- clump 4: `grim` `slurp` `wtype` `brightnessctl` `pamixer` `imv` `foot`
-  `foot-terminfo`, plus deps `tllist` `fcft` `cxxopts` and the unplanned
-  `libde265`
-- clump 5: `plocate` `bluez-tools` `bolt` `cups-pk-helper`
-  `power-profiles-daemon` `plymouth` `system-config-printer`, plus dep
-  `python-pycups`
-- editor tooling: `stylua` `shfmt` — between them the entire binary surface of
-  `omarchy-nvim`
+Everything on the original target list is built except `pinta`, `obsidian` and
+`localsend`, all three of which were blocked before a compiler was ever invoked.
 
 ### What the diffs actually look like
 
-| Kind of change | Packages |
-|---|---:|
-| No change at all (`arch=any`) | 7 |
-| `powerpc64le` added to `arch()` and nothing else | 25 |
-| `arch()` + a packaging substitution | 4 |
-| `arch()` + a checksum refresh | 2 |
-| Source patches to upstream code | **0** |
+Across 87 packages:
 
-Zero source patches through 38 packages, across Perl, Python, Lua, Rust, Go, C
-and C++. See `upstreamable-patches.md`.
+| Kind of change | Count |
+|---|---:|
+| No change at all (`arch=any`) | 12 |
+| `powerpc64le` added to `arch()` and nothing else | **59** |
+| `arch()` + a packaging substitution | 9 |
+| `arch()` + a checksum refresh | 2 |
+| Patches to upstream source code | **2** |
+
+Two source patches out of 87 packages. Both are in
+`upstreamable-patches.md`, both are architecture-neutral (riscv64 and s390x hit
+them identically), and both are the same shape: a code path that exists for
+"everything else" and had never been taken.
+
+- `rnnoise` — the scalar `#else` in `src/vec.h` does not compile anywhere: it
+  includes a header that does not exist and calls a macro that is not defined,
+  both Opus leftovers.
+- `marksman` — the Makefile's `uname -m` → .NET RID table has no ppc64le case,
+  so the RID silently becomes `linux-`.
+
+### Unplanned packages the closure did not predict
+
+- `libde265` 1.1.2 — Arch POWER's `libheif` is built against a newer libde265
+  than it ships, so *anything* linking libheif fails at link time. Their bug,
+  not ours; we carry the fix so the queue could proceed.
+- `pnpm` — not in Arch POWER at all; needed by two Node language servers.
+  Bootstrapped rather than packaged (see `nvim-tooling.md`).
 
 ## Method
 

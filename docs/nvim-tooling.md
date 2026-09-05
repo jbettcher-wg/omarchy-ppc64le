@@ -64,6 +64,59 @@ architecture is allowed.
 The exception is `marksman`, and the exception proves the rule — it is the only
 entry whose *toolchain* is in question rather than its packaging.
 
+## Status: built and verified
+
+Every tool in the table above now exists as a native ppc64le package in
+`../repo/`, except three. All were verified by running them.
+
+| Tool | Version | Change needed |
+|---|---|---|
+| `stylua` | 2.5.2 | `arch()` |
+| `shfmt` | 3.13.1 | `arch()` |
+| `taplo-cli` | 0.10.0 | `arch()` |
+| `gopls` | 0.23.0 | `arch()` |
+| `lua-language-server` | 3.19.1 | `arch()` |
+| `marksman` | 2026-02-08 | see below |
+| `yaml-language-server` | 1.24.0 | none — `arch=any` |
+| `bash-language-server` | 5.6.0 | none — `arch=any` |
+| `eslint` | 10.10.0 | none — `arch=any` |
+| `ruff`, `rust-analyzer`, `python-black`, `python-isort`, `tree-sitter-cli`, `clangd` | — | already in Arch POWER |
+
+### marksman: the question mark, answered
+
+It works. Arch POWER packages .NET 9 for powerpc64le and `dotnet --info` reports
+`RID: linux-ppc64le`, so the runtime is genuinely there. Three things stood
+between that and a working package, and only one was a portability bug:
+
+1. **`global.json` pins SDK `9.0.100` with `rollForward: latestFeature`.** Arch
+   POWER's newest is `9.0.100-rc.2`, and a prerelease sorts *below* the matching
+   release, so rollForward — which only rolls forward — can never reach it, and
+   `allowPrerelease` does not help. `global.json` is removed; the project targets
+   `net9.0` and the SDK is a 9.0.1xx, so the real constraint still holds.
+2. **The Makefile maps `uname -m` to a .NET RID and has no ppc64le case**, so
+   `RID` became `linux-` and the build died with `NETSDK1083` far downstream.
+   Fixed by `0001-Makefile-recognise-ppc64le-riscv64-and-s390x.patch`, which is
+   worth sending upstream.
+3. **Self-contained publishing is impossible here.** `make publish` asks for a
+   trimmed single-file binary, which makes NuGet fetch
+   `Microsoft.AspNetCore.App.Runtime.linux-ppc64le` from nuget.org. Microsoft
+   publishes no ppc64le runtime pack — Arch POWER's .NET is a community build —
+   so the package does a framework-dependent publish instead and depends on
+   `dotnet-runtime`. That is a real difference from the x86_64 package, not a
+   workaround for a bug.
+
+### Parked
+
+| Tool | Why | Size of the remaining problem |
+|---|---|---|
+| `prettier` 3.8.1 | its pinned `oxc-parser` 0.99.0 has no ppc64le native binding. **The binding exists** — `@oxc-parser/binding-linux-ppc64-gnu` is published on npm — but only from 0.104.0 onward. | wait for a prettier that pins oxc-parser ≥ 0.104, or override the resolution and accept the API drift. Not a porting problem; a version-window problem that closes on its own. |
+| `typescript-language-server` 6.0.0 | needs `pnpm` 11 for its lockfile. pnpm 11 ships as a per-platform native executable and resolves `@pnpm/exe.linux-ppc64`, which does not exist. pnpm 9 runs fine (pure JS) but rejects the v11 lockfile as `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. | needs a ppc64le `@pnpm/exe`, or regenerating the lockfile under pnpm 9. Circular rather than hard. |
+| `vtsls` | not packaged by Arch at all | out of scope here |
+
+Note the shape of both parked cases: neither is a compiler or an architecture
+problem. Both are *prebuilt-binary distribution* problems in the npm ecosystem —
+the same structural issue as mason, described above, one layer down.
+
 ## Related
 
 - `package-status.md` — the full Omarchy package gap analysis.

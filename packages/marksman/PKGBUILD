@@ -1,0 +1,110 @@
+# ppc64le: added powerpc64le to arch(), renamed the SDK makedepend, and allowed
+# a prerelease SDK.
+#
+# nvim-tooling.md called marksman "the one genuine question mark" of the editor
+# tooling, because it is the only .NET tool in the set and the runtime's ppc64le
+# story was untested. It turns out to work: Arch POWER packages .NET 9 for
+# powerpc64le and marksman builds and runs on it.
+#
+# Two packaging details, neither architectural:
+#   - Arch's makedepend is 'dotnet-sdk-9.0'; Arch POWER calls the same thing
+#     'dotnet-sdk'.
+#   - Arch POWER's SDK is 9.0.100-rc.2, and a prerelease sorts below the
+#     matching release, so global.json's rollForward can never reach it.
+#
+# The third detail is structural rather than cosmetic: `make publish` asks for a
+# self-contained trimmed single-file binary, which needs Microsoft's
+# Microsoft.AspNetCore.App.Runtime.linux-ppc64le runtime pack from nuget.org.
+# Microsoft publishes no such pack -- Arch POWER's .NET is a community build --
+# so self-contained publishing is simply not available on this architecture. The
+# build falls back to a framework-dependent publish, which works and runs
+# against the packaged runtime.
+#
+# Contrast with pinta, which is genuinely blocked: it needs .NET *10*, which
+# Arch POWER does not have at any quality level.
+#
+# Maintainer: Jelle van der Waa <jelle@archlinux.org>
+
+pkgname=marksman
+pkgver=20260208
+pkgrel=3
+pkgdesc="Write Markdown with code assist and intelligence in the comfort of your favourite editor."
+arch=('x86_64' 'powerpc64le')
+url="https://github.com/artempyanykh/marksman"
+license=('MIT')
+makedepends=('dotnet-sdk' 'git')
+if [[ $CARCH == x86_64 ]]; then
+  depends=('dotnet-runtime-9.0')
+else
+  # Arch POWER names it 'dotnet-runtime'; and off x86_64 the binary is
+  # framework-dependent, so the runtime is a hard requirement rather than a
+  # remnant of the self-contained publish.
+  depends=('dotnet-runtime')
+fi
+options=('!strip')
+source=("$pkgname"::git+https://github.com/artempyanykh/marksman.git#tag="${pkgver:0:4}-${pkgver:4:2}-${pkgver:6:2}"
+        0001-Makefile-recognise-ppc64le-riscv64-and-s390x.patch)
+b2sums=('c237ee8837b184735496335302889fe54c1a8618b1fec9427f5a69af6b01be958e8e948e3b47c8764a8b4c5b1dfc8da847d8e92247d2de467c500b35628e9724'
+        'SKIP')
+
+prepare() {
+  cd "marksman"
+
+  # marksman's global.json pins "version": "9.0.100" with rollForward
+  # latestFeature. Arch POWER's newest .NET 9 SDK is 9.0.100-rc.2.24474.11, and
+  # a prerelease sorts *below* the corresponding release -- so rollForward, which
+  # only ever rolls forward, can never reach it. allowPrerelease does not help
+  # for the same reason.
+  #
+  # Removing global.json lets dotnet use whatever SDK is installed. The project
+  # targets net9.0 and the SDK is a 9.0.1xx, so the constraint global.json was
+  # expressing is still satisfied; it just cannot express it in a form that
+  # accepts the prerelease.
+  rm -f global.json
+
+  # Teaches the Makefile's uname -m -> .NET RID table about ppc64le. Without it
+  # the RID becomes "linux-" and the build fails with NETSDK1083 a long way
+  # downstream. Portability fix worth sending upstream; see the patch header.
+  patch -Np1 -i "$srcdir/0001-Makefile-recognise-ppc64le-riscv64-and-s390x.patch"
+}
+
+build() {
+  cd "marksman"
+
+  # Disable dotnet telemetry
+  export DOTNET_CLI_TELEMETRY_OPTOUT=1
+
+  make build
+
+  if [[ $CARCH == x86_64 ]]; then
+    make publish
+  else
+    # `make publish` asks for a self-contained, trimmed, single-file binary,
+    # which makes NuGet fetch Microsoft.AspNetCore.App.Runtime.<RID> from
+    # nuget.org. Microsoft publishes no ppc64le runtime pack -- Arch POWER's
+    # .NET is a community build -- so a self-contained publish is impossible
+    # here regardless of how the RID is spelled.
+    #
+    # A framework-dependent publish is, and it runs against the dotnet-runtime
+    # Arch POWER does ship. The cost is that marksman needs that runtime
+    # installed rather than being one standalone file.
+    dotnet publish -c Release --no-self-contained \
+      -p:DebugType=embedded \
+      -o publish Marksman/Marksman.fsproj
+  fi
+}
+
+package() {
+  cd "marksman"
+  if [[ $CARCH == x86_64 ]]; then
+    install -Dm755 Marksman/bin/Release/net*/linux-*/publish/marksman $pkgdir/usr/bin/marksman
+  else
+    # Framework-dependent output: an apphost plus its managed assemblies.
+    install -d "$pkgdir/usr/lib/marksman"
+    cp -rT publish "$pkgdir/usr/lib/marksman"
+    chmod 755 "$pkgdir/usr/lib/marksman/marksman"
+    install -d "$pkgdir/usr/bin"
+    ln -s /usr/lib/marksman/marksman "$pkgdir/usr/bin/marksman"
+  fi
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

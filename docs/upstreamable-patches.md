@@ -28,11 +28,35 @@ simply where somebody finally took the `else` branch.
 
 Send to: <https://gitlab.xiph.org/xiph/rnnoise>.
 
+### 2. marksman — the Makefile's arch table silently produces an invalid .NET RID
+
+`packages/marksman/0001-Makefile-recognise-ppc64le-riscv64-and-s390x.patch`
+
+The Makefile builds a .NET runtime identifier as `$(OS_ID)-$(ARCH_ID)`, mapping
+`uname -m` through a list of `ifeq` cases: x86_64, amd64, x86, arm, arm64,
+aarch64. Anything else leaves `ARCH_ID` empty and the RID becomes `linux-`. The
+build then fails a long way downstream with
+
+    error NETSDK1083: The specified RuntimeIdentifier 'linux-' is not recognized
+
+which does not mention the Makefile at all.
+
+.NET is not the limitation: on this machine `dotnet --info` reports
+`RID: linux-ppc64le`. Only marksman's table is missing the entry.
+
+The patch adds ppc64le, riscv64 and s390x, and — the more useful half — turns
+the silent-empty case into a `$(error)` naming the unrecognised machine, so the
+next architecture gets a message pointing at the table rather than NETSDK1083.
+
+**Not ppc64le-specific.**
+
+Send to: <https://github.com/artempyanykh/marksman>.
+
 ---
 
-That is the *only* one, after 78 packages built and verified across Perl,
+Those are the *only* two, after 87 packages built and verified across Perl,
 Python, Lua, Rust, Go, C and C++. Every other diff in `packages/` is in a
-PKGBUILD, and the large majority of those are `arch=()` alone.
+PKGBUILD, and 59 of the 87 are `arch=()` alone.
 
 This is the arch-gating pattern from the handbook, holding at scale: the
 substrate is first class, and what breaks is code and metadata that was never
@@ -69,6 +93,8 @@ build-time tool is missing from Arch POWER, not because anything is broken.
 | `bat` | drop `cargo-edit` from makedepends | not in Arch POWER, and the PKGBUILD never invokes it |
 | `obs-studio` | `-DENABLE_BROWSER=OFF`, and the `obs-studio-plugin-browser` split package is not produced | CEF publishes no ppc64le build, and building it means building Chromium |
 | `rnnoise` | `--enable-x86-rtcd` made conditional on `CARCH` | x86 run-time SIMD dispatch; no VSX backend exists. Costs performance, not correctness |
+| `marksman` | `global.json` removed; framework-dependent publish instead of self-contained | Arch POWER's .NET 9 SDK is a prerelease, which `rollForward` can never select; and Microsoft publishes no ppc64le runtime pack, so self-contained publishing is impossible |
+| `plymouth` | Arch logo files made optional | Arch POWER's `filesystem` ships `/usr/share/pixmaps` empty |
 
 ## Not portability problems at all — they would fail on x86_64 too
 
@@ -81,7 +107,25 @@ distro state.
 | `evince` | `conflicting types for 'getenv'; have 'char *(void)'` | gcc 16 defaults to C23, where `()` means `(void)`. texlive's kpathsea headers still use the K&R form. Pinned to `-D c_std=gnu17`. |
 | `websocketpp` | `Could not find boost_system` | Boost removed the separate `boost_system` library in 1.90. Only its test suite needs it; built with `-DBUILD_TESTS=OFF`. |
 | `sushi` | signature check fails | the tag's signing key is not retrievable from any keyserver, WKD or DANE. The git source's own b2sum still pins the tree, so `--skippgpcheck` loses nothing here. |
-| `luarocks`, `fzf`, `system-config-printer`, `gexiv2`, `evince` | `unknown public key` | keys simply not in the local keyring; `gpg --recv-keys` and continue. |
+| `luarocks`, `fzf`, `system-config-printer`, `gexiv2`, `evince`, `pnpm` | `unknown public key` | keys simply not in the local keyring; `gpg --recv-keys` and continue. |
+| `dua-cli` | `bsdtar: Pathname can't be converted from UTF-8 to current locale` | non-interactive ssh lands in the POSIX locale. Environment, not package. |
+
+## Blocked by prebuilt binaries that do not exist for ppc64le
+
+The one category that is neither a portability bug nor a packaging choice: an
+ecosystem that ships compiled artifacts per platform and has not built ours.
+
+| Package | Missing artifact | Note |
+|---|---|---|
+| `obs-studio` (browser source) | CEF | building it means building Chromium; `-DENABLE_BROWSER=OFF` |
+| `marksman` (self-contained) | `Microsoft.AspNetCore.App.Runtime.linux-ppc64le` | framework-dependent publish instead |
+| `prettier` 3.8.1 | `@oxc-parser/binding-linux-ppc64-gnu` at 0.99.0 | the binding **is** published — from 0.104.0. A version window, closing on its own. |
+| `typescript-language-server` | `@pnpm/exe.linux-ppc64` | pnpm 9 works but rejects the v11 lockfile |
+| `obsidian`, `localsend` | Electron / Flutter runtimes | FEX, or drop |
+
+This is the same structural issue `nvim-tooling.md` identifies with mason, and
+it is the honest answer to "how ready is ppc64le": the compilers are ready, and
+the binary-distribution habits of the JavaScript and .NET ecosystems are not.
 
 ## Checksum refreshes — neither
 
