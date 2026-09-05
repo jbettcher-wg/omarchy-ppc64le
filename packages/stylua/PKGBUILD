@@ -1,0 +1,39 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Daniel M. Capella <polyzen@archlinux.org>
+# Maintainer: Caleb Maclennan <caleb@alerque.com>
+
+_name=StyLua
+pkgname=stylua
+pkgver=2.5.2
+pkgrel=1
+pkgdesc='Deterministic code formatter for Lua'
+arch=(x86_64 powerpc64le)
+url=https://github.com/JohnnyMorganz/StyLua
+license=(MPL-2.0)
+depends=(glibc # libc.so
+         libgcc libgcc_s.so)
+makedepends=(git
+             rust)
+source=("git+$url.git#tag=v$pkgver")
+b2sums=('c498e2167e069bd1beb8f900cf02ac7da2168fbdbb3026449431c0ef842b8a50d1eba5ed47ad38a82687cd7928cc17eb5d776d2e495933449bad65fb3b843406')
+
+prepare() {
+  cd $_name
+  cargo fetch --locked --target host-tuple
+}
+
+build() {
+  cd $_name
+  cargo build --release --frozen --all-features
+}
+
+check() {
+  cd $_name
+  cargo test --frozen --all-features
+}
+
+package() {
+  cd $_name
+  install -Dt "$pkgdir"/usr/bin target/release/$pkgname
+}

@@ -1,0 +1,60 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Christian Rebischke <chris.rebischke@archlinux.org>
+# Maintainer: Carl Smedstad <carsme@archlinux.org>
+# Contributor: Maxim Baz <archlinux at maximbaz dot com>
+# Contributor: Daniel Martí <mvdan@mvdan.cc>
+
+pkgname=shfmt
+pkgver=3.13.1
+pkgrel=1
+pkgdesc="Format shell programs"
+url="https://github.com/mvdan/sh"
+license=(BSD-3-Clause)
+arch=(x86_64 powerpc64le)
+depends=(glibc)
+makedepends=(
+  git
+  go
+  scdoc
+)
+options=(!lto)
+source=("git+$url.git#tag=v$pkgver")
+b2sums=('ea2cd6e69ac3f18624ce6769161041de7a799a4f8b4a6aaefdbbaba842eca7e518b048d6dc3648edf59fcc5113e4ed4d8028028eeadaf1627091281491af7bd8')
+
+prepare() {
+  cd "sh"
+  GOFLAGS="-mod=readonly" go mod vendor -v
+}
+
+build() {
+  cd "sh"
+  export CGO_CPPFLAGS="$CPPFLAGS"
+  export CGO_CFLAGS="$CFLAGS"
+  export CGO_CXXFLAGS="$CXXFLAGS"
+  export CGO_LDFLAGS="$LDFLAGS"
+  export GOFLAGS="-buildmode=pie -mod=vendor -modcacherw"
+  export GOPATH="$srcdir"
+
+  local ld_flags="-compressdwarf=false -linkmode=external"
+  go build -v \
+    -ldflags "$ld_flags" \
+    ./cmd/shfmt/...
+
+  scdoc < cmd/shfmt/shfmt.1.scd > shfmt.1
+}
+
+check() {
+  cd "sh"
+  # Ensure the executable reports the correct version.
+  test "$(./shfmt --version)" = "v$pkgver"
+
+  go test ./cmd/shfmt/...
+}
+
+package() {
+  cd "sh"
+  install -vDm755 -t "$pkgdir/usr/bin" shfmt
+  install -vDm644 -t "$pkgdir/usr/share/man/man1" shfmt.1
+  install -vDm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE
+}
