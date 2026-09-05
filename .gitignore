@@ -1,0 +1,18 @@
+# Built artifacts — the recipes are the asset, not the output.
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+*.log
+
+# makepkg working directories
+packages/*/src/
+packages/*/pkg/
+packages/*/*.tar.gz
+packages/*/*.tar.xz
+packages/*/*.tar.zst
+
+# Local repo database (regenerate with repo-add)
+repo/*.db*
+repo/*.files*
+
+# Upstream Omarchy is tracked as its own clone, not vendored.
+upstream/

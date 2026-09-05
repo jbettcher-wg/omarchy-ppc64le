@@ -1,0 +1,67 @@
+# Maintainer: Jeremy Bettcher <thebettcher@gmail.com>
+# Based on the Arch POWER luajit PKGBUILD by Alexander Baldeck
+#
+# Why this exists:
+#   Arch POWER's luajit builds PPC64/LuaJIT @ 1401cfb2 — the IBM ppc64 fork,
+#   abandoned 2017-09-04 at 2.1.0-beta3. It gives a GC64/ELFv2 interpreter and
+#   FFI, but sets LJ_ARCH_NOJIT, so `jit.status()` returns false and every Lua
+#   workload on this machine runs interpreted.
+#
+#   This package builds our tree instead: those 15 fork commits rebased onto
+#   current upstream LuaJIT v2.1, which is the base the ppc64le JIT backend is
+#   being written against.
+#
+# Status: JIT backend is NOT yet implemented — this package is currently still
+#   interpreter+FFI, but on a 2026 core rather than a 2017 one. Drop the
+#   NOJIT note below when the backend lands.
+
+pkgname=luajit
+_srcdir=luajit-ppc64le
+_branch=ppc64le-modern
+pkgver=2.1.0.r0.g0000000
+pkgrel=1
+pkgdesc='Just-in-time compiler and drop-in replacement for Lua 5.1 (ppc64le, rebased onto upstream v2.1)'
+arch=(x86_64 powerpc64le powerpc)
+url='https://luajit.org/'
+license=(MIT)
+depends=(gcc-libs)
+makedepends=(git)
+provides=("luajit=${pkgver}" libluajit-5.1.so)
+conflicts=(luajit)
+
+# TODO: point at a published fork once the branch is pushed. Building from the
+# local working tree is deliberate while the port is still moving.
+source=("${_srcdir}::git+file:///home/jbettcher/Development/luajit-ppc64le#branch=${_branch}")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "${_srcdir}"
+  printf '2.1.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "${_srcdir}"
+  # TARGET_STRIP is neutered so debug packaging can do the stripping.
+  make amalg PREFIX=/usr BUILDMODE=dynamic TARGET_STRIP=" @:"
+}
+
+check() {
+  cd "${_srcdir}/src"
+  # Parity before performance: refuse to ship a VM that cannot run Lua.
+  ./luajit -e 'assert(("abc"):upper() == "ABC")
+    local b = require("bit")
+    assert(b.band(0xf0f0, 0xff00) == 0xf000)
+    assert(b.bxor(0xff, 0x0f) == 0xf0)
+    local ffi = require("ffi")
+    assert(ffi.sizeof("void *") == 8)
+    print("luajit selftest ok  arch=" .. jit.arch .. "  jit=" .. tostring(jit.status()))'
+}
+
+package() {
+  cd "${_srcdir}"
+  make install DESTDIR="${pkgdir}" PREFIX=/usr
+  install -Dm644 COPYRIGHT "${pkgdir}/usr/share/licenses/${pkgname}/COPYRIGHT"
+  # Upstream installs a versioned binary only.
+  ln -sf "luajit-$(sed -n 's/^#define LUAJIT_VERSION\s*"LuaJIT \(.*\)"/\1/p' src/luajit.h)" \
+    "${pkgdir}/usr/bin/luajit"
+}
