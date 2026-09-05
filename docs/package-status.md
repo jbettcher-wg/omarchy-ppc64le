@@ -65,9 +65,10 @@ project, not a per-package bug.
 - `omacut` | `omarchy-nvim` | `omawrite` | `tobi-try`
 - `ttf-jetbrains-mono-nerd-basic` | `ttfx`
 
-Note `nvim` is here: Omarchy ships **its own** nvim package plus `omarchy-nvim`
-for the LazyVim config. That is the package that will consume our rebuilt
-LuaJIT — see the LuaJIT JIT backend work.
+`omarchy-nvim` is **built** — see “The editor” below. `nvim` turned out not to be
+a separate Omarchy package after all: `omarchy-nvim` depends on `neovim>=0.9.0`,
+so Arch's `neovim` PKGBUILD is the right one, and it is now built against our
+JIT-capable LuaJIT.
 
 ## Already available in Arch POWER (75)
 
@@ -148,6 +149,7 @@ merely by compiling. Ordering follows the tiers in `dependency-closure.md`.
 | 7 — GNOME / desktop apps | 20 | 0 | — |
 | 8 — editor tooling | 9 | 0 | `prettier`, `typescript-language-server`, `vtsls` |
 | beyond the clumps | 6 | 0 | — |
+| 9 — the editor | 13 | 0 | — |
 
 The last row is the remainder of the "missing — Arch official" list that the
 clumps did not name: `mpv-mpris` 1.2, `usage` 5.1.0, `fcitx5-gtk` 5.1.7,
@@ -155,12 +157,85 @@ clumps did not name: `mpv-mpris` 1.2, `usage` 5.1.0, `fcitx5-gtk` 5.1.7,
 six were `arch()` and nothing else — including `gpu-screen-recorder`, which the
 known-hard table below had flagged for its NVENC/VAAPI paths.
 
-**105 packages in `repo/`** (excluding `-debug-`), from **93 PKGBUILDs**.
+**129 packages in `repo/`** (excluding `-debug-`), from **106 PKGBUILDs**.
 
 **Of the 50 missing Arch-official packages, 47 are built.** The three that are
 not — `pinta`, `obsidian`, `localsend` — were all blocked before a compiler was
 ever invoked, by a missing prebuilt runtime rather than by anything about the
 architecture.
+
+## The editor (clump 9)
+
+Omarchy's editor is now packaged and running natively, which is the one thing
+the whole LuaJIT ppc64le JIT effort existed for.
+
+| Package | Version | Change needed |
+|---|---|---|
+| `luajit` | 2.1.1788628050 | **new PKGBUILD**: builds our rebased tree with the ppc64le JIT backend, and carries one source patch (ELFv2 CR save-slot, see below). `jit.status()` is true; soname stays `libluajit-5.1.so.2` |
+| `neovim` | 0.12.5 | `arch()` only |
+| `libmpack`, `lua51-mpack`, `unibilium`, `libvterm`, `libluv` | | `arch()` only |
+| `lua51-lpeg` | 1.1.0 | `arch()`, plus trimming the split to the Lua 5.1 package |
+| `tree-sitter-{c,lua,markdown,query,vim,vimdoc}` | | `arch()` only |
+| `omarchy-nvim` | 2026.8.13-2 | vendored x86-64 `stylua`/`shfmt` replaced by symlinks to the native packages, plus a drop-in that stops mason from trying to download binaries that do not exist for this architecture |
+
+So the editor stack was `arch=()` plus a compile, exactly like the tooling in
+`nvim-tooling.md` — with one exception, and it was not in a PKGBUILD.
+
+### The one real bug: an ELFv2 CR save slot in LuaJIT
+
+`nvim --headless -c 'checkhealth vim.health'` aborted on
+``try_leave: Assertion `trylevel > 0' failed``, and so did every interactive
+start of the LazyVim config, on the snacks dashboard. It reproduced with
+`jit.off()`, so it was not the trace compiler; the same neovim source built
+against PUC Lua 5.1 did not abort, so it was not neovim either.
+
+LuaJIT's `saveregs` pushed the interpreter frame and then saved the caller's
+CR at `8(sp)`. In ELFv2, `8(sp)` and `16(sp)` of a frame are the linkage-area
+CR and LR save words that the frame owner's **callees** write into. So any C
+helper the interpreter called that itself used a non-volatile CR field
+(CR2-CR4) overwrote LuaJIT's saved CR, and `restoreregs` handed the C caller
+back a corrupted CR. `SAVE_LR` had already avoided this by using
+`CFRAME_SPACE+16`; `SAVE_CR` now uses `CFRAME_SPACE+8`.
+
+It bit neovim because GCC caches `do_cmdline()`'s `flags & DOCMD_EXCRESET`
+predicate in CR3 across thousands of instructions and many calls, and a
+FileType autocommand runs Lua in between. A Lua-only test suite cannot see a
+CR clobber at all, which is why LuaJIT's own 383/3/0 differential suite and
+upstream's `ffi_call.lua` ABI test were both green with the bug present.
+`packages/luajit/nvcr-probe.c` is the regression test — it sets CR2/CR3/CR4
+from C, calls into the VM, and checks them afterwards — and it runs in
+`check()`.
+
+### What the editor does on this machine
+
+Measured on `witherspoon-arkamedes`, neovim 0.12.5 with Omarchy's pinned
+LazyVim config (52 plugins), JIT on versus `jit.off()`:
+
+| Workload | JIT | `jit.off()` | speedup |
+|---|---:|---:|---:|
+| pure-Lua fuzzy score, 3.4k paths x 5 needles | 3.2 ms | 174.3 ms | **54x** |
+| snacks.nvim's own picker matcher, 3417 items | 2.1 ms | 13.0 ms | **6.1x** |
+| `ffi.C` call into an nvim symbol x200k | 1.6 ms | 41.7 ms | **27x** |
+| FFT-shaped `double[]` loop, 64k x 8 | 0.8 ms | 93.2 ms | **118x** |
+| table/`HREFK` churn, 500k | 26.6 ms | 54.7 ms | 2.1x |
+| coroutine switches, 100k | 5.1 ms | 10.1 ms | 2.0x |
+| `string.buffer` encode+decode, 20k tables | 48.6 ms | 51.9 ms | 1.07x |
+| `string.dump` + `load` x4000 | 11.4 ms | 11.0 ms | 0.97x |
+| LazyVim TUI startup (`lazy.stats()`) | 37.3 ms | 30.1 ms | **0.81x** |
+
+The last two rows are the honest half. `string.buffer` and `string.dump` are
+C, so the JIT has nothing to compile, and **startup is about 20% slower with
+the JIT on** — trace compilation on code that runs once never pays itself
+back. What the JIT buys is everything the user waits on interactively: the
+picker, the matcher, FFI-heavy plugin code.
+
+826 traces are compiled in a normal editing session.
+
+Parity was checked before any of that was believed: `:checkhealth` output is
+**byte-identical** between a JIT session and a `jit.off()` session, `:messages`
+is empty and identical in both, and a scripted session (snacks file picker over
+5784 files, snacks live grep, treesitter, `lua-language-server` attach and
+hover, edit/undo) produced the same match counts in both modes.
 
 ### What the diffs actually look like
 

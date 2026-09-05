@@ -117,10 +117,44 @@ Note the shape of both parked cases: neither is a compiler or an architecture
 problem. Both are *prebuilt-binary distribution* problems in the npm ecosystem —
 the same structural issue as mason, described above, one layer down.
 
+## Outcome: the durable fix is in the package
+
+`omarchy-nvim` is now built for this repo, and both halves of the finding above
+are acted on rather than described:
+
+- The two vendored x86-64 binaries are gone. `mason/packages/stylua/stylua` and
+  `mason/packages/shfmt/shfmt_v3.13.1_linux_amd64` are now symlinks to
+  `/usr/bin/stylua` and `/usr/bin/shfmt`, so mason's own `bin/` links still
+  resolve and its receipts still describe the world it thinks it is in, but
+  what runs is the native build. The package contains **zero** ELF objects, so
+  `arch=any` is now true rather than a claim, and the architecture dependence
+  lives in `depends=(stylua shfmt)`.
+- `no-mason-downloads.lua` ships in both copies of the config the package owns
+  (`/etc/skel/.config/nvim/lua/plugins/` and
+  `/usr/share/omarchy-nvim/config/lua/plugins/`) and empties mason's
+  `ensure_installed` and turns `automatic_installation` off. Tools then resolve
+  from `$PATH`, where every packaged language server and formatter already is.
+
+Verified from the built package, in a real pty session: `stylua 2.5.2` and
+`shfmt v3.13.1` resolve through mason's `bin/` links to the native binaries,
+`:checkhealth mason-lspconfig` is clean, and `lua-language-server` attaches to
+a Lua buffer from `$PATH` and answers hover and `documentSymbol`.
+
+`check()` in the PKGBUILD fails the build if upstream ever vendors a third
+binary, so this does not silently rot.
+
+### Still parked
+
+`prettier` and `typescript-language-server` are unchanged from the analysis
+above — both are npm prebuilt-binary distribution problems, not architecture
+problems, and neither is on LazyVim's default path with only the `neo-tree`
+extra enabled.
+
 ## Related
 
 - `package-status.md` — the full Omarchy package gap analysis.
 - `../packages/neovim/` — the neovim package itself.
 - `../../powerpc64le-handbook/docs/luajit-ppc64le-jit-backend.md` — the LuaJIT
-  work underneath all of this. Note that the LuaJIT currently shipped lacks
-  `string.buffer`, which snacks.nvim uses unguarded.
+  work underneath all of this. As of the `luajit` package in this repo,
+  `jit.status()` is true inside neovim and `string.buffer` is present, so
+  snacks.nvim's unguarded `require("string.buffer")` is satisfied.
