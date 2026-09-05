@@ -17,12 +17,6 @@ for name in "$@"; do
   echo "sysroot += $(basename "$f")"
 done
 
-# pkg-config and cmake files carry absolute /usr prefixes; repoint them into the
-# sysroot so dependent builds resolve include and library paths correctly.
-for d in "$SYSROOT/usr/lib/pkgconfig" "$SYSROOT/usr/share/pkgconfig"; do
-  [ -d "$d" ] || continue
-  find "$d" -name '*.pc' | while read -r pc; do
-    sed -i "s|^prefix=/usr$|prefix=$SYSROOT/usr|" "$pc"
-  done
-done
+# pkg-config files carry absolute /usr paths; repoint them into the sysroot.
+"$(dirname "$(readlink -f "$0")")/sysroot-fixup.sh" "$SYSROOT"
 exit $rc

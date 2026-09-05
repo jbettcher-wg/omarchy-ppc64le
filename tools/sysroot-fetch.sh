@@ -30,11 +30,6 @@ for name in "$@"; do
   done
 done
 
-# pkgconfig prefixes are absolute; repoint them into the sysroot
-for d in "$SYSROOT/usr/lib/pkgconfig" "$SYSROOT/usr/share/pkgconfig"; do
-  [ -d "$d" ] || continue
-  find "$d" -name '*.pc' | while read -r pc; do
-    sed -i "s|^prefix=/usr$|prefix=$SYSROOT/usr|" "$pc"
-  done
-done
+# pkg-config files carry absolute /usr paths; repoint them into the sysroot.
+"$(dirname "$(readlink -f "$0")")/sysroot-fixup.sh" "$SYSROOT"
 exit $rc

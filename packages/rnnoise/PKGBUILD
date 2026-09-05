@@ -1,0 +1,62 @@
+# ppc64le: added powerpc64le to arch(), and made --enable-x86-rtcd conditional
+# on CARCH.
+#
+# This is the only genuine x86-ism met so far in this whole port. rnnoise's
+# configure has --enable-x86-rtcd and nothing else -- its hand-written SIMD is
+# x86 (SSE4.1/AVX2) and NEON only, with no VSX path -- so on ppc64le the build
+# reaches for -mavx and gcc refuses. Dropping the flag selects rnnoise's generic
+# C implementation, which is the supported fallback, not a hack.
+#
+# Note this costs performance, not correctness: the noise suppression is the
+# same, computed without SIMD. A VSX backend would be real upstream work and is
+# not attempted here.
+#
+# Taking the generic path then exposed a second, more interesting bug: it does
+# not compile, on any architecture, because it was vendored from Opus and never
+# finished. See 0001-vec.h-fix-the-scalar-fallback-path.patch -- that one IS a
+# portability fix worth sending upstream.
+#
+# Maintainer: Sven-Hendrik Haase <svenstaro@archlinux.org>
+# Contributor: robertfoster
+pkgname=rnnoise
+epoch=1
+pkgver=0.2
+pkgrel=1
+pkgdesc="A noise suppression library based on a recurrent neural network"
+arch=(x86_64 powerpc64le)
+url="https://gitlab.xiph.org/xiph/rnnoise"
+license=('BSD-3-Clause')
+depends=('glibc')
+_model_version=0b50c45 # cat model_version
+source=("https://gitlab.xiph.org/xiph/rnnoise/-/archive/v${pkgver}/rnnoise-v${pkgver}.tar.gz"
+        "https://media.xiph.org/rnnoise/models/rnnoise_data-$_model_version.tar.gz"
+        0001-vec.h-fix-the-scalar-fallback-path.patch)
+sha512sums=('930aa892299edbc1d512803df6b845ea6164eb498cacdab9970e5ae799bc6cf3c8c94d2b9576955fb9a2d8aa13a6d255e58fb99d0367a0d0ef842a1cb938e674'
+            'c15fef7c88d86264a29a3dab14d94bde769da68f255d131d135f6a40d94037b1ffe521f9e0a26339114750dbdd7cf774c3185ba40279c74200fb32732f57db8b'
+            'SKIP')
+
+prepare() {
+  mv src/* "rnnoise-v${pkgver}/src"
+  # Repairs the scalar fallback in src/vec.h, which has never compiled anywhere.
+  # See the patch header; it is a portability fix worth sending upstream.
+  patch -Np1 -d "rnnoise-v${pkgver}" -i "$srcdir/0001-vec.h-fix-the-scalar-fallback-path.patch"
+}
+
+build() {
+  cd "rnnoise-v${pkgver}"
+  autoreconf -isf
+  # --enable-x86-rtcd turns on x86 run-time CPU dispatch, which compiles
+  # src/x86/nnet_sse4_1.c and friends with -mavx. There is no equivalent
+  # --enable-ppc-rtcd; rnnoise's SIMD support is x86-and-NEON only, and the
+  # generic C path is the supported fallback.
+  local _rtcd=()
+  [[ $CARCH == x86_64 ]] && _rtcd=(--enable-x86-rtcd)
+  ./configure --prefix=/usr "${_rtcd[@]}"
+  make
+}
+
+package() {
+  cd "rnnoise-v${pkgver}"
+  make DESTDIR="$pkgdir/" install
+  install -Dm644 COPYING "${pkgdir}/usr/share/licenses/${pkgname}/COPYING"
+}

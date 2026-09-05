@@ -1,0 +1,48 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Jan Alexander Steffens (heftig) <heftig@archlinux.org>
+
+pkgname=xdg-user-dirs-gtk
+pkgver=0.16
+pkgrel=1
+pkgdesc="Creates user dirs and asks to relocalize them"
+url="https://gitlab.gnome.org/GNOME/xdg-user-dirs-gtk"
+arch=(x86_64 powerpc64le)
+license=(GPL-2.0-or-later)
+depends=(
+  glib2
+  glibc
+  gtk3
+  xdg-user-dirs
+)
+makedepends=(
+  git
+  meson
+)
+groups=(gnome)
+source=(
+  "git+https://gitlab.gnome.org/GNOME/xdg-user-dirs-gtk.git#tag=$pkgver"
+  0001-desktop-Show-in-more-environments.patch
+)
+b2sums=('52743f84dcd9262f3e3f2ef6e29c8cf8d05a5dd073b6b2f1e23eedc04654575ec92baa6e6bf17578b8290983b4acf30005ed611b466667bff720184be9cba0db'
+        '293a1fb712d15844c6f3cc09cbb7221337363d93591d3e0913823dfc46b40bf7c771e0cf249ac2cdb84118ebb3d1a8cc7552ff95a35ad212be0cc53ba004ecc2')
+
+prepare() {
+  cd $pkgname
+  git apply -3 ../0001-desktop-Show-in-more-environments.patch
+}
+
+build() {
+  arch-meson $pkgname build
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}
+
+# vim:set sw=2 sts=-1 et:

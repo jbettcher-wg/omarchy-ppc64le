@@ -1,0 +1,157 @@
+# ppc64le: added powerpc64le to arch(), and made the CEF browser source
+# conditional on CARCH.
+#
+# CEF (Chromium Embedded Framework) publishes no ppc64le build and is not in
+# Arch POWER. Building it would mean building Chromium, which is out of all
+# proportion to one optional OBS source. obs-studio supports being built
+# without it: -DENABLE_BROWSER=OFF drops the browser source and the dependency
+# together.
+#
+# Everything else in prepare() -- removing FindCEF.cmake, rewriting the plugin
+# rpath, and the two obs-browser patches -- exists only to make CEF work, so
+# those are skipped on the same condition rather than left to fail. On x86_64
+# this PKGBUILD behaves exactly as Arch's does.
+#
+# What is lost: the Browser source (web pages as a scene element) and browser
+# docks. Everything else, including the WebRTC output, the websocket server and
+# the VST and FDK-AAC support, is built as normal.
+#
+# obs-studio is a split package and its second half, obs-studio-plugin-browser,
+# is exactly that plugin -- so off x86_64 it is not produced at all, rather than
+# produced empty.
+#
+# Maintainer: Christian Heusel <gromit@archlinux.org>
+# Maintainer: Jonathan Grotelüschen <tippfehlr@archlinux.org>
+# Contributor: Jonathan Steel <jsteel at archlinux.org>
+# Contributor: Benjamin Klettbach <b.klettbach@gmail.com>
+# Contributor: Maciek Marciniak <mm2pl at kotmisia.pl>
+
+pkgbase=obs-studio
+# obs-studio-plugin-browser is the CEF plugin; without CEF there is nothing to
+# put in it, so it is not produced off x86_64.
+if [[ $CARCH == x86_64 ]]; then
+  pkgname=('obs-studio' 'obs-studio-plugin-browser')
+else
+  pkgname=('obs-studio')
+fi
+pkgver=32.2.2
+pkgrel=1
+pkgdesc="Free, open source software for live streaming and recording"
+arch=('x86_64' 'powerpc64le')
+url="https://obsproject.com"
+license=('GPL-2.0-only')
+depends=('ffmpeg' 'jansson' 'libxinerama' 'libxkbcommon-x11' 'mbedtls3' 'rnnoise' 'pciutils'
+         'qt6-svg' 'curl' 'jack' 'gtk-update-icon-cache' 'pipewire' 'libxcomposite'
+         'libdatachannel' 'uthash' 'simde' 'qrcodegencpp-cmake' 'python' 'luajit')
+makedepends=('cmake' 'libfdk-aac' 'x264' 'swig' 'sndio' 'nlohmann-json'
+             'ffnvcodec-headers' 'websocketpp' 'asio' 'extra-cmake-modules'
+             'git')
+source=(
+  "$pkgname::git+https://github.com/obsproject/obs-studio#tag=$pkgver"
+  "${pkgname}-libdshowcapture::git+https://github.com/obsproject/libdshowcapture.git"
+  "${pkgname}-obs-browser::git+https://github.com/obsproject/obs-browser.git"
+  "${pkgname}-obs-websocket::git+https://github.com/obsproject/obs-websocket.git"
+  "obs-browser-Update-to-C-20.patch"
+  "obs-browser-enable-support-for-CEF-6613+.patch"
+)
+sha256sums=('18edf1162e6cc37c192c4532ccfb902a07c5891d5929e95c4f028c6ad5d762d5'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            '3f40b66cdde76f4ecd62fa852663b556e07b2be98f4d3e3293019547e260d2fb'
+            '3b1d89c7a43e198985407dc9b8cc0e2625fb3879614ccce05c337791793e7f28')
+
+prepare() {
+  cd $pkgname
+
+  git submodule init
+
+  git config submodule."plugins/obs-browser".url "${srcdir}/${pkgname}"-obs-browser
+  git config submodule."plugins/obs-websocket".url "${srcdir}/${pkgname}"-obs-websocket
+  git config submodule."plugins/win-dshow/libdshowcapture".url "${srcdir}/${pkgname}"-libdshowcapture
+
+  git -c protocol.file.allow=always submodule update --init --recursive
+
+  # The browser source is not built on ppc64le -- see the header. Everything
+  # below here exists only to make CEF work, so it is skipped along with it.
+  if [[ $CARCH == x86_64 ]]; then
+    # use FindCEF provided by system CEF
+    rm cmake/finders/FindCEF.cmake
+
+    # set rpath to /usr/lib/cef for obs-browser plugin
+    sed -e 's|INSTALL_RPATH ".*"|INSTALL_RPATH "/usr/lib/cef/"|' -i plugins/obs-browser/cmake/os-linux.cmake
+
+    # current CEF requires C++20
+    # https://github.com/obsproject/obs-browser/pull/517
+    patch -d plugins/obs-browser -Np1 -i "$srcdir/obs-browser-Update-to-C-20.patch"
+
+    # Enable support for CEF 6613+ (Chrome 128 to 147) and Chrome Runtime
+    # https://github.com/obsproject/obs-browser/pull/523
+    patch -d plugins/obs-browser -Np1 -i "$srcdir/obs-browser-enable-support-for-CEF-6613+.patch"
+  fi
+}
+
+build() {
+  local _browser=(-DENABLE_BROWSER=OFF)
+  if [[ $CARCH == x86_64 ]]; then
+    local _cef_api_version=$(grep -oP 'CEF_API_VERSION_LAST CEF_API_VERSION\_\K[0-9]+' /usr/include/cef/include/cef_api_versions.h)
+    echo Setting CEF_API_VERSION to $_cef_api_version
+    _browser=(-DENABLE_BROWSER=ON -DCEF_API_VERSION=$_cef_api_version)
+  fi
+
+  local cmake_options=(
+    -B build
+    -S $pkgname
+    -DCMAKE_INSTALL_PREFIX="/usr"
+    -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
+    # mbedtls 4 not supported yet
+    # https://github.com/obsproject/obs-studio/issues/13601
+    -DMbedTLS_INCLUDE_DIR="/usr/include/mbedtls3"
+    -DMbedtls_LIBRARY="/usr/lib/mbedtls3/libmbedtls.so"
+    -DMbedcrypto_LIBRARY="/usr/lib/mbedtls3/libmbedcrypto.so"
+    -DMbedx509_LIBRARY="/usr/lib/mbedtls3/libmbedx509.so"
+    "${_browser[@]}"
+    -DENABLE_VST=ON
+    -DENABLE_VLC=OFF
+    -DENABLE_NEW_MPEGTS_OUTPUT=OFF
+    -DENABLE_AJA=OFF
+    -DENABLE_JACK=ON
+    -DENABLE_LIBFDK=ON
+    -DENABLE_WEBRTC=ON
+    -DOBS_VERSION_OVERRIDE="$pkgver"
+    -DCALM_DEPRECATION=ON
+    -DENABLE_WEBSOCKET=ON
+    -Wno-dev
+  )
+  cmake "${cmake_options[@]}"
+  cmake --build build
+}
+
+package_obs-studio() {
+  optdepends=('libfdk-aac: FDK AAC codec support'
+              'libva-intel-driver: hardware encoding for older Intel GPUs'
+              'intel-media-driver: hardware encoding for recent Intel GPUs'
+              'libva-mesa-driver: hardware encoding'
+              'sndio: Sndio input client'
+              'v4l2loopback-dkms: virtual camera support'
+              'xdg-desktop-portal-impl: Wayland window/screen capture'
+              )
+  [[ $CARCH == x86_64 ]] && \
+    optdepends+=('obs-studio-plugin-browser: CEF-based browser plugin')
+
+  DESTDIR="$pkgdir" cmake --install build
+  if [[ $CARCH == x86_64 ]]; then
+    mv $pkgdir/usr/lib/obs-plugins/{obs-browser-page,obs-browser.so} .
+    mv $pkgdir/usr/share/obs/obs-plugins/obs-browser .
+  fi
+}
+
+package_obs-studio-plugin-browser() {
+  pkgdesc="CEF-based OBS Studio browser plugin"
+  url="https://obsproject.com/kb/browser-source"
+  depends=('cef' 'glibc' 'libgcc' 'libstdc++' 'libx11' 'obs-studio' 'qt6-base')
+
+  install -Dm755 obs-browser-page obs-browser.so -t $pkgdir/usr/lib/obs-plugins/
+  install -d $pkgdir/usr/share/obs/obs-plugins/
+  mv obs-browser $pkgdir/usr/share/obs/obs-plugins/
+}

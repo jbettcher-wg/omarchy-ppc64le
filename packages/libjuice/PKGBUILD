@@ -1,0 +1,32 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Sven-Hendrik Haase <svenstaro@archlinux.org>
+# Contributor: Paul-Louis Ageneau <paul-louis at ageneau dot org>
+pkgname=libjuice
+pkgver=1.7.3
+pkgrel=1
+pkgdesc="UDP Interactive Connectivity Establishment (ICE) library"
+arch=('x86_64' 'powerpc64le')
+url="https://github.com/paullouisageneau/$pkgname"
+license=('MPL-2.0')
+makedepends=('cmake')
+depends=('glibc')
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/paullouisageneau/libjuice/archive/refs/tags/v${pkgver}.tar.gz")
+sha512sums=('7e2dadbdb1fed947caac8080df81bf8126d9d8f7ee99df3d6e0973c1e58cff03a9df9f444b3a8cf8830f3641026aa168e43436eeda7e9dd173e27b0bcc8f06eb')
+
+build() {
+  cmake -B build -S $pkgname-$pkgver \
+    -DCMAKE_BUILD_TYPE='None' \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DNO_TESTS=1 \
+    -Wno-dev
+
+  cmake --build build
+}
+
+package() {
+  DESTDIR="$pkgdir/" cmake --install build
+
+  cd ${pkgname}-${pkgver}
+  install -Dm644 LICENSE "${pkgdir}"/usr/share/licenses/$pkgname/LICENSE
+}

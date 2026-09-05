@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jan Alexander Steffens (heftig)" <heftig@archlinux.org>
+Date: Sun, 19 Jan 2025 04:41:34 +0100
+Subject: [PATCH] desktop: Show in more environments
+
+---
+ user-dirs-update-gtk.desktop.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/user-dirs-update-gtk.desktop.in b/user-dirs-update-gtk.desktop.in
+index b0a78aa36960..23d2da55ffab 100644
+--- a/user-dirs-update-gtk.desktop.in
++++ b/user-dirs-update-gtk.desktop.in
+@@ -3,7 +3,7 @@ Exec=xdg-user-dirs-gtk-update
+ Name=User folders update
+ Comment=Update common folders names to match current locale
+ Terminal=false
+-OnlyShowIn=GNOME;LXDE;Unity;
++OnlyShowIn=GNOME;LXDE;Unity;MATE;XFCE;
+ NoDisplay=true
+ Type=Application
+ StartupNotify=false

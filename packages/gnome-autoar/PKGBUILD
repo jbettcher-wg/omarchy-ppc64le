@@ -1,0 +1,69 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Jan Alexander Steffens (heftig) <heftig@archlinux.org>
+# Contributor: Jan de Groot <jgc@archlinux.org>
+
+pkgbase=gnome-autoar
+pkgname=(
+  gnome-autoar
+  gnome-autoar-docs
+)
+pkgver=0.5.2
+pkgrel=1
+pkgdesc="Automatic archives creating and extracting library"
+url="https://gnome.pages.gitlab.gnome.org/gnome-autoar/"
+arch=(x86_64 powerpc64le)
+license=(LGPL-2.1-or-later)
+depends=(
+  glib2
+  glibc
+  libarchive
+  libgcc
+)
+makedepends=(
+  gi-docgen
+  git
+  glib2-devel
+  gobject-introspection
+  meson
+  vala
+)
+source=("git+https://gitlab.gnome.org/GNOME/gnome-autoar.git#tag=$pkgver")
+b2sums=('4c6565f97469b770f76b205b6482031f724ccbc0c7ed60f2e83571640ce8116190af47060043f1ce43d80930dc3a1c8b61d4503cdb94bfc6ec05218b016b3b61')
+
+prepare() {
+  cd $pkgbase
+}
+
+build() {
+  local meson_options=(
+    -D docs=true
+    -D tests=true
+    -D vapi=true
+  )
+
+  arch-meson $pkgbase build "${meson_options[@]}"
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs
+}
+
+package_gnome-autoar() {
+  provides=(libgnome-autoar-${pkgver%%.*}.so)
+
+  meson install -C build --destdir "$pkgdir"
+
+  mkdir -p doc/usr/share
+  mv {"$pkgdir",doc}/usr/share/doc
+}
+
+package_gnome-autoar-docs() {
+  pkgdesc+=" (documentation)"
+  depends=()
+
+  mv doc/* "$pkgdir"
+}
+
+# vim:set sw=2 sts=-1 et:

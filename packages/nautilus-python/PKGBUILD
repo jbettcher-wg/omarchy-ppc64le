@@ -1,0 +1,40 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Balló György <ballogyor+arch at gmail dot com>
+# Contributor: Giorgio Gilestro <giorgio@gilest.ro>
+
+pkgname=nautilus-python
+pkgver=4.1.0
+pkgrel=3
+pkgdesc='Python bindings for the Nautilus Extension API'
+arch=(x86_64 powerpc64le)
+url='https://wiki.gnome.org/Projects/NautilusPython'
+license=(GPL-2.0-or-later)
+depends=(
+  glib2
+  glibc
+  libgcc
+  libnautilus-extension
+  nautilus
+  python
+  python-gobject
+)
+makedepends=(
+  git
+  gtk-doc
+  meson
+)
+conflicts=(python-nautilus)
+provides=("python-nautilus=$pkgver")
+replaces=(python-nautilus)
+source=("git+https://gitlab.gnome.org/GNOME/nautilus-python.git#tag=$pkgver")
+b2sums=(ff31c4a31c262bffd9f3304d19e877eece6639cfba18e4ae2495e26a9706106620aabf4c97db84a6f2524c2840f0d6848ef64dee0136ee8f562096d489d870f3)
+
+build() {
+  arch-meson $pkgname build
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}
