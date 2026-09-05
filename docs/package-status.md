@@ -28,8 +28,11 @@ actually determines effort:
 These have upstream PKGBUILDs. 8 are `arch=any` and need only a rebuild, no
 compilation:
 
-- `inxi` | `kernel-modules-hook` | `luarocks` | `pinta`
+- `inxi` | `kernel-modules-hook` | `luarocks` | `pinta`*
 - `tldr` | `udiskie` | `uwsm` | `woff2-font-awesome`
+
+\* `pinta` is `arch=any` but **not** a free rebuild: it needs `dotnet-sdk-10.0`,
+and Arch POWER is on dotnet-runtime 9.0.100rc2. See `dependency-closure.md`.
 
 The remaining 42 are `x86_64` and need a real ppc64le build:
 
@@ -127,6 +130,11 @@ story all need rethinking rather than porting.
 | `gpu-screen-recorder` | NVENC/VAAPI paths | V100s present, but driver support on POWER is the question |
 | `quickshell` | Qt6/QML, large | should build; volume of work |
 | `plymouth` | early-boot graphics | interacts with petitboot, not GRUB/limine |
+
+## Build progress
+
+See `dependency-closure.md` for the resolved closure and the tier ordering that
+the builds follow. Per-clump results are recorded there and in the git log.
 
 ## Method
 
