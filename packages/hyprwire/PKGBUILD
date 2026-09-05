@@ -1,0 +1,40 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Caleb Maclennan <caleb@alerque.com>
+
+pkgname=hyprwire
+pkgver=0.3.1
+pkgrel=3
+pkgdesc='A fast and consistent wire protocol for IPC'
+arch=(x86_64 powerpc64le)
+url="https://github.com/hyprwm/$pkgname"
+license=(BSD-3-Clause)
+depends=(
+         libgcc
+         libstdc++
+         glibc # libc.so libm.so
+         hyprutils libhyprutils.so
+         libffi libffi.so
+         pugixml # libpugixml.so
+)
+makedepends=(cmake)
+provides=(libhyprwire.so)
+_archive="$pkgname-$pkgver"
+source=("$url/archive/v$pkgver/$_archive.tar.gz")
+sha256sums=('92a673d40ae6a7d66fbcd0a34ec071e026e17eaeeb0040c3375e4b2a80dba737')
+
+build() {
+	cd "$_archive"
+	local cmake_options=(
+		-D CMAKE_BUILD_TYPE=None
+		-D CMAKE_INSTALL_PREFIX=/usr
+	)
+	cmake -B build -W no-dev ${cmake_options[@]}
+	cmake --build build
+}
+
+package() {
+	cd "$_archive"
+	DESTDIR="$pkgdir" cmake --install build
+	install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgname/" LICENSE
+}

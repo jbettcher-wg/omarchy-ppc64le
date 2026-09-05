@@ -34,6 +34,13 @@ export PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/share/pkgconfig:
 export CMAKE_PREFIX_PATH="$SYSROOT/usr:${CMAKE_PREFIX_PATH:-}"
 export CPPFLAGS="-I$SYSROOT/usr/include ${CPPFLAGS:-}"
 export LDFLAGS="-L$SYSROOT/usr/lib -Wl,-rpath-link,$SYSROOT/usr/lib ${LDFLAGS:-}"
+# Some build systems (notably cmake projects that set their own linker flags)
+# drop the LDFLAGS we export, and the link then fails with "cannot find -lfoo"
+# for a library that *is* staged. LIBRARY_PATH and *_INCLUDE_PATH are honoured
+# by gcc itself, so they survive whatever the build system does with flags.
+export LIBRARY_PATH="$SYSROOT/usr/lib:${LIBRARY_PATH:-}"
+export C_INCLUDE_PATH="$SYSROOT/usr/include:${C_INCLUDE_PATH:-}"
+export CPLUS_INCLUDE_PATH="$SYSROOT/usr/include:${CPLUS_INCLUDE_PATH:-}"
 export XDG_DATA_DIRS="$SYSROOT/usr/share:/usr/share"
 export GI_TYPELIB_PATH="$SYSROOT/usr/lib/girepository-1.0:${GI_TYPELIB_PATH:-}"
 export LD_LIBRARY_PATH="$SYSROOT/usr/lib:${LD_LIBRARY_PATH:-}"

@@ -1,0 +1,60 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Caleb Maclennan <caleb@alerque.com>
+# Contributor: Aaron Blasko <blaskoazzolaaaron [at] gmail.com>
+
+pkgname=xdg-desktop-portal-hyprland
+pkgver=1.4.1
+_protocolver=4d29e48433270a2af06b8bc711ca1fe5109746cd
+pkgrel=2
+pkgdesc='xdg-desktop-portal backend for hyprland'
+url="https://github.com/hyprwm/$pkgname"
+arch=(x86_64 powerpc64le)
+license=(MIT)
+provides=(xdg-desktop-portal-impl)
+depends=(
+         libgcc
+         libstdc++
+         glibc
+         hyprlang libhyprlang.so
+         hyprutils libhyprutils.so
+         libinih
+         pipewire
+         qt6-base
+         sdbus-cpp libsdbus-c++.so
+         util-linux-libs libuuid.so
+         xdg-desktop-portal
+)
+makedepends=(cmake
+             hyprland-protocols
+             hyprwayland-scanner
+             wayland
+             wayland-protocols)
+optdepends=('grim: required for the screenshot portal to function'
+            'slurp: support for interactive mode for the screenshot portal')
+_archive="$pkgname-$pkgver"
+source=("$url/archive/v$pkgver/$_archive.tar.gz"
+        "https://github.com/hyprwm/hyprland-protocols/archive/$_protocolver.tar.gz")
+sha256sums=('3652c14f63a9666acea2c841e196782dbc0f74ea5b4783622dd04a32f08b709f'
+            '5f6be4d870e94314f05ec7ff9c9c1f028748230ff80a7f89aeaf66c08e5c70e0')
+
+prepare() {
+	cd "$_archive/subprojects"
+	rm -rf hyprland-protocols sdbus-cpp
+	ln -sfT "$srcdir/hyprland-protocols-$_protocolver" hyprland-protocols
+}
+
+build() {
+	cd "$_archive"
+	cmake -B build \
+		-D CMAKE_INSTALL_PREFIX=/usr \
+		-D CMAKE_INSTALL_LIBEXECDIR=/usr/lib \
+		-D CMAKE_BUILD_TYPE=Release
+	cmake --build build
+}
+
+package() {
+	cd "$_archive"
+	DESTDIR="$pkgdir" cmake --install build
+	install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgname/" LICENSE
+}

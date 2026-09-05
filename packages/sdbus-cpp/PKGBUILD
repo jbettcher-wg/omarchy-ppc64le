@@ -1,0 +1,59 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Caleb Maclennan <caleb@alerque.com>
+# Contributor: Cirk2 <privat+aur at cirk2 dot de>
+
+pkgbase=sdbus-cpp
+pkgname=($pkgbase $pkgbase-doc)
+pkgver=2.3.1
+pkgrel=1
+pkgdesc='a high-level C++ D-Bus library designed to provide expressive, easy-to-use API'
+url="https://github.com/Kistler-Group/$pkgbase"
+arch=(x86_64 powerpc64le)
+license=(LGPL-2.1-only LicenseRef-sdbus-c++-LGPL-Exception-1.0)
+depends=(expat
+         systemd-libs)
+makedepends=(cmake
+             doxygen
+             systemd)
+_archive="$pkgbase-$pkgver"
+source=("$url/archive/v$pkgver/$_archive.tar.gz")
+sha256sums=('3a289eded586c26d06c1387de72c7bf7c809527a70d51ba6401fe61059b19626')
+
+build() {
+	cmake -B build -S "$_archive" \
+		-D CMAKE_INSTALL_PREFIX=/ \
+		-D CMAKE_BUILD_TYPE=Release \
+		-D SDBUSCPP_BUILD_CODEGEN=ON \
+		-D SDBUSCPP_BUILD_DOCS=ON
+	cmake --build build
+
+	# Install so we can split the packaging up later
+	DESTDIR="fakeinstall" cmake --install build
+
+	# Remove references to $srcdir
+	find fakeinstall/usr/share/doc \
+		-name \*.html \
+		-print \
+		-exec sed \
+		  -e "s|$srcdir/sdbus-cpp/include|/usr/include|g" \
+		  -e "s|$srcdir/sdbus-cpp||" \
+		  -i {} \;
+}
+
+_package_dir() {
+	install -dm755 "$pkgdir/usr/$1"
+	cp -dr --no-preserve=owner "$srcdir/fakeinstall/usr/$1/"* "$pkgdir/usr/$1"
+}
+
+package_sdbus-cpp() {
+	provides=(libsdbus-c++.so)
+	install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgbase/" "$_archive/COPYING"*
+	for dir in lib include bin; do
+		_package_dir $dir
+	done
+}
+
+package_sdbus-cpp-doc() {
+	_package_dir share/doc
+}
