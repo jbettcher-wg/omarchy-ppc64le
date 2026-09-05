@@ -46,9 +46,11 @@ optdepends=(
 )
 conflicts=(omarchy-lazyvim)
 source=("https://pkgs.omarchy.org/x86_64/${pkgname}-${pkgver}-1-any.pkg.tar.zst"
-        no-mason-downloads.lua)
+        no-mason-downloads.lua
+        jit_startup.lua)
 noextract=("${pkgname}-${pkgver}-1-any.pkg.tar.zst")
 sha256sums=('ff7cca4d58198ef6ea0c16ff93bd0369b307a40fae4ed300f6a2a75bb444fe1f'
+            'SKIP'
             'SKIP')
 
 _mason=etc/skel/.local/share/nvim/mason
@@ -105,4 +107,29 @@ package() {
     "${pkgdir}/etc/skel/.config/nvim/lua/plugins/no-mason-downloads.lua"
   install -Dm644 "${srcdir}/no-mason-downloads.lua" \
     "${pkgdir}/usr/share/omarchy-nvim/config/lua/plugins/no-mason-downloads.lua"
+
+  # Turn LuaJIT's trace compiler off for the duration of init.lua.  Startup
+  # is run-once code, and compiling it costs about 20% of the time to first
+  # dashboard: 173 traces and 100 aborted recordings, almost none of it
+  # entered again in the session.  Measured on ppc64le (LuaJIT design doc
+  # S7.6): 37.4 -> 30.4 ms by lazy.stats().startuptime, with every JIT-bound
+  # workload unchanged.  The reasoning is architecture-neutral -- it is
+  # LuaJIT's compiler, not the backend -- it is simply visible here because
+  # this is where it was measured.
+  local d
+  for d in "${pkgdir}/etc/skel/.config/nvim" \
+           "${pkgdir}/usr/share/omarchy-nvim/config"; do
+    install -Dm644 "${srcdir}/jit_startup.lua" "${d}/lua/config/jit_startup.lua"
+    # Upstream's init.lua is exactly a comment plus the require.  Fail the
+    # build if it ever stops being that, rather than silently rewriting
+    # something else.
+    grep -qx 'require("config.lazy")' "${d}/init.lua"
+    cat > "${d}/init.lua" <<'INIT'
+-- bootstrap lazy.nvim, LazyVim and your plugins
+local ljit = require("config.jit_startup")
+ljit.off()
+require("config.lazy")
+ljit.on()
+INIT
+  done
 }
