@@ -1,0 +1,71 @@
+From: Jeremy Bettcher <thebettcher@gmail.com>
+Subject: [PATCH] PPC64: save the caller's CR in the caller's CR save word, not 8(sp)
+
+Portability fix, upstreamable: this is a straight ELFv2 ABI conformance bug
+in the ppc64le interpreter, not a packaging workaround.
+
+`saveregs` pushed the interpreter frame with
+
+    stdu sp, -CFRAME_SPACE(sp)
+
+and then saved the caller's CR with
+
+    std r0, SAVE_CR        // SAVE_CR = 8(sp)
+
+8(sp) and 16(sp) of a frame are the ELFv2 linkage-area CR and LR save words
+that the frame owner's *callees* write into -- a C prologue does
+`stw r12,8(r1)` and `std r0,16(r1)` against its caller's sp, which is ours.
+So every C helper the interpreter calls that itself uses a non-volatile CR
+field (CR2-CR4) overwrote the interpreter's saved CR, and `restoreregs` then
+handed the C caller back a corrupted CR2/CR3/CR4.
+
+SAVE_LR already avoided this by using CFRAME_SPACE+16 (the caller's LR save
+word, which we own as a callee).  SAVE_CR now uses CFRAME_SPACE+8 the same
+way.
+
+Observed as: neovim aborts on
+
+    nvim --headless -u NONE -i NONE -c 'checkhealth vim.health' -c 'qa!'
+
+with "try_leave: Assertion `trylevel > 0' failed", because GCC caches
+do_cmdline()'s `flags & DOCMD_EXCRESET` predicate in CR3 across thousands of
+instructions and many calls, and the FileType autocommand runs Lua in
+between.  The same neovim source built against PUC Lua 5.1 does not abort.
+Reproduced directly with a C probe: Lua string concatenation and
+string.format/gsub both returned to C with CR2 and CR3 zeroed; every other
+Lua operation tested was clean.
+
+diff --git a/src/vm_ppc64.dasc b/src/vm_ppc64.dasc
+index b9184091..66e7ba5b 100644
+--- a/src/vm_ppc64.dasc
++++ b/src/vm_ppc64.dasc
+@@ -127,6 +127,16 @@
+ |// otherwise destroy the C frame record.  Hence the C frame info and the two
+ |// conversion temps sit ABOVE the register saves, not in 32..95.
+ |.define SAVE_LR,	480(sp)
++|// ELFv2: 8(sp) and 16(sp) of *our own* frame are the CR and LR save words
++|// that *our callees* write into (a C helper prologue does a stw of r12 to
++|// 8 of r1 and a std of r0 to 16 of r1 against the caller's sp, which is
++|// ours -- ELFv2 linkage area).  The slots
++|// we own are the matching ones in our caller's frame, at CFRAME_SPACE+8
++|// and CFRAME_SPACE+16.  SAVE_LR already uses CFRAME_SPACE+16; SAVE_CR must
++|// use CFRAME_SPACE+8, not 8(sp), or every C helper that touches a
++|// non-volatile CR field (CR2-CR4) overwrites our saved CR and restoreregs
++|// hands the caller back a corrupted CR.
++|.define SAVE_CR,	472(sp)	// 64 bit CR save (caller's CR save word).
+ |.define CFRAME_SPACE,	464	// Delta for sp.
+ |// Back chain for sp:	464(sp)	<-- sp entering interpreter
+ |.define SAVE_ERRF,	456(sp)	// |
+@@ -144,9 +154,9 @@
+ |//			96(sp)	// .. 111: free = JIT spill slots 24..27 (SPS_FIXED).
+ |//			32(sp)	// .. 95: callee parameter save area (ABI mandated);
+ |//				// callee-scratch, keep nothing here.
+-|.define SAVE_TOC,	24(sp)	// TOC save area.
+-|// Next frame lr:	16(sp)
+-|.define SAVE_CR,	8(sp)	// 64 bit CR save.
++|.define SAVE_TOC,	24(sp)	// TOC save area (ours: we are the caller).
++|// Next frame lr:	16(sp)	// written by our callees -- do not use.
++|// Next frame cr:	8(sp)	// written by our callees -- do not use.
+ |// Back chain for sp:	0(sp)   <-- sp while in interpreter
+ |
+ |.define TMPD_BLO,	408(sp)	// LSB
