@@ -27,6 +27,9 @@ cp -a "$src"/. "$bdir"/
 rm -rf "$bdir/src" "$bdir/pkg"
 
 export PKGDEST
+# Non-interactive ssh sessions land in the POSIX locale, and bsdtar then
+# refuses to extract source tarballs containing non-ASCII filenames.
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
 export PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 export CMAKE_PREFIX_PATH="$SYSROOT/usr:${CMAKE_PREFIX_PATH:-}"
 export CPPFLAGS="-I$SYSROOT/usr/include ${CPPFLAGS:-}"
