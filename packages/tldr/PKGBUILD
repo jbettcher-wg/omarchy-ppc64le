@@ -1,0 +1,47 @@
+# ppc64le: unchanged from Arch upstream. arch=any Python, no compiled code.
+#
+# Maintainer: Felix Yan <felixonmars@archlinux.org>
+# Maintainer: Brett Cornwall <ainola@archlinux.org>
+
+pkgname=tldr
+pkgver=3.4.4
+pkgrel=1
+pkgdesc="Command line client for tldr, a collection of simplified man pages."
+arch=('any')
+url="https://github.com/tldr-pages/tldr-python-client"
+license=('MIT')
+depends=('python' 'python-shtab' 'python-colorama' 'python-termcolor')
+makedepends=(
+    'python-build'
+    'python-installer'
+    'python-hatchling'
+    'python-sphinx-argparse'
+)
+checkdepends=('python-pytest')
+source=("https://github.com/tldr-pages/tldr-python-client/archive/$pkgver/$pkgname-$pkgver.tar.gz")
+sha512sums=('174972ed82e41396556b814ce16eb4f40f4ede62a3cdee1acfe1b879b06fbe7e00f26e30ef60079eda14de1e2fa0163e75a034bd474813f5f86e1594ef7cc64f')
+
+build() {
+  cd "tldr-python-client-$pkgver"
+  make -C docs
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd tldr-python-client-$pkgver
+  python -m pytest
+}
+
+package() {
+  cd "tldr-python-client-$pkgver"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 LICENSE.md -t "$pkgdir/usr/share/licenses/$pkgname/"
+
+  # Generate here instead of a .install for package reproducibility
+  install -dm755 "$pkgdir/usr/share/bash-completion/completions/"
+  install -dm755 "$pkgdir/usr/share/zsh/site-functions/"
+  python "$pkgdir"/usr/lib/python*/site-packages/tldr.py --print-completion bash \
+    > "$pkgdir/usr/share/bash-completion/completions/tldr"
+  python "$pkgdir"/usr/lib/python*/site-packages/tldr.py --print-completion zsh \
+    > "$pkgdir/usr/share/zsh/site-functions/_tldr"
+}

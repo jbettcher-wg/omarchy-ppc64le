@@ -1,0 +1,45 @@
+# ppc64le: unchanged from Arch upstream. arch=any Python + shell, no compiled code.
+#
+# Maintainer: Caleb Maclennan <caleb@alerque.com>
+
+pkgname=uwsm
+pkgver=0.26.7
+pkgrel=1
+pkgdesc='A standalone Wayland session manager'
+url="https://github.com/Vladimir-csp/$pkgname"
+arch=(any)
+license=(MIT)
+depends=(bash
+         python
+         python-pyxdg
+         python-dbus)
+optdepends=('bemenu: optional picker for uuctl support'
+            'dmenu: optional picker for uuctl support'
+            'fuzzel: optional picker for uuctl support'
+            'libnewt: for "uwsm start select"'
+            'libnotify: for feeback from "uswm app" commands or fmon service'
+            'rofi-wayland: optional picker for uuctl support'
+          # 'tofi: optional picker for uuctl support' # not packaged
+          # 'walker: optional picker for uuctl support' # AUR only
+            'wmenu: optional picker for uuctl support'
+            'wofi: optional picker for uuctl support')
+makedepends=(meson
+             scdoc)
+_archive="$pkgname-$pkgver"
+source=("$url/archive/v$pkgver/$_archive.tar.gz")
+sha256sums=('5cb20f1a3562787a61f4aba7f4357369a72cd7ccec2ce4752048bea018b5aa71')
+
+build() {
+	local meson_opts=(
+		uuctl=enabled
+		fumon=enabled
+		uwsm-app=enabled
+		wait-tray=enabled
+	)
+	arch-meson "$_archive" build ${meson_opts[@]/#/-D }
+	meson compile -C build
+}
+
+package() {
+	meson install -C build --destdir "$pkgdir"
+}
