@@ -1,0 +1,85 @@
+# ppc64le: added powerpc64le to arch(), and switched foot's PGO training from
+# full-headless-sway to partial.
+#
+# sway is not in Arch POWER, and building it would drag in wlroots0.20, which is
+# also missing -- a compositor and its render library, in order to profile a
+# terminal. foot's own pgo.sh offers a `partial` mode that drives the training
+# workload without any compositor at all, so PGO is *kept*, not dropped; only
+# the compositor requirement goes away. (foot's `auto` mode would select
+# `partial` here for the same reason; naming it explicitly keeps the build
+# reproducible rather than environment-dependent.)
+#
+# Packaging substitution, not a portability fix. No foot source changes were
+# needed.
+#
+# Maintainer: Caleb Maclennan <caleb@alerque.com>
+# Contributor: Daniel Eklöf <daniel at ekloef dot se>
+
+pkgbase=foot
+pkgdesc='Fast, lightweight, and minimalistic Wayland terminal emulator'
+pkgname=($pkgbase $pkgbase-terminfo)
+pkgver=1.28.0
+pkgrel=1
+url="https://codeberg.org/dnkl/$pkgbase"
+arch=(x86_64 powerpc64le)
+license=(MIT)
+makedepends=(fcft
+             fontconfig
+             git
+             libutf8proc
+             libxkbcommon
+             llvm
+             meson
+             ncurses
+             ninja
+             pixman
+             python
+             scdoc
+             tllist
+             wayland
+             wayland-protocols)
+optdepends=('libutempter: utmp logging')
+backup=(etc/xdg/foot/foot.ini)
+source=("$pkgbase::git+$url.git#tag=$pkgver")
+sha256sums=('05a057b1145507625d9f548ae546705d58ba60cbb26a8958ce72f0b9c1bdee46')
+
+build() {
+	cd "$pkgbase"
+	./pgo/pgo.sh \
+		partial \
+		. build \
+		-Dterminfo-base-name=foot-extra \
+		--prefix=/usr \
+		--wrap-mode=nodownload
+}
+
+check() {
+	cd "$pkgbase"
+	ninja -C build test
+}
+
+package_foot() {
+	optdepends=('foot-terminfo: extra non-standard features over terminfo included in ncurses'
+	            'libnotify: desktop notifications'
+	            'xdg-utils: URI launching')
+	depends=(fcft
+	         fontconfig
+	         libfcft.so
+	         libutf8proc
+	         libxkbcommon
+	         ncurses
+	         pixman
+	         wayland)
+	cd "$pkgbase"
+	DESTDIR="$pkgdir" ninja -C build install
+	rm -r "$pkgdir/usr/share/terminfo/"
+	install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgname/" LICENSE
+}
+
+package_foot-terminfo() {
+	pkgdesc="Extra non-standard terminfo files for $pkgbase, a Wayland terminal emulator"
+	depends=(ncurses)
+	cd "$pkgbase"
+	install -Dm0644 -t "$pkgdir/usr/share/terminfo/f/" build/f/foot-extra*
+	install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgname/" LICENSE
+}

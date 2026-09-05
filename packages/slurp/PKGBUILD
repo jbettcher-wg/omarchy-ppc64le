@@ -1,0 +1,33 @@
+# ppc64le: added powerpc64le to arch(). That was the only change needed.
+#
+# Maintainer: Ainola <ainola@archlinux.org>
+# Contributor: Maxim Baz <archlinux at maximbaz dot com>
+
+pkgname=slurp
+pkgver=1.5.0
+pkgrel=2
+pkgdesc='Select a region in a Wayland compositor'
+arch=('x86_64' 'powerpc64le')
+url="https://github.com/emersion/slurp"
+license=('MIT')
+depends=('cairo' 'wayland' 'libxkbcommon')
+makedepends=('meson' 'scdoc' 'wayland-protocols')
+source=(
+    "$pkgname-$pkgver.tar.gz::https://github.com/emersion/slurp/releases/download/v$pkgver/slurp-$pkgver.tar.gz"
+    "$pkgname-$pkgver.tar.gz.sig::https://github.com/emersion/slurp/releases/download/v$pkgver/slurp-$pkgver.tar.gz.sig"
+)
+validpgpkeys=("34FF9526CFEF0E97A340E2E40FDE7BE0E88F5E48") # emersion
+sha256sums=('eeb282b2adc8db5614b852596340b69da6f3954cf6cfbdc4392da509c934208a'
+            'SKIP')
+
+build() {
+    arch-meson "$pkgname-$pkgver" build
+    ninja -C build
+}
+
+package() {
+    DESTDIR="$pkgdir" ninja -C build install
+    cd "$pkgname-$pkgver"
+    install -Dm 0644 LICENSE -t "$pkgdir/usr/share/licenses/slurp/"
+    install -Dm 0644 README.md -t "$pkgdir/usr/share/doc/slurp/"
+}

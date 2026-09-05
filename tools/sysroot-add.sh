@@ -1,18 +1,28 @@
 #!/bin/bash
-# Extract packages we have built into the local sysroot, so that dependent
-# builds can find their headers/pkgconfig/libs without root.
-set -euo pipefail
+# Extract packages we have built ourselves into the local sysroot, so dependent
+# builds find their headers, pkg-config files, cmake configs and libraries
+# without needing root.
+set -uo pipefail
 WORK=/home/jbettcher/omarchy-work
 SYSROOT=$WORK/sysroot
 REPO=/home/jbettcher/Development/omarchy-ppc64le/repo
 mkdir -p "$SYSROOT"
+
+rc=0
 for name in "$@"; do
-  f=$(ls -t "$REPO"/${name}-[0-9]*-powerpc64le.pkg.tar.zst "$REPO"/${name}-[0-9]*-any.pkg.tar.zst 2>/dev/null | head -1)
-  [ -n "$f" ] || { echo "sysroot-add: no built package for $name"; exit 1; }
-  tar -I zstd -xf "$f" -C "$SYSROOT" --exclude=.PKGINFO --exclude=.BUILDINFO --exclude=.MTREE --exclude=.INSTALL
+  f=$(ls -t "$REPO"/${name}-[0-9]*.pkg.tar.zst 2>/dev/null | grep -v -- '-debug-' | head -1)
+  if [ -z "$f" ]; then echo "sysroot-add: no built package for $name"; rc=1; continue; fi
+  tar -I zstd -xf "$f" -C "$SYSROOT" \
+    --exclude=.PKGINFO --exclude=.BUILDINFO --exclude=.MTREE --exclude=.INSTALL 2>/dev/null
   echo "sysroot += $(basename "$f")"
 done
-# pkgconfig files carry absolute prefixes; rewrite them to point into the sysroot
-find "$SYSROOT/usr/lib/pkgconfig" "$SYSROOT/usr/share/pkgconfig" -name '*.pc' 2>/dev/null | while read -r pc; do
-  grep -q "^prefix=$SYSROOT" "$pc" || sed -i "s|^prefix=/usr$|prefix=$SYSROOT/usr|" "$pc"
+
+# pkg-config and cmake files carry absolute /usr prefixes; repoint them into the
+# sysroot so dependent builds resolve include and library paths correctly.
+for d in "$SYSROOT/usr/lib/pkgconfig" "$SYSROOT/usr/share/pkgconfig"; do
+  [ -d "$d" ] || continue
+  find "$d" -name '*.pc' | while read -r pc; do
+    sed -i "s|^prefix=/usr$|prefix=$SYSROOT/usr|" "$pc"
+  done
 done
+exit $rc
