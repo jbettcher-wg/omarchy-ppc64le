@@ -167,7 +167,12 @@ def add_arch(pkgbuild, carch=CARCH):
     if not m:
         return False
     inner = m.group(1)
-    if carch in inner.split() or "any" in inner.split():
+    # PKGBUILDs quote these as often as not -- fzf ships arch=('x86_64') --
+    # and an unstripped comparison never matches a quoted entry, so add_arch
+    # appended an architecture that was already listed and makepkg rejected
+    # the recipe with "arch can not contain duplicate values".
+    have = [t.strip("'\"") for t in inner.split()]
+    if carch in have or "any" in have:
         return False
     new = "arch=(%s %s)" % (inner.strip(), carch)
     body = body[:m.start()] + new + body[m.end():]
