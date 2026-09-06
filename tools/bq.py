@@ -735,6 +735,15 @@ def stage_deps(pkgbase, recipedir, sysroot, log):
             fh.write("\n--- stage-deps ---\n" + out)
     except OSError:
         pass
+    # What stage-deps could genuinely not supply.  This, not preflight's
+    # pacman -T, is the honest basis for a missing-dep verdict: staged
+    # packages live in the sysroot and are invisible to pacman -T, so
+    # preflight now reports almost everything as "missing".
+    absent = []
+    for ln in out.splitlines():
+        if "not in Arch POWER and not yet built:" in ln:
+            absent = ln.split(":", 1)[1].split()
+    return absent
 
 
 def sysroot_add(names, sysroot):
@@ -824,7 +833,7 @@ def build_one(pkgbase, recipe_src, args, st):
     # stage-deps.sh at all: preflight_deps() only *reported* what was missing,
     # so bluez went in without `ell libical` and bolt without `asciidoc` even
     # though all three are packaged in Arch POWER.
-    stage_deps(pkgbase, work, sysroot, log)
+    unstaged = stage_deps(pkgbase, work, sysroot, log)
 
     cmd = pre + ["makepkg", "--config", conf, "-d", "--noconfirm",
                  "--needed", "--nocheck", "--log", "--skippgpcheck"]
@@ -917,15 +926,19 @@ def build_one(pkgbase, recipe_src, args, st):
 
     if missing:
         result["missing_deps"] = missing
+    if unstaged:
+        result["unstaged_deps"] = unstaged
     if rc == 0:
         result["status"] = "ok"
     else:
         cls, fix, line = classify(log)
-        # The preflight already named them; that beats whatever the build
-        # system said about it.
-        if missing and cls in ("unknown", "missing-dep"):
+        # Only call it missing-dep when staging genuinely could not supply
+        # the dependency.  Overriding on preflight's list instead mislabelled
+        # real build failures: audit's libtool relink error was reported as
+        # "not installed: apparmor" when apparmor had in fact been staged.
+        if unstaged and cls in ("unknown", "missing-dep"):
             cls = "missing-dep"
-            line = "not installed: " + " ".join(missing)
+            line = "not in Arch POWER and not yet built: " + " ".join(unstaged)
         if rc == 90:
             cls, fix = "elf-pathguard", dict((c[0], c[2]) for c in CLASSES)["elf-pathguard"]
         if rc == 124:
