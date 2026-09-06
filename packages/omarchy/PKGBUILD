@@ -1,0 +1,156 @@
+# Maintainer: Jeremy Bettcher <thebettcher@gmail.com>
+#
+# Omarchy 4's base package, repackaged for ppc64le.
+#
+# There is no port here.  Upstream declares arch=any and -- unlike omarchy-nvim,
+# which declared any while vendoring two x86-64 ELF binaries -- this one is
+# telling the truth: all 1561 shipped files are shell, Lua, TOML, desktop
+# entries and PNGs, with zero machine code.  check() below enforces that, so if
+# upstream ever starts vendoring a binary the build fails instead of shipping a
+# foreign one.
+#
+# What this package needs instead is dependency surgery, and it is not
+# cosmetic.  Upstream depends on limine, limine-mkinitcpio-hook,
+# limine-snapper-sync and snapper.  limine is an x86/aarch64 UEFI+BIOS
+# bootloader; POWER9 boots through OPAL/petitboot.  So limine is not merely
+# unpackaged for this architecture, it is the wrong component -- the one
+# dependency here that could never be satisfied by porting harder.
+#
+# Two changes to the shipped tree, both justified at the point of removal in
+# package().  Everything else ships byte-for-byte as upstream built it.
+#
+# Upstream publishes no PKGBUILD -- the Omarchy repo distributes built packages
+# only -- so the source *is* the upstream package, exactly as for omarchy-nvim.
+# Its sha256 is the one recorded in https://pkgs.omarchy.org/x86_64/omarchy.db,
+# so this recipe is pinned to the artifact upstream actually published.
+#
+# arch=(any) was correct as it stood.  No architecture change was needed.
+
+pkgname=omarchy
+pkgver=4.0.2
+# pkgrel 2 marks this as locally modified: upstream's own build is 4.0.2-1.
+pkgrel=2
+pkgdesc='Beautiful, modern, and opinionated Arch Linux by DHH (ppc64le: limine and update-guard removed)'
+arch=(any)
+url='https://github.com/basecamp/omarchy'
+license=(MIT)
+makedepends=(file)
+
+# Upstream's depends, minus five entries:
+#
+#   omarchy-keyring          Verifies package signatures from pkgs.omarchy.org.
+#                            That repo has no ppc64le tree and is not in this
+#                            machine's pacman.conf, so the keyring is never
+#                            consulted.  Requiring it would only be a package
+#                            that must be built to sit unused.
+#   limine                   x86/aarch64 bootloader.  POWER9 boots via
+#   limine-mkinitcpio-hook   OPAL/petitboot.  Wrong component, not a missing
+#   limine-snapper-sync      port.
+#   snapper                  Present only to feed limine-snapper-sync's boot
+#                            entries.  Not in the ppc64le repos, and without
+#                            limine there is nothing to sync snapshots to.
+#                            Demoted to optdepends: snapper itself is useful,
+#                            the boot integration is what does not apply.
+#
+# Everything else is either installed on this machine or already built in this
+# repo (hyprland, quickshell, uwsm, xdg-desktop-portal-hyprland), so the
+# dependency closure genuinely resolves on ppc64le.
+depends=(
+  "omarchy-settings=${pkgver}"
+  hyprland
+  quickshell
+  uwsm
+  sddm
+  xdg-desktop-portal-hyprland
+  wireplumber
+  pipewire
+  gnome-keyring
+  gum
+  jq
+  git
+  perl
+  fakeroot
+  pacman-contrib
+  ttf-jetbrains-mono-nerd-basic
+)
+
+optdepends=(
+  'snapper: btrfs snapshots (omarchy-snapshot); upstream also uses it to feed limine boot entries, which do not apply on OPAL/petitboot'
+  'plocate: file indexing for the Omarchy menu search'
+  'inxi: system information for omarchy-debug'
+)
+
+conflicts=(omarchy-dev)
+
+source=("https://pkgs.omarchy.org/x86_64/${pkgname}-${pkgver}-1-any.pkg.tar.zst")
+noextract=("${pkgname}-${pkgver}-1-any.pkg.tar.zst")
+# From %SHA256SUM% in the upstream omarchy.db, not computed from a local copy.
+sha256sums=('cb24bb99a4b890fed643b4c92ab729daf353b6c632c29634d8cac09827ce5863')
+
+# The x86_64 path in the URL is where upstream publishes; the artifact itself is
+# the arch-independent "-any" build, which is why it is usable here unmodified.
+
+_unpack() {
+  bsdtar -xf "${srcdir}/${pkgname}-${pkgver}-1-any.pkg.tar.zst" -C "$1" \
+    --no-same-owner \
+    --exclude .PKGINFO --exclude .BUILDINFO --exclude .MTREE --exclude .INSTALL
+}
+
+check() {
+  # The premise of this package: arch=any is honest, i.e. not one byte of
+  # machine code.  Verified true for 4.0.2.  If a future version vendors a
+  # prebuilt x86-64 helper the way omarchy-nvim vendored stylua and shfmt,
+  # fail here rather than shipping a binary that cannot run.
+  local found
+  rm -rf "${srcdir}/upstream"
+  mkdir -p "${srcdir}/upstream"
+  _unpack "${srcdir}/upstream"
+
+  found=$(find "${srcdir}/upstream" -type f -print0 \
+    | xargs -0 file -N --mime-type 2>/dev/null \
+    | awk -F': ' '$2 ~ /^application\/x-(pie-)?(executable|sharedlib)|x-object|x-archive/ { print $1 }' \
+    | sed "s|^${srcdir}/upstream/||" | sort)
+
+  if [ -n "$found" ]; then
+    printf 'omarchy %s is not arch=any after all -- ELF payload found:\n%s\n' \
+      "$pkgver" "$found" >&2
+    return 1
+  fi
+
+  # The two files package() removes must actually be there.  If upstream
+  # renames or drops them, the removal below would silently no-op and this
+  # package would quietly regain the behaviour it exists to remove.
+  [ -f "${srcdir}/upstream/usr/share/libalpm/hooks/00-omarchy-update-guard.hook" ]
+}
+
+package() {
+  _unpack "${pkgdir}"
+
+  # Remove the pacman update guard.
+  #
+  # 00-omarchy-update-guard.hook triggers on Operation=Upgrade, Target=* with
+  # AbortOnFail, and runs omarchy-update-pacman-guard, which exits 1 for any
+  # `pacman -Syu` telling the user to run `omarchy update` instead.  That is
+  # the right default on x86 Omarchy, where `omarchy update` works.
+  #
+  # It is the wrong default here.  `omarchy update` expects the Omarchy pacman
+  # channel (no ppc64le tree), omarchy-keyring and snapper snapshots -- none of
+  # which exist on this machine.  Leaving the hook in place would make the
+  # guard fail closed against the *only* working update path on a daily-driver
+  # workstation: every `pacman -Syu` would abort, and the alternative it names
+  # cannot run.  The escape hatch (OMARCHY_ALLOW_DIRECT_PACMAN=1) exists, but
+  # requiring it for every routine upgrade is not a defensible default.
+  #
+  # Local workaround, not upstreamable: the hook is correct for the platform it
+  # was written for.
+  rm -f "${pkgdir}/usr/share/libalpm/hooks/00-omarchy-update-guard.hook"
+
+  # The other two libalpm hooks (10-/90- hyprland reload around
+  # omarchy-settings upgrades) are kept.  They are not AbortOnFail, so a host
+  # with no Hyprland session running fails them harmlessly.
+
+  # Fail the build if any shipped ELF records a build-tree path.  This package
+  # ships no ELF at all, so the guard should report zero files -- which is
+  # itself the assertion worth keeping, and costs nothing.
+  "${ELF_PATHGUARD:-$startdir/../../tools/elf-pathguard.sh}" "$pkgdir"
+}

@@ -1,0 +1,158 @@
+# Maintainer: Jeremy Bettcher <thebettcher@gmail.com>
+#
+# Omarchy 4's settings package, repackaged for ppc64le.
+#
+# Like omarchy itself this is genuinely arch=any -- zero ELF files, enforced by
+# check() -- so there is no port.  Its depends (bash curl gum hicolor-icon-theme
+# plymouth) all resolve on ppc64le unchanged; plymouth is already built in this
+# repo.  **No dependency change was needed and none was made.**
+#
+# Two changes to the shipped tree, both for reasons that are specific to this
+# machine and provable rather than cautious:
+#
+#   1. etc/mkinitcpio.conf.d/omarchy_hooks.conf is removed.  It would break
+#      initramfs generation here.  See package().
+#   2. The .INSTALL scriptlet is replaced with one that does not rewrite /etc.
+#      See omarchy-settings.install.
+#
+# Everything else ships byte-for-byte as upstream built it, including the
+# /etc drop-ins that merely configure software (sddm, logind, resolved, sysctl,
+# sudoers).  Those are what Omarchy *is*; removing them would ship something
+# that is not Omarchy.  They are inventoried in the README notes rather than
+# silently dropped.
+#
+# Upstream publishes no PKGBUILD, so the source is the published package, and
+# its sha256 is the one recorded in https://pkgs.omarchy.org/x86_64/omarchy.db.
+#
+# arch=(any) was correct as it stood.  No architecture change was needed.
+
+pkgname=omarchy-settings
+pkgver=4.0.2
+# pkgrel 2 marks this as locally modified: upstream's own build is 4.0.2-1.
+pkgrel=2
+pkgdesc='Omarchy user defaults, /etc/skel content, fonts, plymouth theme, and support helpers (ppc64le: no destructive /etc overrides, no mkinitcpio drop-in)'
+arch=(any)
+url='https://github.com/basecamp/omarchy'
+license=(MIT)
+makedepends=(file)
+
+depends=(
+  bash
+  curl
+  gum
+  hicolor-icon-theme
+  plymouth
+)
+
+optdepends=(
+  'omarchy: Full Omarchy desktop'
+  'inxi: System information for omarchy-debug'
+  'fastfetch: System information for omarchy-upload-log'
+  'zram-generator: Reads the shipped /etc/systemd/zram-generator.conf.d drop-in to create the compressed swap device'
+  'snapper: Used with the shipped /etc/snapper/config-templates/omarchy template'
+)
+# Upstream's limine, limine-mkinitcpio-hook and limine-snapper-sync optdepends
+# are dropped: they describe drop-ins for a bootloader that does not apply on
+# OPAL/petitboot, and the mkinitcpio drop-in they referred to is removed below.
+
+conflicts=(omarchy-settings-dev)
+
+install="${pkgname}.install"
+
+source=("https://pkgs.omarchy.org/x86_64/${pkgname}-${pkgver}-1-any.pkg.tar.zst"
+        "${pkgname}.install")
+noextract=("${pkgname}-${pkgver}-1-any.pkg.tar.zst")
+sha256sums=('8f594aabc9d96cf136bd1192d65e7e2437901b7525f4a3cbf280125e6e6a6869'
+            'SKIP')
+
+_unpack() {
+  bsdtar -xf "${srcdir}/${pkgname}-${pkgver}-1-any.pkg.tar.zst" -C "$1" \
+    --no-same-owner \
+    --exclude .PKGINFO --exclude .BUILDINFO --exclude .MTREE --exclude .INSTALL
+}
+
+check() {
+  local found
+  rm -rf "${srcdir}/upstream"
+  mkdir -p "${srcdir}/upstream"
+  _unpack "${srcdir}/upstream"
+
+  # arch=any must be honest -- see the omarchy PKGBUILD for why this is checked
+  # rather than trusted.
+  found=$(find "${srcdir}/upstream" -type f -print0 \
+    | xargs -0 file -N --mime-type 2>/dev/null \
+    | awk -F': ' '$2 ~ /^application\/x-(pie-)?(executable|sharedlib)|x-object|x-archive/ { print $1 }' \
+    | sed "s|^${srcdir}/upstream/||" | sort)
+
+  if [ -n "$found" ]; then
+    printf 'omarchy-settings %s is not arch=any after all -- ELF payload found:\n%s\n' \
+      "$pkgver" "$found" >&2
+    return 1
+  fi
+
+  # The file package() removes must exist, or the removal silently no-ops.
+  [ -f "${srcdir}/upstream/etc/mkinitcpio.conf.d/omarchy_hooks.conf" ]
+
+  # The theming contract this package is actually here to satisfy: the
+  # templates omarchy-theme-set-templates renders into the per-user theme
+  # state.  neovim.lua.tpl is the one the Neovim theme plugins read through.
+  [ -f "${srcdir}/upstream/usr/share/omarchy/default/themed/neovim.lua.tpl" ]
+}
+
+package() {
+  _unpack "${pkgdir}"
+
+  # Remove the mkinitcpio drop-in.
+  #
+  # This is not a preference, it is a demonstrated breakage.  The drop-in
+  # replaces the HOOKS array wholesale with:
+  #
+  #   HOOKS=(base udev plymouth keyboard autodetect microcode modconf kms
+  #          keymap consolefont block encrypt filesystems fsck btrfs-overlayfs)
+  #
+  # On this machine:
+  #   - btrfs-overlayfs is provided by limine-mkinitcpio-hook, which does not
+  #     exist for ppc64le and is deliberately not a dependency.  There is no
+  #     /usr/lib/initcpio/install/btrfs-overlayfs, so mkinitcpio errors out.
+  #   - plymouth's initcpio hook is likewise absent unless plymouth is
+  #     installed, and the drop-in lists it unconditionally.
+  #   - microcode is x86 CPU microcode loading; meaningless on POWER9.
+  #   - it also converts a working systemd-based initramfs (the installed
+  #     HOOKS here begin `base systemd ... sd-vconsole`) into a busybox one,
+  #     which is a whole-boot-path change nobody asked for.
+  #
+  # The consequence is not cosmetic: the next kernel upgrade runs mkinitcpio -P,
+  # it fails, and the machine is left without a regenerated initramfs on a box
+  # that boots through petitboot.  Removing the drop-in leaves the working
+  # /etc/mkinitcpio.conf alone.
+  #
+  # Local workaround, not upstreamable: the drop-in is correct for x86 Omarchy.
+  rm -f "${pkgdir}/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
+  rmdir --ignore-fail-on-non-empty "${pkgdir}/etc/mkinitcpio.conf.d" 2>/dev/null || true
+
+  # Remove the limine boot-entry configuration.
+  #
+  # Inert without limine, so this is housekeeping rather than a fix: these two
+  # files configure limine-entry-tool, a package that is not and cannot be a
+  # dependency here.  Dropped so the shipped tree matches the dependency list
+  # rather than carrying dead configuration for a bootloader this platform
+  # does not use.
+  rm -rf "${pkgdir}/etc/limine-entry-tool.d"
+
+  # Note deliberately NOT removed:
+  #   etc/sddm.conf.d/*        -- sddm is installed but disabled here
+  #                               (display-manager.service -> cosmic-greeter),
+  #                               so these are inert until the user chooses
+  #                               sddm.  They are part of Omarchy proper.
+  #   etc/skel/**              -- seeds new accounts only; never touches an
+  #                               existing $HOME.
+  #   etc/sudoers.d/omarchy-*  -- four narrowly-scoped NOPASSWD grants shipped
+  #                               by upstream.  Kept as-is; they are inventoried
+  #                               in the report rather than silently altered.
+  #   usr/share/omarchy/etc-overrides/**
+  #                            -- kept as *files*.  What changed is that they
+  #                               are no longer applied automatically; see
+  #                               omarchy-settings.install.
+
+  "${ELF_PATHGUARD:-$startdir/../../tools/elf-pathguard.sh}" "$pkgdir"
+}
