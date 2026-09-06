@@ -696,6 +696,26 @@ def rehydrate_sysroot(st, order, args):
             n = re.sub(r"-[^-]+-[^-]+-[^-]+\.pkg\.tar\.\w+$", "", f)
             if n:
                 names.append(n)
+    # Everything already sitting in repo/, not just what this queue built.
+    # Those are deliberate rebuilds and they have to outrank the system copy
+    # even when nothing in the queue names them directly: glycin depends on
+    # libheif, libheif is linked against a libde265 exporting
+    # de265_get_security_limits, and the installed 1.0.18 does not have it.
+    # libde265 is therefore a transitive dependency no PKGBUILD mentions, so
+    # stage-deps never saw it and the link failed on a symbol our own
+    # repo/libde265-1.1.2 has exported all along.
+    repo_names = set()
+    try:
+        for f in os.listdir(REPO):
+            if not f.endswith((".pkg.tar.zst", ".pkg.tar.xz")) or "-debug-" in f:
+                continue
+            n = re.sub(r"-[^-]+-[^-]+-[^-]+\.pkg\.tar\.\w+$", "", f)
+            if n:
+                repo_names.add(n)
+    except OSError:
+        pass
+    names = sorted(set(names) | repo_names)
+
     if names:
         sysroot_add(names, args.sysroot)
         staged.update(names)
