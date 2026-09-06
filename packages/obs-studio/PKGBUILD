@@ -35,7 +35,7 @@ else
   pkgname=('obs-studio')
 fi
 pkgver=32.2.2
-pkgrel=1
+pkgrel=2
 pkgdesc="Free, open source software for live streaming and recording"
 arch=('x86_64' 'powerpc64le')
 url="https://obsproject.com"
