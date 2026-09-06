@@ -52,17 +52,53 @@ next architecture gets a message pointing at the table rather than NETSDK1083.
 
 Send to: <https://github.com/artempyanykh/marksman>.
 
+### 3. neovim -- `FindLpeg.cmake` bakes lpeg's build-time path into the binary
+
+`packages/neovim/0001-findlpeg-link-by-name-not-absolute-path.patch`
+
+`cmake/FindLpeg.cmake` resolves lpeg with `find_library` and hands the absolute
+result to the linker through an `UNKNOWN IMPORTED` target -- deliberately, to
+keep CMake from rewriting the link path (neovim#23395). But `lua51-lpeg` ships
+`/usr/lib/lua/5.1/lpeg.so` with **no `DT_SONAME`**, and GNU ld records a
+SONAME-less shared object in `DT_NEEDED` under the exact spelling it was given on
+the command line. The absolute path is copied into the executable verbatim.
+
+Arch's own x86_64 `neovim` shows the benign form of this:
+
+    NEEDED [/usr/lib/lua/5.1/lpeg.so]
+
+which works only because the path it happens to name is also the install path.
+Any build that resolves lpeg anywhere else ships a `DT_NEEDED` pointing there.
+This repo's `neovim 0.12.5-1` shipped
+
+    NEEDED [/home/jbettcher/omarchy-work/sysroot/usr/lib/lua/5.1/lpeg.so]
+
+and stopped starting the moment that scratch directory was renamed -- verified by
+renaming it, not inferred.
+
+The patch emits `-L<dir> -l:<file>` plus an rpath for the same directory, so ld
+records `NEEDED [lpeg.so]` and the loader resolves it through `RUNPATH`. Static
+archives keep the direct-path link, which records nothing.
+
+**Not ppc64le-specific.** Every distro build of neovim carries the absolute
+`DT_NEEDED`; it is invisible only while the build prefix and the install prefix
+are the same directory.
+
+Send to: <https://github.com/neovim/neovim>.
+
 ---
 
-Those are the *only* two, after 87 packages built and verified across Perl,
+Those are the *only* three, after 87 packages built and verified across Perl,
 Python, Lua, Rust, Go, C and C++. Every other diff in `packages/` is in a
 PKGBUILD, and 59 of the 87 are `arch=()` alone.
 
-This is the arch-gating pattern from the handbook, holding at scale: the
-substrate is first class, and what breaks is code and metadata that was never
-told the architecture was allowed. It is also the handbook's other prediction
-holding — that when something *does* break, it is a generic fallback branch that
-nobody has ever taken.
+The first two are the arch-gating pattern from the handbook, holding at scale:
+the substrate is first class, and what breaks is code and metadata that was never
+told the architecture was allowed -- a generic fallback branch nobody had ever
+taken. The third is a different animal and worth naming as such: not an
+architecture bug at all, but a latent defect every distro ships and none notices,
+because on an ordinary builder the wrong answer and the right answer are the same
+string. It took an unprivileged sysroot build to pull them apart.
 
 ## Reports that belong to Arch POWER, not upstream
 

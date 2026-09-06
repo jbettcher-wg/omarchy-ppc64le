@@ -27,11 +27,49 @@ cp -a "$src"/. "$bdir"/
 rm -rf "$bdir/src" "$bdir/pkg"
 
 export PKGDEST
+
+# Present the sysroot at the paths a package would actually be installed to.
+#
+# Environment variables (PKG_CONFIG_PATH, CPPFLAGS, LIBRARY_PATH...) only reach
+# builds that cooperate. Plenty do not: obs-studio hardcodes
+# /usr/include/mbedtls3, plymouth hardcodes /usr/share/pixmaps, valac and
+# graphviz bake /usr paths into their binaries. bubblewrap can stack a
+# read-only overlayfs of the sysroot over /usr *without root*, so staged
+# packages simply appear where they belong and none of those cases need
+# special-casing. The overlay is read-only and process-local; the real /usr is
+# untouched (RULES.md).
+BWRAP=()
+if command -v bwrap >/dev/null && [ -d "$SYSROOT/usr" ]; then
+  # The LAST --overlay-src is the top-most layer, so /usr goes first and the
+  # sysroot on top -- otherwise a staged package that also exists in the live
+  # /usr is shadowed by the system copy, which is the opposite of the point.
+  BWRAP=(bwrap --dev-bind / / --overlay-src /usr --overlay-src "$SYSROOT/usr" --ro-overlay /usr)
+fi
+
 # Non-interactive ssh sessions land in the POSIX locale, and bsdtar then
 # refuses to extract source tarballs containing non-ASCII filenames.
 export LANG=C.UTF-8 LC_ALL=C.UTF-8
 export PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/share/pkgconfig:${PKG_CONFIG_PATH:-}"
-export CMAKE_PREFIX_PATH="$SYSROOT/usr:${CMAKE_PREFIX_PATH:-}"
+# CMake searches CMAKE_PREFIX_PATH ahead of the system prefixes, so pointing it
+# at the sysroot makes find_library/find_path return absolute paths under
+# ~/omarchy-work. Most are harmless -- they become -I/-L, which are not recorded
+# in the output -- but any path CMake bakes into a target leaks $HOME into a
+# shipped binary. neovim 0.12.5-1 shipped
+#   DT_NEEDED [$SYSROOT/usr/lib/lua/5.1/lpeg.so]
+# exactly this way.
+#
+# Under the bwrap overlay the sysroot is *already* visible at /usr, so listing
+# /usr first resolves to the same files under a path that is still correct after
+# the package is installed. The sysroot entry stays for the no-bwrap case.
+if [ ${#BWRAP[@]} -gt 0 ]; then
+  export CMAKE_PREFIX_PATH="/usr:$SYSROOT/usr:${CMAKE_PREFIX_PATH:-}"
+else
+  export CMAKE_PREFIX_PATH="$SYSROOT/usr:${CMAKE_PREFIX_PATH:-}"
+fi
+# Fail-closed guard against build-tree paths in shipped ELF headers. PKGBUILDs
+# reference it as "${ELF_PATHGUARD:-...}"; it is enforced again after the build
+# for recipes that have not adopted the snippet.
+export ELF_PATHGUARD="$REPOROOT/tools/elf-pathguard.sh"
 export CPPFLAGS="-I$SYSROOT/usr/include ${CPPFLAGS:-}"
 export LDFLAGS="-L$SYSROOT/usr/lib -Wl,-rpath-link,$SYSROOT/usr/lib ${LDFLAGS:-}"
 # Some build systems (notably cmake projects that set their own linker flags)
@@ -70,28 +108,35 @@ if [ -d "$SYSROOT/usr/lib/graphviz" ]; then
   [ -e "$GVBINDIR"/config* ] 2>/dev/null || "$SYSROOT/usr/bin/dot" -c >/dev/null 2>&1
 fi
 
-# Present the sysroot at the paths a package would actually be installed to.
-#
-# Environment variables (PKG_CONFIG_PATH, CPPFLAGS, LIBRARY_PATH...) only reach
-# builds that cooperate. Plenty do not: obs-studio hardcodes
-# /usr/include/mbedtls3, plymouth hardcodes /usr/share/pixmaps, valac and
-# graphviz bake /usr paths into their binaries. bubblewrap can stack a
-# read-only overlayfs of the sysroot over /usr *without root*, so staged
-# packages simply appear where they belong and none of those cases need
-# special-casing. The overlay is read-only and process-local; the real /usr is
-# untouched (RULES.md).
-BWRAP=()
-if command -v bwrap >/dev/null && [ -d "$SYSROOT/usr" ]; then
-  # The LAST --overlay-src is the top-most layer, so /usr goes first and the
-  # sysroot on top -- otherwise a staged package that also exists in the live
-  # /usr is shadowed by the system copy, which is the opposite of the point.
-  BWRAP=(bwrap --dev-bind / / --overlay-src /usr --overlay-src "$SYSROOT/usr" --ro-overlay /usr)
-fi
-
 log="$LOGDIR/$pkg.log"
 echo "=== building $pkg -> $log"
 ( cd "$bdir" && "${BWRAP[@]}" makepkg -d --noconfirm --nocheck --needed "$@" ) >"$log" 2>&1
 rc=$?
+
+# Enforce the ELF path guard on every package built, whether or not its PKGBUILD
+# calls the snippet. makepkg leaves the staged trees in $bdir/pkg/<pkgname>, so
+# this is the same check package() would have run -- but it runs *after* makepkg
+# has already written the archive into PKGDEST, so a rejected package has to be
+# quarantined rather than merely reported. A recipe that adopts the package()
+# snippet fails earlier and never produces an archive at all.
+if [ $rc -eq 0 ] && [ -x "$ELF_PATHGUARD" ]; then
+  for _pd in "$bdir"/pkg/*/; do
+    [ -d "$_pd" ] || continue
+    if ! "$ELF_PATHGUARD" "$_pd" >>"$log" 2>&1; then
+      echo "FAIL $pkg -- elf-pathguard rejected $(basename "$_pd"):"
+      grep "elf-pathguard: FAIL" "$log" | tail -20
+      rc=90
+    fi
+  done
+  if [ $rc -eq 90 ]; then
+    mkdir -p "$WORK/rejected"
+    while read -r _f; do
+      [ -f "$_f" ] || continue
+      mv -f "$_f" "$WORK/rejected/" && echo "  quarantined $(basename "$_f") -> $WORK/rejected/"
+    done < <( cd "$bdir" && makepkg --packagelist 2>/dev/null )
+  fi
+fi
+
 if [ $rc -eq 0 ]; then
   echo "OK   $pkg"
   ls -1 "$PKGDEST"/*.pkg.tar.zst 2>/dev/null | grep -F "$pkg" | tail -3
