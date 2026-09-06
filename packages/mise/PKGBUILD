@@ -1,0 +1,91 @@
+# Maintainer: Jeremy Bettcher <thebettcher@gmail.com>
+#
+# mise, built from source instead of repackaging Omarchy's `mise-bin`.
+#
+# Omarchy's base list names `mise-bin`, and that package is by definition a
+# prebuilt-binary repackage: jdx publishes release binaries for x86_64,
+# aarch64, armv7 and musl variants, and nothing for ppc64le.  That is the
+# entire reason mise was ever on the blocked list -- not the language, not the
+# code, just the absence of a tarball.  mise is Rust, and 2026.9.1 compiles on
+# POWER9 with no source change whatsoever: no patch, no feature disabled for
+# portability, no dependency pinned or bumped.  11m25s on 176 threads.
+#
+# This package therefore provides mise-bin, so anything that asks for the name
+# Omarchy's list uses resolves to a natively built mise instead.
+#
+# The one deliberate difference from a stock `cargo build`: the `self_update`
+# feature is off.  It is in mise's default features and it does exactly what
+# you would fear here -- `mise self-update` fetches a GitHub release asset for
+# the running platform, and for powerpc64le there is none, so a distro-managed
+# install would offer the user an update path that cannot possibly work.
+# Upstream expects packagers to do this; src/cli/self_update.rs names it
+# outright ("a build without the `self_update` feature (Arch)") and prints
+# "self-update is disabled for this install, update mise the same way you
+# installed it" instead.  With the feature compiled out, `mise doctor` reports
+# self_update_available: no, which is the honest answer on this architecture.
+#
+# native-tls is kept (it is mise's own default), so the binary links the system
+# OpenSSL rather than vendoring a TLS stack; hence depends=(openssl).
+#
+# Version tracks Omarchy's mise-bin 2026.9.1-1.
+
+pkgname=mise
+pkgver=2026.9.1
+pkgrel=1
+pkgdesc='The front-end to your dev env'
+arch=('x86_64' 'powerpc64le')
+url='https://github.com/jdx/mise'
+license=('MIT')
+depends=(glibc gcc-libs openssl zlib zstd brotli)
+makedepends=(cargo git)
+provides=('mise' "mise-bin=${pkgver}")
+conflicts=('rtx' 'rtx-bin' 'mise-bin')
+replaces=('rtx')
+options=('!lto')
+optdepends=('usage: completion support')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/jdx/$pkgname/archive/v$pkgver.tar.gz")
+sha256sums=('a438ab1357196c996f6f2c15682ab4143ff4e474c05c6d731923b52d5fc25d73')
+
+# mise's default feature set minus self_update (see the header).  Spelled out
+# rather than expressed as a subtraction because cargo has no way to say
+# "defaults minus one", and because it should be obvious in a diff if upstream
+# adds a default that this list silently drops.
+_features='native-tls,vfox/vendored-lua'
+
+prepare() {
+  cd "$srcdir/$pkgname-$pkgver"
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+  cd "$srcdir/$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --no-default-features --features "$_features"
+}
+
+check() {
+  cd "$srcdir/$pkgname-$pkgver"
+  # `--version` alone would pass on a binary that cannot do anything; `doctor`
+  # exercises config loading, the shell probe and the build-info block, and is
+  # where a self-update feature that should not be here would show up.
+  ./target/release/mise --version
+  ./target/release/mise doctor | grep -q 'self_update_available: no' || {
+    printf '%s: self_update is compiled in -- see the header, it must not be\n' "$pkgname" >&2
+    return 1
+  }
+}
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+  install -Dm755 target/release/mise "$pkgdir/usr/bin/mise"
+  install -Dm644 man/man1/mise.1 "$pkgdir/usr/share/man/man1/mise.1"
+  install -Dm644 completions/mise.bash "$pkgdir/usr/share/bash-completion/completions/mise"
+  install -Dm644 completions/mise.fish "$pkgdir/usr/share/fish/vendor_completions.d/mise.fish"
+  install -Dm644 completions/_mise "$pkgdir/usr/share/zsh/site-functions/_mise"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+
+  # Fail the build if any shipped ELF records a build-tree path
+  # (tools/elf-pathguard.sh -- house policy, applied to every recipe here).
+  "${ELF_PATHGUARD:-$startdir/../../tools/elf-pathguard.sh}" "$pkgdir"
+}
