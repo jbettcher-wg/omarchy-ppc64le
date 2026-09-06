@@ -179,3 +179,93 @@ so `makepkg -d` (skip dep checks) covers most of the queue. For genuinely
 missing deps, the packages we build ourselves are extracted into a sysroot at
 `~/omarchy-work/sysroot` and picked up via `PKG_CONFIG_PATH`, `CPPFLAGS`,
 `LDFLAGS` and `CMAKE_PREFIX_PATH`. Verified working.
+
+---
+
+# The complete bare-install closure
+
+*Computed 2026-09-05 by `tools/closure.py`. Supersedes the 674-package floor.*
+
+The earlier figure of **674** packages — `base` + `base-devel` + the 77
+Omarchy targets that resolve against Arch POWER today — was known to be a floor,
+because it closed only over what Arch POWER already ships. The 70 Omarchy
+packages it could not resolve are exactly the ones we build ourselves, and
+*their* dependencies were not in that closure at all.
+
+Closing over both universes at once gives the real number.
+
+| | count |
+|---|---:|
+| **Total bare-install closure** | **858** |
+| — from the Arch POWER sync DB | 761 |
+| — built here already (`repo/`) | 96 |
+| — recipe present, not yet built | 1 (`yay`) |
+| Compressed | **2.14 GiB** |
+| Installed | **6.64 GiB** |
+
+858 against a 674 floor, inside the predicted 800–900 band. The 184-package
+difference is precisely the second-order cost of the packages Arch POWER lacks:
+their own dependencies.
+
+## Method
+
+`pacman -Sp` cannot do this on its own. It stops at the first name that is not
+in a sync repo, and that set is the entire point of the exercise. So
+`closure.py` walks the union of three universes:
+
+1. the Arch POWER sync databases, parsed straight out of
+   `/var/lib/pacman/sync/*.db` (never modified);
+2. every package we have already built, read from the authoritative `.PKGINFO`
+   inside `repo/*.pkg.tar.zst` — not guessed from a PKGBUILD, which is free to
+   set `provides` inside `package_()` and frequently does;
+3. the recipe trees — `packages/` and the archpower checkout — via `.SRCINFO`,
+   falling back to sourcing the `PKGBUILD` with `CARCH=powerpc64le`.
+
+Soname `provides` are indexed alongside real names, which is what resolves
+entries like `libsdbus-c++.so`.
+
+Two details that were wrong on the first pass and are worth recording:
+
+- **`base` and `base-devel` are metapackages here, not groups.** `pacman -Sg
+  base` returns nothing at all, and `pacman -Sg base-devel` returns three
+  unrelated `automake` versions. Expanding them as groups silently dropped the
+  entire base system from the closure.
+- **Naive cycle detection over-reports by an order of magnitude.** A first cut
+  flagged 139 packages as circular. They were not: once one real cycle blocks,
+  every package downstream of it also never becomes ready. Tarjan's algorithm
+  over the residual graph finds the five genuine strongly-connected components,
+  all of them long-standing Arch cycles:
+
+  ```
+  gdk-pixbuf2 ↔ glycin ↔ librsvg
+  libglvnd ↔ mesa
+  qt6-multimedia ↔ qt6-multimedia-ffmpeg
+  ruby ↔ rubygems
+  tesseract ↔ tesseract-data-afr
+  ```
+
+  Each is cut at its alphabetically-first member so the manifest stays a total
+  order.
+
+## Output
+
+`manifest/bare-install.txt` — 858 lines, `name  version  repo  origin`,
+**dependency-ordered**: leaves (`adwaita-cursors`, `alsa-ucm-conf`) first,
+dependents (`hyprland`, `nautilus-python`, `xournalpp`) last.
+`manifest/bare-install-names.txt` is the same list, names only.
+
+It serves double duty as the ISO's offline mirror manifest — that is the point
+of emitting it ordered rather than sorted.
+
+## The 14 that still do not resolve
+
+No recipe exists anywhere for these, so they are outside the closure rather than
+missing from it:
+
+| | |
+|---|---|
+| Omarchy's own, unpublished | `omacalc`, `omacut`, `omawrite`, `ttfx`, `hyprland-preview-share-picker` |
+| AUR, not yet fetched | `aether`, `cliamp`, `herdr`, `mise-bin`, `tensaku`, `asdcontrol` |
+| Structurally blocked (see above) | `pinta` (.NET 10), `obsidian` (Electron), `localsend` (Flutter) |
+
+The first eleven are work; the last three are decisions.

@@ -1,0 +1,9 @@
+{
+  "missing-dep": [
+    "grim",
+    "libdatachannel"
+  ],
+  "broken-system-dep": [
+    "hyprgraphics"
+  ]
+}

@@ -16,3 +16,6 @@ repo/*.files*
 
 # Upstream Omarchy is tracked as its own clone, not vendored.
 upstream/
+
+# bq run state -- ephemeral, references /tmp paths and timings.
+.bq-state.json

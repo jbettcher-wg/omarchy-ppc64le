@@ -3,8 +3,8 @@
 # builds find their headers, pkg-config files, cmake configs and libraries
 # without needing root.
 set -uo pipefail
-WORK=/home/jbettcher/omarchy-work
-SYSROOT=$WORK/sysroot
+WORK=${BQ_WORK:-/home/jbettcher/omarchy-work}
+SYSROOT=${SYSROOT:-$WORK/sysroot}
 REPO=/home/jbettcher/Development/omarchy-ppc64le/repo
 mkdir -p "$SYSROOT"
 
