@@ -15,3 +15,16 @@ for d in "$SYSROOT/usr/lib/pkgconfig" "$SYSROOT/usr/share/pkgconfig" "$SYSROOT/u
     sed -i -E "s#^(prefix|exec_prefix|libdir|includedir|datarootdir|datadir|sharedstatedir|sysconfdir)=/usr(/|\$)#\1=$SYSROOT/usr\2#" "$pc"
   done
 done
+
+# Graphviz keeps a registry of its output plugins that is normally written by
+# `dot -c` from the package's .INSTALL script.  We deliberately skip .INSTALL
+# when staging, so a staged graphviz has no registry and reports "Format:
+# svg_inline not recognized. No formats found." -- which is not a graphviz
+# failure but a documentation failure in whatever is being built: at-spi2-core
+# compiled all 310 targets and then died generating its gi-docgen docs.
+# Rebuild the registry in place whenever graphviz is present.
+if [ -x "$SYSROOT/usr/bin/dot" ]; then
+  LD_LIBRARY_PATH="$SYSROOT/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  GVBINDIR="$SYSROOT/usr/lib/graphviz" \
+    "$SYSROOT/usr/bin/dot" -c >/dev/null 2>&1 || true
+fi
