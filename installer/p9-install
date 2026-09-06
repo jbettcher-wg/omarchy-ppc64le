@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+#
+# p9-install -- install Omarchy on POWER9 (ppc64le), for machines that boot
+#                petitboot from firmware.
+#
+# This is a fork of Omarchy's install flow with four substitutions. Everything
+# else -- partitioning, mkfs, pacstrap, fstab, the user step, the config layer,
+# the package manifest -- is Omarchy's, carried over. The four are:
+#
+#   1. Bootloader   limine -> a grub.cfg petitboot parses. Nothing installed
+#                   to disk.                        bin/p9-petitboot-entry
+#   2. Kernel       stock `linux` -> --kernel/$P9_KERNEL_PKG, default
+#                   linux-power9.                   see --help
+#   3. mkinitcpio   omarchy_hooks.conf -> share/omarchy-p9-hooks.conf
+#   4. Repo         pkgs.omarchy.org -> the local [power9] repo over Arch POWER
+#
+# Read installer/README.md before changing any of them.
+#
+# NEVER run this on the build host. It partitions a disk.
+
+set -euo pipefail
+
+P9_SELF=$(readlink -f "${BASH_SOURCE[0]}")
+P9_ROOT=$(dirname "$P9_SELF")
+P9_SHARE="${P9_SHARE:-$P9_ROOT/share}"
+P9_LIBEXEC="${P9_LIBEXEC:-$P9_ROOT/bin}"
+P9_FIRSTBOOT="${P9_FIRSTBOOT:-$P9_ROOT/firstboot}"
+
+# ---------------------------------------------------------------- defaults ---
+P9_ARCH=powerpc64le
+P9_MNT=/mnt
+P9_DRY_RUN=0
+P9_ASSUME_YES=0
+P9_DISK=""
+P9_SERIAL=""
+P9_PLATFORM=""
+P9_BOOT_SIZE=2G
+
+# Substitution 2. linux-power9 does not exist yet: the user's 7.2.2 is
+# hand-installed from ~/Development/linux-7.2.2 and the package is planned but
+# unbuilt. So this is a variable, not a constant, and what it expects is:
+#
+#   * an Arch-shaped kernel package, i.e. one that installs
+#     /usr/lib/modules/<release>/vmlinuz and, next to it, a `pkgbase` file
+#     containing the package name. mkinitcpio's own pacman hook keys everything
+#     on that pkgbase file -- a module directory without one is skipped, which
+#     is exactly why the hand-installed 7.2.2 never got an automatic initramfs.
+#   * it must therefore produce /boot/vmlinuz-<pkgbase> and, after mkinitcpio,
+#     /boot/initramfs-<pkgbase>.img. p9-petitboot-entry names those files.
+#   * a <pkgbase>-headers package is desirable but not required.
+#
+# For bring-up against Arch POWER's own kernels, pass --kernel linux-4k (4K
+# pages, matching the AC922 config) or --kernel linux (64K).
+P9_KERNEL_PKG="${P9_KERNEL_PKG:-linux-power9}"
+
+# Substitution 4. The design's layout is a repo named `power9` served from
+# <root>/power9/os/$arch, listed ahead of Arch POWER's [base] so repo order
+# does the overriding (nothing in [base] gets rebuilt).
+P9_REPO_NAME="${P9_REPO_NAME:-power9}"
+P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/power9}"
+P9_REPO_SIGLEVEL=""   # deliberately empty -- see --repo-siglevel below
+P9_BASE_SERVER="${P9_BASE_SERVER:-https://repo.archlinuxpower.org/base/\$arch}"
+P9_BASE_ANY_SERVER="${P9_BASE_ANY_SERVER:-https://repo.archlinuxpower.org/base/any}"
+P9_BASE_SIGLEVEL="${P9_BASE_SIGLEVEL:-Required DatabaseOptional}"
+
+P9_MANIFEST="${P9_MANIFEST:-$P9_SHARE/p9-base.packages}"
+P9_PACSTRAP_CONF=""
+P9_LOCALE="${P9_LOCALE:-en_US.UTF-8}"
+P9_KEYMAP="${P9_KEYMAP:-us}"
+P9_TIMEZONE="${P9_TIMEZONE:-UTC}"
+P9_HOSTNAME="${P9_HOSTNAME:-omarchy}"
+P9_USER=""
+P9_PASSWORD=""
+P9_CMDLINE="${P9_CMDLINE:-loglevel=3}"
+P9_ENTRY_TITLE="${P9_ENTRY_TITLE:-Omarchy POWER9}"
+P9_REBOOT=0
+P9_STAGE_FIRSTBOOT=1
+
+# shellcheck source=lib/common.sh
+. "$P9_ROOT/lib/common.sh"
+# shellcheck source=lib/disk.sh
+. "$P9_ROOT/lib/disk.sh"
+# shellcheck source=lib/target.sh
+. "$P9_ROOT/lib/target.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage: p9-install --disk /dev/DEVICE [options]
+       p9-install --list-disks
+       p9-install --disk /dev/DEVICE --dry-run
+
+Target selection (the installer enumerates, you choose -- it never guesses):
+  --list-disks             show the candidate devices and exit
+  --disk DEVICE            whole disk to install to. DESTRUCTIVE.
+  --serial SERIAL          refuse unless DEVICE reports this serial number
+  --yes                    do not ask for confirmation (implies you meant it)
+
+Boot / kernel:
+  --platform powernv|pseries   default: detected from /proc/cpuinfo
+  --kernel PKG                 kernel package to install (default: linux-power9)
+  --cmdline "..."              extra kernel arguments for the boot entry
+  --boot-size SIZE             /boot partition size (default 2G)
+
+Packages:
+  --manifest FILE              package list (default share/p9-base.packages)
+  --repo-server URL|none       [power9] Server=. 'none' installs from Arch POWER only
+  --repo-name NAME             repository name (default power9)
+  --repo-siglevel LEVEL        REQUIRED, see below
+  --base-server URL            Arch POWER [base] Server=
+  --base-any-server URL        Arch POWER [base-any] Server=
+  --pacstrap-conf FILE         use this pacman.conf for the install itself
+                               (an offline mirror on the ISO, typically)
+
+System:
+  --hostname NAME  --timezone ZONE  --locale LOCALE  --keymap KEYMAP
+  --user NAME      --password PASS
+                   Create the account now. Omitted (the default) means Omarchy's
+                   own deferred provisioning: the target asks on its first boot.
+  --no-firstboot   do not stage the first-boot configuration layer
+  --reboot         reboot when finished
+
+Checking:
+  --dry-run        print every command and write nothing. The disk guard still
+                   runs (it only reads), so --dry-run needs a real device.
+
+--repo-siglevel has no default on purpose. The [power9] repository is not
+signed today -- there is no signing key for it yet -- so there is no honest
+default:
+
+  --repo-siglevel required          the design's target state. Fails until the
+                                    repo is signed and its keyring is trusted.
+  --repo-siglevel optional-trustall Optional TrustAll. Installs unsigned
+                                    packages without verification. Acceptable
+                                    for a local, offline, single-operator repo
+                                    on a machine you built the packages on.
+                                    Not acceptable for anything you hand out.
+
+Pick one explicitly. Nothing here will quietly turn signature checking off.
+USAGE
+}
+
+# ------------------------------------------------------------------- args ----
+while (($#)); do
+  case "$1" in
+    --list-disks)
+      printf 'DEVICE\tSIZE\tMODEL\tSERIAL\n'
+      list_disks
+      exit 0
+      ;;
+    --disk) P9_DISK="$2"; shift 2 ;;
+    --serial) P9_SERIAL="$2"; shift 2 ;;
+    --platform) P9_PLATFORM="$2"; shift 2 ;;
+    --kernel) P9_KERNEL_PKG="$2"; shift 2 ;;
+    --cmdline) P9_CMDLINE="$2"; shift 2 ;;
+    --boot-size) P9_BOOT_SIZE="$2"; shift 2 ;;
+    --manifest) P9_MANIFEST="$2"; shift 2 ;;
+    --repo-server) P9_REPO_SERVER="$2"; shift 2 ;;
+    --repo-name) P9_REPO_NAME="$2"; shift 2 ;;
+    --repo-siglevel)
+      case "$2" in
+        required) P9_REPO_SIGLEVEL="Required DatabaseOptional" ;;
+        optional-trustall) P9_REPO_SIGLEVEL="Optional TrustAll" ;;
+        *) P9_REPO_SIGLEVEL="$2" ;;
+      esac
+      shift 2
+      ;;
+    --base-server) P9_BASE_SERVER="$2"; shift 2 ;;
+    --base-any-server) P9_BASE_ANY_SERVER="$2"; shift 2 ;;
+    --base-siglevel) P9_BASE_SIGLEVEL="$2"; shift 2 ;;
+    --pacstrap-conf) P9_PACSTRAP_CONF="$2"; shift 2 ;;
+    --hostname) P9_HOSTNAME="$2"; shift 2 ;;
+    --timezone) P9_TIMEZONE="$2"; shift 2 ;;
+    --locale) P9_LOCALE="$2"; shift 2 ;;
+    --keymap) P9_KEYMAP="$2"; shift 2 ;;
+    --user) P9_USER="$2"; shift 2 ;;
+    --password) P9_PASSWORD="$2"; shift 2 ;;
+    --no-firstboot) P9_STAGE_FIRSTBOOT=0; shift ;;
+    --reboot) P9_REBOOT=1; shift ;;
+    --dry-run) P9_DRY_RUN=1; shift ;;
+    --yes | -y) P9_ASSUME_YES=1; shift ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage >&2; die "unknown option: $1" ;;
+  esac
+done
+
+P9_WORKDIR=$(mktemp -d)
+trap 'rm -rf "$P9_WORKDIR"' EXIT
+P9_LOG_FILE="${P9_LOG_FILE:-/var/log/p9-install.log}"
+mkdir -p "$(dirname "$P9_LOG_FILE")" 2>/dev/null || true
+# Redirections are applied left to right, so the 2>/dev/null has to come first
+# or bash reports the failed append before stderr is silenced.
+if ! (: 2>/dev/null >>"$P9_LOG_FILE"); then
+  P9_LOG_FILE="$P9_WORKDIR/p9-install.log"
+  : >"$P9_LOG_FILE"
+fi
+
+# ------------------------------------------------------------- preflight -----
+step "Preflight"
+((P9_DRY_RUN)) || require_root
+require_tools lsblk blkid findmnt awk sed pacman
+((P9_DRY_RUN)) || require_tools sgdisk wipefs partprobe mkfs.ext4 mkfs.btrfs \
+  pacstrap genfstab arch-chroot btrfs mountpoint
+
+[[ -n $P9_DISK ]] || { usage >&2; die "--disk is required (try --list-disks)"; }
+[[ -n $P9_REPO_SIGLEVEL ]] ||
+  die "--repo-siglevel is required. There is no default: the [$P9_REPO_NAME]
+      repository is not signed yet, so 'Required' fails and 'Optional TrustAll'
+      disables verification. Choose one and say so on the command line.
+      See --help."
+
+[[ -n $P9_PLATFORM ]] || P9_PLATFORM=$(detect_platform)
+case "$P9_PLATFORM" in
+  powernv)
+    log "platform: PowerNV -- petitboot is in firmware; no bootloader is installed"
+    if ((!P9_DRY_RUN)) && [[ ! -d /sys/firmware/opal ]]; then
+      warn "platform says PowerNV but /sys/firmware/opal is missing (emulated OPAL?)"
+    fi
+    ;;
+  pseries)
+    log "platform: pSeries -- GRUB will be installed to a PReP partition"
+    ;;
+  *) die "unknown platform '$P9_PLATFORM'" ;;
+esac
+
+log "kernel package: $P9_KERNEL_PKG"
+log "repository: [$P9_REPO_NAME] ${P9_REPO_SERVER}  SigLevel = $P9_REPO_SIGLEVEL"
+if [[ $P9_REPO_SIGLEVEL == *TrustAll* ]]; then
+  warn "SigLevel 'Optional TrustAll' for [$P9_REPO_NAME]: package signatures are NOT verified."
+fi
+
+# ------------------------------------------------- pacman.conf + manifest ----
+step "Resolving the package set"
+render_pacman_conf "$P9_WORKDIR/pacman.conf" 1
+# --pacstrap-conf lets the ISO install from its own offline mirror; the file
+# rendered above is what the *target* keeps either way.
+P9_PACSTRAP_CONF="${P9_PACSTRAP_CONF:-$P9_WORKDIR/pacman.conf}"
+mapfile -t P9_PACKAGES < <(read_manifest "$P9_MANIFEST")
+log "manifest: ${#P9_PACKAGES[@]} names from $P9_MANIFEST, plus kernel $P9_KERNEL_PKG"
+P9_PACKAGES+=("$P9_KERNEL_PKG")
+resolve_packages "$P9_PACSTRAP_CONF" "${P9_PACKAGES[@]}"
+
+# -------------------------------------------------------------- the disk -----
+step "Target: $P9_DISK"
+# The guard reads and never writes, so it runs under --dry-run too -- checking
+# "would this device be refused?" is most of what a dry run is for. The cost is
+# that --dry-run needs a device that actually exists.
+assert_disk_is_safe "$P9_DISK" "$P9_SERIAL"
+list_disks | grep -F "$P9_DISK" || true
+if ((!P9_DRY_RUN)); then
+  confirm "ERASE $P9_DISK completely and install Omarchy on it?" ||
+    die "aborted by operator; nothing was written"
+fi
+
+partition_disk "$P9_DISK" "$P9_PLATFORM" "$P9_BOOT_SIZE"
+make_filesystems
+read_back_uuids
+mount_target "$P9_MNT"
+
+# --------------------------------------------------------------- pacstrap ----
+step "pacstrap"
+run_loud pacstrap -C "$P9_PACSTRAP_CONF" -K "$P9_MNT" "${P9_PACKAGES[@]}" ||
+  die "pacstrap failed -- see $P9_LOG_FILE"
+
+if ((!P9_DRY_RUN)); then
+  installed=$(pacman -r "$P9_MNT" -Q 2>/dev/null | wc -l)
+  log "target holds $installed packages"
+  ((installed > 0)) || die "pacstrap reported success but the target has no packages"
+fi
+
+# keep the configuration the install actually used
+render_pacman_conf "$P9_MNT/etc/pacman.conf"
+
+write_fstab "$P9_MNT"
+configure_system "$P9_MNT"
+configure_initramfs "$P9_MNT"
+configure_boot "$P9_MNT"
+configure_users "$P9_MNT"
+if ((P9_STAGE_FIRSTBOOT)); then stage_firstboot "$P9_MNT"; fi
+
+# ------------------------------------------------------------------ done -----
+step "Done"
+if ((!P9_DRY_RUN)); then
+  cat <<EOF | tee -a "$P9_LOG_FILE"
+
+Installed to $P9_DISK.
+  /boot   $P9_PART_BOOT  ext4   UUID=$P9_UUID_BOOT
+  /       $P9_PART_ROOT  btrfs  UUID=$P9_UUID_ROOT  subvol=@
+  kernel  $P9_KERNEL_PKG
+
+Nothing was written to a bootloader: on PowerNV, petitboot is in firmware and
+reads /boot/grub/grub.cfg off the ext4 partition above. If the machine does not
+offer the entry, check at the petitboot shell that it mounted that partition.
+
+First boot runs, in order:
+  p9-firstboot.service            the root-side configuration layer
+  omarchy-provision-owner.service Omarchy's own account wizard on tty1
+EOF
+  umount_target "$P9_MNT"
+  if ((P9_REBOOT)); then
+    log "rebooting"
+    systemctl reboot
+  fi
+fi
+exit 0

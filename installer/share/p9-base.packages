@@ -1,0 +1,190 @@
+# p9-base.packages -- what p9-install pacstraps.
+#
+# Derived from upstream Omarchy's install/omarchy-base.packages and the
+# applicable rows of install/omarchy-other.packages. The upstream files stay
+# the source of truth; this is the ppc64le projection of them. Lines starting
+# with '#' are comments; the clip list with reasons is in p9-clipped.packages.
+#
+# Nothing here is a guess about whether a package exists: p9-install resolves
+# the whole list against the configured repositories with `pacman -Sp` before
+# it touches the disk, and refuses to partition if a name does not resolve.
+
+# --- system base -------------------------------------------------------------
+autoconf-archive
+base
+base-devel
+linux-firmware
+btrfs-progs
+e2fsprogs
+dosfstools
+exfatprogs
+mkinitcpio
+# libxkbcommon is listed explicitly, not left to dependency resolution:
+# Arch POWER's kbd 2.10.0-1 links /usr/bin/loadkeys against libxkbcommon.so.0
+# but its depends= still says only glibc/gzip/pam. mkinitcpio's sd-vconsole
+# hook pulls loadkeys in, so on a target that has nothing else dragging
+# libxkbcommon in, `mkinitcpio -P` fails with
+#   ERROR: binary dependency 'libxkbcommon.so.0' not found for 'loadkeys'
+# and the machine gets no initramfs. Measured in the QEMU rig. This line can go
+# once kbd's depends= is fixed upstream.
+libxkbcommon
+sudo
+networkmanager
+openssh
+git
+less
+man-db
+inetutils
+whois
+socat
+jq
+unzip
+zram-generator
+
+# The kernel is NOT listed here. p9-install adds it from --kernel/P9_KERNEL_PKG
+# (default linux-power9) so the one package that differs per build stays a
+# single variable rather than a line buried in a manifest.
+
+# --- Omarchy proper ----------------------------------------------------------
+omarchy
+omarchy-settings
+omarchy-nvim
+hyprland
+hyprland-guiutils
+hyprpicker
+hyprsunset
+quickshell
+uwsm
+sddm
+xdg-desktop-portal-gtk
+xdg-desktop-portal-hyprland
+xdg-terminal-exec
+wireplumber
+pipewire
+pipewire-alsa
+pipewire-jack
+pipewire-pulse
+gst-plugin-pipewire
+gtk4-layer-shell
+qt6-wayland
+egl-wayland
+gnome-keyring
+gum
+plymouth
+alsa-utils
+avahi
+nss-mdns
+bash-completion
+bat
+bluez
+bluez-tools
+bluez-utils
+bolt
+brightnessctl
+btop
+chromium
+clang
+cups
+cups-filters
+cups-pk-helper
+ddcutil
+docker
+docker-buildx
+docker-compose
+dua-cli
+evince
+expac
+eza
+fakeroot
+fastfetch
+fcitx5
+fcitx5-gtk
+fcitx5-qt
+fd
+ffmpegthumbnailer
+fontconfig
+foot
+fzf
+gnome-disk-utility
+gnome-themes-extra
+gpu-screen-recorder
+grim
+gvfs-mtp
+gvfs-nfs
+gvfs-smb
+imagemagick
+imv
+inotify-tools
+inxi
+kdenlive
+kernel-modules-hook
+lazydocker
+lazygit
+libpulse
+libsecret
+libvips
+libyaml
+libreoffice-fresh
+llvm
+lua51
+luarocks
+mariadb-libs
+mise
+moonlight-qt
+mpv
+mpv-mpris
+nautilus
+nautilus-python
+neovim
+noto-fonts
+noto-fonts-cjk
+noto-fonts-emoji
+obs-studio
+pacman-contrib
+pamixer
+plocate
+postgresql-libs
+power-profiles-daemon
+python-gobject
+python-poetry-core
+qrencode
+qt6-imageformats
+ripgrep
+ruby
+slurp
+starship
+sushi
+system-config-printer
+tesseract
+tesseract-data-eng
+tldr
+tmux
+tree-sitter-cli
+ttf-ia-writer
+ttf-jetbrains-mono-nerd-basic
+tzupdate
+udiskie
+ufw
+ufw-docker
+usage
+webp-pixbuf-loader
+whois
+wireless-regdb
+wl-clipboard
+woff2-font-awesome
+wtype
+xournalpp
+yaru-icon-theme
+yay
+yt-dlp
+zbar
+zoxide
+
+# --- POWER9 hardware layer ---------------------------------------------------
+# Omarchy's own hardware layer is Intel/NVIDIA/Apple/Dell/Framework and is
+# clipped wholesale. What an AC922 or a Raptor board actually needs:
+vulkan-radeon
+lsp-plugins-lv2
+powerpc-utils
+opal-utils
+ipmitool

@@ -19,3 +19,10 @@ upstream/
 
 # bq run state -- ephemeral, references /tmp paths and timings.
 .bq-state.json
+
+# Installer QEMU rig: disk images, extracted ISO/firmware pieces and serial
+# logs. Multi-GB and reproducible from run-guest.sh + the ISO, like repo/.
+installer/test/images/
+installer/test/logs/
+installer/test/run/
+installer/test/work/

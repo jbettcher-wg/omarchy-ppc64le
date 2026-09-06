@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+#
+# p9-petitboot-entry -- write the boot entries petitboot reads.
+#
+# THE BOOTLOADER SUBSTITUTION. Upstream Omarchy installs limine, generates a
+# limine.conf and drives it with limine-entry-tool / limine-snapper-sync.
+# POWER9 boots OpenBMC -> hostboot/skiboot -> skiroot Linux + petitboot, all of
+# it in flash. Nothing is installed to disk, and there is no bootloader to
+# configure. What petitboot wants is a *file*: pb-discover mounts every block
+# device it can and looks for /boot/grub/grub.cfg (among other paths) relative
+# to each partition root, parses it with its own grub2 grammar, and kexecs the
+# kernel it names.
+#
+# So this script writes /boot/grub/grub.cfg, and that is the entire boot
+# install step.
+#
+# Grammar. Petitboot implements a *subset* of GRUB: menuentry, set, search,
+# linux/linux16, initrd/initrd16, devicetree, test, true, false, load_env,
+# save_env, blscfg, source; echo/export/insmod/loadfont/terminfo are accepted
+# and ignored. `search --file` is NOT implemented -- do not use it. Everything
+# emitted below is in the intersection of petitboot's grammar and real GRUB's,
+# so the same file also boots under GRUB on pSeries/QEMU.
+#
+# Paths. pb-discover found the file at <partition>/boot/grub/grub.cfg, and the
+# names in it are resolved relative to *that partition's* root. /boot is its
+# own partition here, so the kernel is /vmlinuz-..., never /boot/vmlinuz-...
+#
+# Ownership. Only the region between the two markers is rewritten. Anything the
+# operator hand-wrote outside them survives -- this machine's /boot/grub/grub.cfg
+# is hand-maintained today and a generator that clobbers it would be wrong.
+# grub-mkconfig is deliberately not used: its powerpc-ieee1275 output is full of
+# insmod / load_video / gfxpayload / if-blocks that are outside the intersection.
+
+set -euo pipefail
+
+BOOT_DIR="${P9_BOOT_DIR:-/boot}"
+GRUB_CFG="$BOOT_DIR/grub/grub.cfg"
+BEGIN_MARK='### BEGIN petitboot-entry ###'
+END_MARK='### END petitboot-entry ###'
+DEFAULTS="${P9_ENTRY_DEFAULTS:-/etc/default/petitboot-entry}"
+
+usage() {
+  cat <<'USAGE'
+Usage: p9-petitboot-entry [--check]
+
+Regenerates the marker block in /boot/grub/grub.cfg from the kernels present
+under /usr/lib/modules/*/pkgbase. Intended to be run by a pacman hook after
+mkinitcpio, and once by the installer inside the target chroot.
+
+  --check   report what would be written and exit without touching anything
+
+Environment overrides (the installer sets these; standalone runs detect them):
+  P9_BOOT_DIR     default /boot
+  P9_ROOT_UUID    UUID of the filesystem holding /
+  P9_BOOT_UUID    UUID of the filesystem holding /boot
+  P9_ROOTFLAGS    e.g. subvol=@   (empty for a whole-device root)
+  P9_CMDLINE      extra kernel arguments
+  P9_ENTRY_TITLE  menu title prefix, default "Omarchy POWER9"
+USAGE
+}
+
+check_only=0
+case "${1:-}" in
+  --check) check_only=1 ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  "") ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
+
+# The classic and unrecoverable mistake: writing the kernel and this file into
+# the root filesystem's /boot *directory* while the real /boot partition sits
+# unmounted. Petitboot then finds nothing and the machine does not boot.
+if ((!check_only)) && ! mountpoint -q "$BOOT_DIR"; then
+  echo "p9-petitboot-entry: $BOOT_DIR is not a mount point." >&2
+  echo "  /boot must be its own ext4 partition for petitboot to read it." >&2
+  exit 1
+fi
+
+root_uuid="${P9_ROOT_UUID:-$(findmnt -no UUID / 2>/dev/null || true)}"
+boot_uuid="${P9_BOOT_UUID:-$(findmnt -no UUID "$BOOT_DIR" 2>/dev/null || true)}"
+
+if [[ -z ${P9_ROOTFLAGS+x} ]]; then
+  # Carry the btrfs subvolume through; nothing else from the live mount
+  # options belongs on the kernel command line.
+  subvol=$(findmnt -no OPTIONS / 2>/dev/null |
+    tr ',' '\n' | awk -F= '$1=="subvol" {print $2; exit}' || true)
+  P9_ROOTFLAGS=""
+  [[ -n ${subvol:-} && $subvol != "/" ]] && P9_ROOTFLAGS="subvol=$subvol"
+fi
+
+[[ -n $root_uuid ]] || {
+  echo "p9-petitboot-entry: cannot determine the root filesystem UUID" >&2
+  exit 1
+}
+[[ -n $boot_uuid ]] || {
+  echo "p9-petitboot-entry: cannot determine the $BOOT_DIR filesystem UUID" >&2
+  exit 1
+}
+
+cmdline="${P9_CMDLINE:-}"
+title="${P9_ENTRY_TITLE:-Omarchy POWER9}"
+# shellcheck source=/dev/null
+[[ -r $DEFAULTS ]] && . "$DEFAULTS"
+cmdline="${P9_CMDLINE:-$cmdline}"
+
+emit_entry() {
+  local label="$1" kernel="$2" initrd="$3" extra="${4:-}"
+  printf "menuentry '%s' {\n" "$label"
+  printf '    search --set=root --fs-uuid %s\n' "$boot_uuid"
+  printf '    linux /%s root=UUID=%s%s rw%s%s\n' \
+    "$kernel" "$root_uuid" \
+    "${P9_ROOTFLAGS:+ rootflags=$P9_ROOTFLAGS}" \
+    "${cmdline:+ $cmdline}" "${extra:+ $extra}"
+  [[ -n $initrd ]] && printf '    initrd /%s\n' "$initrd"
+  printf '}\n'
+}
+
+block=""
+found=0
+for pkgbase_file in /usr/lib/modules/*/pkgbase; do
+  [[ -r $pkgbase_file ]] || continue
+  pkgbase=$(<"$pkgbase_file")
+  [[ -n $pkgbase ]] || continue
+  kernel="vmlinuz-$pkgbase"
+  [[ -f $BOOT_DIR/$kernel ]] || continue
+  found=1
+
+  initrd=""
+  [[ -f $BOOT_DIR/initramfs-$pkgbase.img ]] && initrd="initramfs-$pkgbase.img"
+  block+=$(emit_entry "$title ($pkgbase)" "$kernel" "$initrd")$'\n'
+
+  if [[ -f $BOOT_DIR/initramfs-$pkgbase-fallback.img ]]; then
+    block+=$(emit_entry "$title ($pkgbase, fallback initramfs)" \
+      "$kernel" "initramfs-$pkgbase-fallback.img")$'\n'
+  fi
+done
+
+if ((!found)); then
+  echo "p9-petitboot-entry: no packaged kernel found." >&2
+  echo "  Expected /usr/lib/modules/<release>/pkgbase with a matching" >&2
+  echo "  $BOOT_DIR/vmlinuz-<pkgbase>. A hand-installed kernel has no" >&2
+  echo "  pkgbase file, which is also why mkinitcpio's hook skips it." >&2
+  exit 1
+fi
+
+if ((check_only)); then
+  printf '%s\n%s%s\n' "$BEGIN_MARK" "$block" "$END_MARK"
+  exit 0
+fi
+
+mkdir -p "$BOOT_DIR/grub"
+tmp=$(mktemp "$BOOT_DIR/grub/.grub.cfg.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+
+if [[ -f $GRUB_CFG ]] && grep -qF "$BEGIN_MARK" "$GRUB_CFG"; then
+  # Replace in place, byte-for-byte outside the markers.
+  awk -v b="$BEGIN_MARK" -v e="$END_MARK" -v block="$block" '
+    $0 == b { print; printf "%s", block; skip = 1; next }
+    $0 == e { print; skip = 0; next }
+    !skip   { print }
+  ' "$GRUB_CFG" >"$tmp"
+else
+  [[ -f $GRUB_CFG ]] && cat "$GRUB_CFG" >"$tmp"
+  {
+    printf '\n%s\n%s%s\n' "$BEGIN_MARK" "$block" "$END_MARK"
+  } >>"$tmp"
+  echo "p9-petitboot-entry: added the petitboot-entry block to $GRUB_CFG" >&2
+fi
+
+chmod 0644 "$tmp"
+mv -f "$tmp" "$GRUB_CFG"
+trap - EXIT
+sync "$GRUB_CFG" 2>/dev/null || sync
+echo "p9-petitboot-entry: updated $GRUB_CFG" >&2

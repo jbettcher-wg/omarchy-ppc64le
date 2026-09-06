@@ -1,0 +1,69 @@
+# p9-clipped.packages -- names present in upstream Omarchy's manifests that are
+# deliberately NOT installed here, each with the reason. This file is
+# documentation, not input: nothing reads it. It exists so that when upstream
+# moves, a reviewer can diff omarchy-base.packages / omarchy-other.packages
+# against p9-base.packages and find every difference already accounted for.
+#
+# The audit, verbatim -- it should print nothing:
+#
+#   clean() { sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$1" | awk NF; }
+#   for m in omarchy-base.packages omarchy-other.packages; do
+#     comm -23 <(clean ../upstream/omarchy/install/$m | sort -u) \
+#              <(clean p9-base.packages | sort -u) |
+#     while read -r p; do grep -qw -- "$p" p9-clipped.packages || echo "UNACCOUNTED $p"; done
+#   done
+
+# --- the boot chain (see README, "Bootloader") --------------------------------
+limine                  # x86/aarch64 UEFI+BIOS bootloader; POWER9 boots petitboot from flash
+limine-mkinitcpio-hook  # provides the btrfs-overlayfs initcpio hook; nothing to hook here
+limine-snapper-sync     # syncs snapper snapshots into limine's menu; no limine, no menu
+snapper                 # kept as an *optional* package, not a base one: useful on its own,
+                        # but it was in the base set to feed limine-snapper-sync
+
+# --- kernels ------------------------------------------------------------------
+linux                   # replaced by --kernel (default linux-power9); Arch POWER's stock
+                        # linux is 64K pages, the AC922 config is 4K
+linux-headers           # ditto; the kernel package brings its own -headers
+linux-ptl               # Intel Panther Lake kernel
+linux-ptl-headers
+linux-t2                # Apple T2 MacBook kernel
+linux-t2-headers
+
+# --- x86 graphics / firmware --------------------------------------------------
+nvidia-dkms nvidia-open-dkms nvidia-utils
+nvidia-580xx-dkms nvidia-580xx-utils
+lib32-nvidia-utils lib32-nvidia-580xx-utils   # multilib does not exist on ppc64le
+libva-nvidia-driver libva-intel-driver intel-media-driver
+vulkan-intel vulkan-asahi
+libvpl vpl-gpu-rt        # Intel VPL encode
+sof-firmware             # Intel audio DSP firmware
+linux-firmware-marvell   # Surface wifi
+
+# --- laptop vendor quirks ------------------------------------------------------
+asusctl qmk-hid
+dell-xps-touchpad-haptics dell-xps13-sidecar-amps
+tuxedo-drivers-nocompatcheck-dkms
+macbook12-spi-driver-dkms apple-bcm-firmware apple-t2-audio-config t2fanrd
+broadcom-wl yt6801-dkms
+intel-ipu7-camera intel-lpmd thermald
+
+# --- no ppc64le target ---------------------------------------------------------
+obsidian                # Electron; no ppc64le build. FEX is the escape hatch.
+localsend               # Flutter; no ppc64le build
+pinta                   # needs dotnet-sdk-10; Arch POWER is on .NET 9
+dotnet-runtime          # only present for pinta
+mise-bin                # prebuilt x86_64 tarball -> replaced by `mise`, built from source
+qemu-user-static-binfmt # x86_64 user emulation is what FEX does here instead
+nvim                    # Arch POWER's package is `neovim`; `nvim` is Omarchy's own rebuild
+
+# --- debug packages -----------------------------------------------------------
+yay-debug               # separate debug package; the design keeps *-debug out of the
+                        # ISO entirely (docs/power9-distro-spin.md 6.4)
+
+# --- Omarchy's own repo, not yet built for ppc64le -----------------------------
+# These resolve only from pkgs.omarchy.org. p9-install's resolve step will name
+# them if they are left in the manifest, which is the intended way to find out
+# what still has to be built. They are held out of p9-base.packages until then.
+aether asdcontrol cliamp herdr hyprland-preview-share-picker
+omacalc omacut omawrite tensaku tobi-try ttfx
+omarchy-keyring         # verifies signatures from pkgs.omarchy.org, which is not configured

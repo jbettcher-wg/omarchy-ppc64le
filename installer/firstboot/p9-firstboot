@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# p9-firstboot -- the root-side Omarchy configuration layer, run once on the
+# installed machine's first boot.
+#
+# Upstream runs this work as `omarchy-apply-system` inside the target chroot at
+# ISO finalization: it sources install/config/all.sh, install/hardware/all.sh,
+# install/login/all.sh and install/post-install/all.sh. That orchestration
+# cannot be used unchanged here for two reasons:
+#
+#   * install/post-install/pacman.sh copies Omarchy's own pacman.conf and
+#     mirrorlist over /etc, repointing the machine at pkgs.omarchy.org -- which
+#     has no powerpc64le tree. On this architecture that is not a channel
+#     switch, it is the removal of the only working package source.
+#   * install/hardware/all.sh is 30 scripts of Intel / NVIDIA / Apple T2 /
+#     Dell / Framework / ASUS / Tuxedo quirks and one Panther Lake kernel swap.
+#     None of it applies; several entries would install packages that do not
+#     exist for this architecture.
+#
+# Everything else is upstream's, sourced from /usr/share/omarchy/install by
+# name. When upstream adds a config leaf, it shows up here as a name in
+# UPSTREAM_CONFIG that this file does not yet list -- which is the point: the
+# delta stays a list of names rather than a fork of the scripts.
+#
+# The other difference from upstream is failure handling. omarchy-apply-system
+# sources all.sh under `set -e`, so one failing leaf takes the whole run down.
+# On a first boot that would leave a machine with no configuration and, in the
+# deferred-provisioning case, no user account. Here every step is isolated and a
+# failure is logged and stepped over.
+
+set -uo pipefail
+
+STATE_DIR=/var/lib/omarchy-p9
+MARKER="$STATE_DIR/firstboot-done"
+LOG_FILE=/var/log/p9-firstboot.log
+SELF_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+CONFIG_DIR="${P9_FIRSTBOOT_CONFIG:-/usr/local/lib/omarchy-p9/config}"
+
+export OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+export OMARCHY_INSTALL="${OMARCHY_INSTALL:-$OMARCHY_PATH/install}"
+export OMARCHY_INSTALL_LOG_FILE="$LOG_FILE"
+export OMARCHY_FIRST_INSTALL=1
+export PATH="$OMARCHY_PATH/bin:$PATH"
+
+((EUID == 0)) || { echo "p9-firstboot must run as root" >&2; exit 1; }
+
+force=0
+[[ ${1:-} == --force ]] && force=1
+if [[ -f $MARKER && $force -eq 0 ]]; then
+  echo "p9-firstboot: already done ($MARKER); pass --force to rerun"
+  exit 0
+fi
+
+mkdir -p "$STATE_DIR"
+: >>"$LOG_FILE"
+chmod 0640 "$LOG_FILE"
+
+log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "$LOG_FILE"; }
+
+FAILED=()
+
+# One step, isolated. `bash -eE` in a child so a leaf's own `set -e` semantics
+# are preserved without letting its failure escape into this process.
+run_step() {
+  local script="$1" label="${2:-$1}"
+  if [[ ! -f $script ]]; then
+    log "skip $label (not present)"
+    return 0
+  fi
+  log "run  $label"
+  if bash -eE -c 'source "$1"' bash "$script" </dev/null >>"$LOG_FILE" 2>&1; then
+    log "ok   $label"
+  else
+    local rc=$?
+    log "FAIL $label (exit $rc) -- continuing"
+    FAILED+=("$label")
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 1. The repository configuration is already correct: p9-install wrote
+#    /etc/pacman.conf and the machine installed itself from it. Upstream's
+#    post-install/pacman.sh is deliberately not run. What is kept from it is
+#    the CUPS ownership fix, in config/pacman.sh.
+# ---------------------------------------------------------------------------
+run_step "$CONFIG_DIR/pacman.sh" "p9: pacman/cups"
+
+# ---------------------------------------------------------------------------
+# 2. Upstream's config layer, verbatim, minus snapper.
+#    install/config/all.sh order, with config/snapper.sh replaced by
+#    config/snapshots.sh (snapper is optional here and there is no
+#    limine-snapper-sync to enable) and config/enable-services.sh replaced by
+#    a guarded version.
+# ---------------------------------------------------------------------------
+UPSTREAM_CONFIG=(
+  theme-system.sh
+  browser-policy.sh
+  increase-lockout-limit.sh
+  lockscreen-pam.sh
+  fix-powerprofilesctl-shebang.sh
+  ssh-command-path.sh
+  ssh-keepalive.sh
+  docker.sh
+  locate.sh
+  firewall.sh
+)
+for leaf in "${UPSTREAM_CONFIG[@]}"; do
+  run_step "$OMARCHY_INSTALL/config/$leaf" "omarchy: config/$leaf"
+done
+
+run_step "$CONFIG_DIR/snapshots.sh"      "p9: snapshots (replaces config/snapper.sh)"
+run_step "$CONFIG_DIR/enable-services.sh" "p9: services (replaces config/enable-services.sh)"
+
+# ---------------------------------------------------------------------------
+# 3. Hardware. Upstream's install/hardware/all.sh is x86 laptop vendor quirks;
+#    config/hardware.sh keeps the four leaves that are platform-neutral and
+#    adds nothing POWER-specific beyond what is already in the package set.
+# ---------------------------------------------------------------------------
+run_step "$CONFIG_DIR/hardware.sh" "p9: hardware (replaces hardware/all.sh)"
+
+# ---------------------------------------------------------------------------
+# 4. Login and post-install, upstream's, unchanged.
+# ---------------------------------------------------------------------------
+run_step "$OMARCHY_INSTALL/login/sddm.sh"        "omarchy: login/sddm.sh"
+run_step "$OMARCHY_INSTALL/post-install/udev.sh" "omarchy: post-install/udev.sh"
+run_step "$OMARCHY_INSTALL/post-install/localdb.sh" "omarchy: post-install/localdb.sh"
+
+# ---------------------------------------------------------------------------
+# 5. The /etc overrides omarchy-settings ships but no longer applies from its
+#    scriptlet. Once, here, deliberately -- not from a pacman hook.
+# ---------------------------------------------------------------------------
+run_step "$CONFIG_DIR/etc-overrides.sh" "p9: /etc overrides (once)"
+
+# ---------------------------------------------------------------------------
+if ((${#FAILED[@]})); then
+  log "finished with ${#FAILED[@]} failed step(s): ${FAILED[*]}"
+  log "see $LOG_FILE; rerun with: p9-firstboot --force"
+else
+  log "finished cleanly"
+fi
+
+# The marker is written either way. A half-configured desktop the user can log
+# into and repair beats a service that retries on every boot and blocks the
+# display manager each time.
+date -Is >"$MARKER"
+
+# Do not run again.
+rm -f /etc/systemd/system/multi-user.target.wants/p9-firstboot.service
+systemctl daemon-reload 2>/dev/null || true
+exit 0

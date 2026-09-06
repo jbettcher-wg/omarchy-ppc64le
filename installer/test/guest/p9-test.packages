@@ -1,0 +1,9 @@
+# Minimal package set for the QEMU test. NOT the shipping manifest -- that is
+# share/p9-base.packages. The point of the guest run is the mechanism
+# (partition, pacstrap, initramfs, boot entry, petitboot), and under TCG
+# emulation every extra package is minutes of wall clock.
+base
+mkinitcpio
+libxkbcommon   # Arch POWER kbd 2.10.0-1 misses this depend; sd-vconsole needs loadkeys
+btrfs-progs
+e2fsprogs

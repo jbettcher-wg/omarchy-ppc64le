@@ -1,0 +1,27 @@
+# The root-side Omarchy configuration layer, on the target's first boot.
+#
+# Upstream does this work in the target chroot during the install
+# (omarchy-apply-system). It runs here instead: two of its steps had to be
+# replaced for ppc64le and several of the rest want a live system rather than a
+# chroot (udevadm, updatedb, ufw, service enablement).
+#
+# Ordered before Omarchy's own account wizard, which reads the group grants and
+# the browser policy directories this leaves behind, and before the display
+# manager so a first login never races a half-applied configuration.
+
+[Unit]
+Description=Omarchy ppc64le first-boot system configuration
+ConditionPathExists=!/var/lib/omarchy-p9/firstboot-done
+After=systemd-user-sessions.service local-fs.target
+Before=omarchy-provision-owner.service display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/p9-firstboot
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

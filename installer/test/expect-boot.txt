@@ -1,0 +1,9 @@
+# Stage 2: nothing attached but the installed disk, and the payload skiboot
+# jumps to is petitboot itself. If petitboot lists an entry and kexecs it, the
+# grub.cfg the installer generated is genuinely parsed by the thing that has to
+# parse it.
+expect 5400 (Petitboot|petitboot|pb-discover)
+expect 5400 (Omarchy POWER9|kexec|Performing kexec)
+expect 5400 (p9test|Kernel command line|systemd|Welcome to)
+sleep 300
+done
