@@ -46,6 +46,47 @@ $ bq plan tllist fcft foot hyprutils hyprlang libjuice libdatachannel …
   15  foot                 local     <- after fcft
 ```
 
+### Why "already installed" is an ordering rule, not just a shortcut
+
+The first full-scale plan reported **595 of 622 packages as circular**. Two
+separate bugs, and the second one is the interesting one.
+
+The first was cascade over-reporting — once one real cycle blocks, everything
+downstream of it never becomes ready either, so a naive "unordered means
+cyclic" test indicts the whole tail. Tarjan's algorithm over the residual graph
+finds the genuine strongly-connected components. That brought it to 83.
+
+The second was that **83 was also honest**, and the largest component had ~400
+members: `glibc ↔ gcc ↔ binutils ↔ bash ↔ …`. Across a whole distro's
+`makedepends` the graph is simply not a DAG. Everything build-depends on the
+toolchain and the toolchain build-depends on everything. A full-distro rebuild
+from nothing is a bootstrap problem, and no topological sort will make it
+otherwise.
+
+But we are not building from nothing. Every package in that core is **already
+installed on this host**, which makes it a precondition in exactly the sense
+Arch POWER's shipped packages already were. Dropping edges to dependencies the
+host already satisfies — `pacman -T`, read-only, no root — collapses the
+bootstrap core completely:
+
+```
+622 packages, 0 cycles
+```
+
+and leaves an order that says something real about the packages that actually
+have to be built. Verified against eleven known constraints, zero violations:
+
+```
+hyprutils (150) before hyprland (537)      fcft (79) before foot (91)
+aquamarine (151) before hyprland (537)     libjuice (271) before libdatachannel (344)
+localsearch (555) before nautilus (591)    nautilus (591) before nautilus-python (592)
+cpptrace (235) before quickshell (481)     libgxps (256) before evince (467)
+```
+
+`--full-bootstrap` restores the from-scratch ordering, which is the right mode
+for building the ISO on a machine that does not already have 1374 packages on
+it. It will report the bootstrap core, correctly, as a cycle.
+
 ## Isolation
 
 No root, and nothing installed into the live system.

@@ -199,6 +199,10 @@ SOURCES = {
 # recipe metadata + ordering
 # ==========================================================================
 
+# Tarjan lives in closure.py; the two tools share one graph implementation
+# rather than each growing its own.
+from closure import tarjan  # noqa: E402
+
 VERSTRIP = re.compile(r"[<>=]+.*$")
 
 
@@ -300,12 +304,42 @@ def find_source(pkgbase, order):
     return None
 
 
-def resolve_order(targets, source_order, verbose=False):
+def satisfied_on_host(names):
+    """Which of these the live system already provides.  Read-only, no root."""
+    names = sorted({n for n in names if n})
+    if not names:
+        return set()
+    out = set()
+    for i in range(0, len(names), 400):          # keep the argv sane
+        chunk = names[i:i + 400]
+        try:
+            r = subprocess.run(["pacman", "-T"] + chunk, capture_output=True,
+                               text=True, timeout=300)
+        except Exception:
+            continue
+        unmet = {x for x in r.stdout.split() if x}
+        out.update(set(chunk) - unmet)
+    return out
+
+
+def resolve_order(targets, source_order, assume_installed=True):
     """Topologically sort targets by build-time dependency.
 
     makepkg will not do this.  Edges are drawn only *between targets* -- a
     dependency that Arch POWER already ships is a precondition, not a queue
     entry, so it constrains nothing about our ordering.
+
+    The same argument applies one level in, and it is what makes the order
+    useful rather than merely correct.  Across a whole distro's makedepends the
+    graph is not a DAG at all: glibc, gcc, binutils, bash and ~400 others form
+    one strongly-connected bootstrap core, because everything build-depends on
+    the toolchain and the toolchain build-depends on everything.  But every one
+    of those is *already installed on this host*, so it is a precondition too.
+    Dropping edges to deps the host already satisfies collapses the bootstrap
+    core and leaves an order that says something real about the packages we
+    actually have to build.
+
+    Pass assume_installed=False for a true from-scratch bootstrap ordering.
     """
     recipes = {}          # pkgbase -> recipe info
     provided_by = {}      # pkgname/provides -> pkgbase
@@ -329,30 +363,76 @@ def resolve_order(targets, source_order, verbose=False):
         for n in info["pkgname"] + info["provides"]:
             provided_by.setdefault(n, t)
 
+    present = set()
+    if assume_installed:
+        alldep = set()
+        for info in recipes.values():
+            alldep.update(info["depends"] + info["makedepends"]
+                          + info["checkdepends"])
+        present = satisfied_on_host(alldep)
+
     edges = {t: set() for t in recipes}
     for t, info in recipes.items():
         alldeps = info["depends"] + info["makedepends"] + info["checkdepends"]
         for d in alldeps:
+            if d in present:
+                continue          # already on the host: a precondition, not an edge
             owner = provided_by.get(d)
             if owner and owner != t:
                 edges[t].add(owner)
 
-    ordered, ready = [], sorted(n for n in edges if not edges[n])
     rdeps = defaultdict(set)
     for t, es in edges.items():
         for e in es:
             rdeps[e].add(t)
-    while ready:
-        n = ready.pop(0)
-        ordered.append(n)
-        for r in sorted(rdeps[n]):
-            edges[r].discard(n)
-            if not edges[r] and r not in ordered and r not in ready:
-                ready.append(r)
-                ready.sort()
-    stuck = [n for n in edges if n not in ordered]
-    ordered.extend(sorted(stuck))
-    return ordered, recipes, sorted(stuck)
+
+    def drain(ordered):
+        ready = sorted(n for n in edges if not edges[n] and n not in ordered)
+        while ready:
+            n = ready.pop(0)
+            if n in ordered:
+                continue
+            ordered.append(n)
+            for r in sorted(rdeps[n]):
+                edges[r].discard(n)
+                if not edges[r] and r not in ordered and r not in ready:
+                    ready.append(r)
+                    ready.sort()
+        return ordered
+
+    ordered = drain([])
+
+    # Whatever is left is either in a real cycle or merely downstream of one.
+    # The distinction matters: at full scale a naive "everything not yet
+    # ordered is cyclic" reported 595 of 622 packages as circular, which would
+    # have silently degraded the queue to alphabetical order. Tarjan finds the
+    # genuine strongly-connected components; each is cut at one member and the
+    # drain resumes, so everything downstream of a cycle still gets a real
+    # topological position.
+    #
+    # Bootstrap cycles are normal in a distro's makedepends (gcc needs gcc).
+    # They are harmless here because the host already has those installed --
+    # the ordering only has to be right for packages we do not have yet.
+    real_cycles = []
+    while True:
+        stuck = [n for n in edges if n not in ordered]
+        if not stuck:
+            break
+        comps = [c for c in tarjan({n: edges[n] & set(stuck) for n in stuck})
+                 if len(c) > 1]
+        if not comps:
+            # no cycle left, yet something is unordered: cut the lowest name
+            ordered.append(sorted(stuck)[0])
+            edges[sorted(stuck)[0]] = set()
+            ordered = drain(ordered)
+            continue
+        for c in comps:
+            c = sorted(c)
+            real_cycles.append(c)
+            edges[c[0]] -= set(c)
+        ordered = drain(ordered)
+
+    return ordered, recipes, real_cycles
 
 
 # ==========================================================================
@@ -796,9 +876,10 @@ def dir_size_gib(path):
 
 def cmd_plan(args):
     targets = read_targets(args)
-    order, recipes, stuck = resolve_order(targets, args.sources.split(","))
+    order, recipes, stuck = resolve_order(targets, args.sources.split(","),
+                                         assume_installed=not args.full_bootstrap)
     missing = [t for t in targets if t not in recipes]
-    q = {"order": order, "stuck": stuck, "missing_recipe": sorted(missing),
+    q = {"order": order, "cycles": stuck, "missing_recipe": sorted(missing),
          "sources": {t: recipes[t].get("source") for t in order},
          "generated": time.strftime("%Y-%m-%dT%H:%M:%S")}
     out = args.out or os.path.join(BUILDROOT, "queue.json")
@@ -809,8 +890,12 @@ def cmd_plan(args):
     save_state(st)
     print("planned %d packages -> %s" % (len(order), out))
     if stuck:
-        print("  %d in dependency cycles (built in name order): %s"
-              % (len(stuck), " ".join(stuck[:10])))
+        print("  %d genuine dependency cycle(s), each cut at its first member:"
+              % len(stuck))
+        for c in stuck[:8]:
+            shown = " <-> ".join(c[:6]) + (" <-> +%d more" % (len(c) - 6)
+                                           if len(c) > 6 else "")
+            print("      [%d] %s" % (len(c), shown))
     if missing:
         print("  %d with no recipe in [%s]: %s"
               % (len(missing), args.sources, " ".join(sorted(missing)[:10])))
@@ -839,7 +924,9 @@ def cmd_build(args):
     qf = args.queue or os.path.join(BUILDROOT, "queue.json")
     if args.targets or args.targets_file:
         targets = read_targets(args)
-        order, recipes, stuck = resolve_order(targets, args.sources.split(","))
+        order, recipes, stuck = resolve_order(
+            targets, args.sources.split(","),
+            assume_installed=not getattr(args, "full_bootstrap", False))
         srcmap = {t: recipes[t].get("source") for t in order}
     elif os.path.isfile(qf):
         q = json.load(open(qf))
@@ -983,6 +1070,10 @@ def main():
     p = sub.add_parser("plan", help="resolve build order")
     common(p)
     p.add_argument("-o", "--out")
+    p.add_argument("--full-bootstrap", action="store_true",
+                   help="order as if nothing were installed (from-scratch "
+                        "bootstrap); by default deps the host already has are "
+                        "treated as preconditions, not ordering constraints")
     p.set_defaults(fn=cmd_plan)
 
     p = sub.add_parser("build", help="build the queue in order")
@@ -1008,6 +1099,7 @@ def main():
                    help="where built packages go (default the Omarchy repo). "
                         "/etc/makepkg.conf points PKGDEST at the Omarchy repo, "
                         "so anything not part of that closure must set this.")
+    p.add_argument("--full-bootstrap", action="store_true")
     p.add_argument("--repo-db", default="omarchy-ppc64le.db.tar.zst",
                    help="repo database to add into; empty to skip repo-add")
     p.set_defaults(fn=cmd_build)

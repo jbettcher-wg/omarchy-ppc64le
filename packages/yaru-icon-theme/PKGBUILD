@@ -1,0 +1,142 @@
+# Maintainer: Jeremy Bettcher <thebettcher@gmail.com>
+#
+# Yaru's icon theme -- the icon set Omarchy's GTK apps resolve against.
+# Another package Omarchy publishes with no PKGBUILD anywhere (it is not in the
+# AUR either: aur.archlinux.org/yaru-icon-theme.git is an empty repo), so this
+# recipe is written from scratch against upstream, github.com/ubuntu/yaru.
+#
+# arch=(any), and there is no port here.  The payload is 17335 PNGs, 5050 SVGs,
+# 140 .cur cursors and 20 icon themes; the "build" is meson colourising
+# SVGs, generating index.theme files and copying, with no compiler invoked at
+# any point.  Nothing was added to arch=() -- this was a repackage, not a port.
+#
+# What it needed instead was the right meson configuration, and one thing there
+# is not obvious.  Upstream's tree builds ten components and Omarchy ships only
+# the icons -- their .PKGINFO records pkgbase=yaru with xdata=pkgtype=split, so
+# yaru-icon-theme is one output of a split build.  The natural move, building
+# with -Dicons=true and every other component false, does not work:
+#
+#   icons/meson.build:157:27: ERROR: Unknown variable "gtk_yaru_colors_defs".
+#
+# The accented icon flavours are colourised from definitions the *gtk*
+# component computes (gtk/src/meson.build defines gtk_yaru_colors_defs, keyed
+# per accent colour), so `icons` has a hard build-time dependency on `gtk` even
+# though none of gtk's output belongs in this package.  So gtk is built and
+# then dropped from $pkgdir, and package() asserts that /usr/share/icons is all
+# that is left -- a component quietly leaking files into this package is
+# exactly what that check is for.
+#
+# The result is upstream's default accent-colors list untouched: 20 themes,
+# Yaru and Yaru-dark plus the nine accent colours in light and dark, which is
+# the same set Omarchy's package contains.
+#
+# Bitmap rendering does NOT need inkscape.  icons/meson.build declares it
+# `required: false` and only warns; the rendered PNGs are checked into the
+# repository (20689 of them) and the render targets exist to regenerate them,
+# not to produce them on a normal build.  Inkscape is in Arch POWER (base
+# 1.4.3-7) if a future version changes that, but it is not a dependency today.
+
+pkgname=yaru-icon-theme
+pkgver=26.04.5.1ubuntu
+pkgrel=1
+pkgdesc='Yaru default ubuntu icon theme'
+arch=(any)
+url='https://github.com/ubuntu/yaru'
+license=('GPL-3.0-only' 'CC-BY-SA-4.0')
+depends=(hicolor-icon-theme gtk-update-icon-cache librsvg)
+makedepends=(meson ninja sassc python)
+source=("yaru-${pkgver}.tar.gz::${url}/archive/refs/tags/${pkgver}.tar.gz")
+sha256sums=('4e35b71d37aedb44302c811f63d325f4abd7699961f76f130323b361d4c6a7d7')
+
+# The 20 themes Omarchy's package contains, and the assertion that we produced
+# the same set.  A silent change to upstream's default accent-colors list would
+# otherwise show up only as icons quietly missing on a themed desktop.
+_themes=(
+  Yaru Yaru-dark
+  Yaru-blue Yaru-blue-dark
+  Yaru-magenta Yaru-magenta-dark
+  Yaru-olive Yaru-olive-dark
+  Yaru-prussiangreen Yaru-prussiangreen-dark
+  Yaru-purple Yaru-purple-dark
+  Yaru-red Yaru-red-dark
+  Yaru-sage Yaru-sage-dark
+  Yaru-wartybrown Yaru-wartybrown-dark
+  Yaru-yellow Yaru-yellow-dark
+)
+
+build() {
+  # Plain meson rather than arch-meson: arch-meson exists to inject the
+  # distribution's C/C++/LTO flags, and this project compiles nothing.
+  #
+  # gtk=true is required by icons (see header), not wanted in the output.
+  # Everything else is switched off; cinnamon-shell, ubuntu-unity, xfwm4, mate
+  # and cinnamon are already off by default and are named here so a future
+  # upstream default flip cannot silently widen the package.
+  meson setup "yaru-${pkgver}" build \
+    --prefix=/usr \
+    -Dicons=true \
+    -Dgtk=true \
+    -Dgnome-shell=false \
+    -Dgtksourceview=false \
+    -Dmetacity=false \
+    -Dsounds=false \
+    -Dsessions=false \
+    -Dubuntu-unity=false \
+    -Dxfwm4=false \
+    -Dcinnamon-shell=false \
+    -Ddefault=true \
+    -Ddark=true \
+    -Dmate=false \
+    -Dmate-dark=false \
+    -Dcinnamon=false \
+    -Dcinnamon-dark=false
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+
+  # Drop the gtk component's output: it was built only to supply the icons
+  # component's accent-colour definitions.  /usr/share/themes is where all of
+  # it lands.
+  rm -rf "${pkgdir}/usr/share/themes"
+  find "${pkgdir}/usr" -mindepth 1 -type d -empty -delete
+
+  # Exactly the expected themes, and nothing else anywhere in the package.
+  local t missing=()
+  for t in "${_themes[@]}"; do
+    [ -f "${pkgdir}/usr/share/icons/${t}/index.theme" ] || missing+=("$t")
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    printf '%s: themes missing from the build: %s\n' "$pkgname" "${missing[*]}" >&2
+    return 1
+  fi
+  local got
+  got=$(find "${pkgdir}/usr/share/icons" -mindepth 1 -maxdepth 1 -type d | wc -l)
+  [ "$got" -eq "${#_themes[@]}" ] || {
+    printf '%s: built %d icon themes, expected %d\n' "$pkgname" "$got" "${#_themes[@]}" >&2
+    return 1
+  }
+  local stray
+  stray=$( { find "${pkgdir}" -mindepth 1 -maxdepth 1 ! -name usr
+             find "${pkgdir}/usr" -mindepth 1 -maxdepth 1 ! -name share
+             find "${pkgdir}/usr/share" -mindepth 1 -maxdepth 1 ! -name icons
+           } 2>/dev/null )
+  [ -z "$stray" ] || {
+    printf '%s: files outside /usr/share/icons in the package:\n%s\n' "$pkgname" "$stray" >&2
+    return 1
+  }
+
+  install -Dm644 "yaru-${pkgver}/COPYING" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING"
+  install -Dm644 "yaru-${pkgver}/LICENSE_CCBYSA" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE_CCBYSA"
+
+  # No .install scriptlet, matching Omarchy's package (its .PKGINFO carries no
+  # %INSTALL%): the gtk-update-icon-cache pacman hook already rebuilds caches
+  # under /usr/share/icons.
+
+  # Fail the build if any shipped ELF records a build-tree path
+  # (tools/elf-pathguard.sh -- house policy, applied to every recipe here).
+  "${ELF_PATHGUARD:-$startdir/../../tools/elf-pathguard.sh}" "$pkgdir"
+}
