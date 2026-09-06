@@ -815,6 +815,11 @@ def build_one(pkgbase, recipe_src, args, st):
                     "reused": True,
                     "packages": [os.path.basename(f) for f in _want]}
 
+    # Truncate here, before stage-deps appends: the makepkg run below used to
+    # open this log with "w", which threw away the staging report just when it
+    # was needed for triage.
+    open(log, "w").close()
+
     # Stage depends+makedepends+checkdepends into the sysroot.  bq never called
     # stage-deps.sh at all: preflight_deps() only *reported* what was missing,
     # so bluez went in without `ell libical` and bolt without `asciidoc` even
@@ -827,7 +832,7 @@ def build_one(pkgbase, recipe_src, args, st):
         cmd.append("-f")
 
     t0 = time.time()
-    with open(log, "w") as fh:
+    with open(log, "a") as fh:
         fh.write("$ %s\n(cwd %s)\n\n" % (" ".join(cmd), work))
         fh.flush()
         try:

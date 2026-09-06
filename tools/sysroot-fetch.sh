@@ -7,9 +7,14 @@
 # sysroot. Nothing outside that directory is touched — the live system is
 # never modified.
 set -uo pipefail
-WORK=/home/jbettcher/omarchy-work
-SYSROOT=$WORK/sysroot
-CACHE=$WORK/pkgcache
+# SYSROOT and the package cache must follow the caller.  These were hardcoded
+# under $HOME, so every dependency bq staged landed in ~/omarchy-work/sysroot
+# while the build overlaid /var/tmp/omarchy-bq/sysroot -- which is why
+# go-md2man, asciidoc, ell and libical were "staged" and still not found.
+WORK=${BQ_WORK:-/home/jbettcher/omarchy-work}
+SYSROOT=${SYSROOT:-$WORK/sysroot}
+CACHE=${BQ_PKGCACHE:-${BUILDROOT:+$BUILDROOT/pkgcache}}
+CACHE=${CACHE:-$WORK/pkgcache}
 mkdir -p "$SYSROOT" "$CACHE"
 
 rc=0
