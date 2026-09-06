@@ -28,3 +28,17 @@ if [ -x "$SYSROOT/usr/bin/dot" ]; then
   GVBINDIR="$SYSROOT/usr/lib/graphviz" \
     "$SYSROOT/usr/bin/dot" -c >/dev/null 2>&1 || true
 fi
+
+# liblto_plugin.so ships with gcc, not binutils, and lives in /usr/lib/bfd-plugins
+# as a symlink into gcc's directory.  Staging binutils gives the sysroot its own
+# bfd-plugins directory that shadows the system one and does not contain it, so
+# ar/ranlib/nm can no longer read symbols out of LTO objects inside static
+# archives -- and OPTIONS carries lto, so every convenience library is one.
+# exfatprogs and exempi both failed with undefined references to their own
+# symbols because of this.  Put the plugin back.
+if [ -d "$SYSROOT/usr/lib/bfd-plugins" ] &&
+   [ ! -e "$SYSROOT/usr/lib/bfd-plugins/liblto_plugin.so" ] &&
+   [ -e /usr/lib/bfd-plugins/liblto_plugin.so ]; then
+  ln -sf "$(readlink -f /usr/lib/bfd-plugins/liblto_plugin.so)" \
+     "$SYSROOT/usr/lib/bfd-plugins/liblto_plugin.so" 2>/dev/null || true
+fi
