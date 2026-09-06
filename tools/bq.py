@@ -787,13 +787,19 @@ def build_one(pkgbase, recipe_src, args, st):
     # An arch=() that omits us is a pre-build failure with a one-line fix; say
     # so instead of letting makepkg produce a confusing error.
     info = read_recipe(work)
-    if info["arch"] and CARCH not in info["arch"] and "any" not in info["arch"]:
-        if args.fix_arch:
-            add_arch(os.path.join(work, "PKGBUILD"))
+    if args.fix_arch:
+        # Judge the gate on the PKGBUILD, because that is the file makepkg
+        # reads.  read_recipe prefers .SRCINFO, and the two can disagree: fmt
+        # ships arch=(powerpc espresso) alongside a .SRCINFO naming five
+        # architectures including ours, so the gate looked satisfied and
+        # makepkg then refused the build outright.  add_arch already returns
+        # False when the architecture is present, so this stays a no-op for
+        # every recipe that is already correct.
+        if add_arch(os.path.join(work, "PKGBUILD")):
             regen_srcinfo(work)
-        else:
-            return {"status": "failed", "class": "arch-gate",
-                    "detail": "arch=(%s)" % " ".join(info["arch"])}
+    elif info["arch"] and CARCH not in info["arch"] and "any" not in info["arch"]:
+        return {"status": "failed", "class": "arch-gate",
+                "detail": "arch=(%s)" % " ".join(info["arch"])}
 
     missing = preflight_deps(work, st.get("staged", []))
     if missing and args.strict_deps:
