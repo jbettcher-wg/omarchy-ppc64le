@@ -170,3 +170,112 @@ generates those tarballs on demand and not reproducibly, so Arch's recorded
 hashes no longer match what the server serves. Tarball contents were verified
 before the hashes were updated. This would equally affect an x86_64 rebuild
 today; it has nothing to do with the architecture.
+
+## powerpc: `interrupt_exit_user_restart()` loses accumulated `_TIF_RESTOREALL`
+
+**File:** `arch/powerpc/kernel/interrupt.c` (kernel 7.2.x)
+**Class:** portability/correctness fix, **upstreamable**
+**Relationship:** sibling of the already-in-review
+`0002-powerpc-syscall_exit_restart-return-accumulated-exit_result.patch`,
+same file, same bug class, different function. Found while investigating the
+chromium sandbox failure (`docs/chromium-sandbox-ppc64le.md`); **not yet proven
+to be that failure's cause**, but wrong on its own terms.
+
+### Background
+
+powerpc selects `CONFIG_GENERIC_ENTRY` as of 7.2 (`arch/powerpc/Kconfig:209`).
+The return value of the `*_exit_*` C helpers is what the assembly in
+`arch/powerpc/kernel/interrupt_64.S` uses to choose between a full GPR restore
+and a fast path:
+
+```asm
+	SANITIZE_RESTORE_NVGPRS()
+	cmpdi	r3,0
+	bne	.Lsyscall_restore_regs
+	/* Zero volatile regs that may contain sensitive kernel data */
+	ZEROIZE_GPR(0)
+	ZEROIZE_GPRS(4, 12)
+	mtctr	r0
+```
+
+`ZEROIZE_GPRS(4, 12)` includes **r12**, which under ELFv2 holds the function
+entry point at a global entry so the callee can derive its TOC in r2. Losing
+`_TIF_RESTOREALL` therefore does not merely clobber scratch registers; it
+produces a garbage TOC and a segfault somewhere unrelated. That is exactly the
+already-fixed `syscall_exit_restart()` bug.
+
+### The defect
+
+`interrupt_exit_user_restart()` is written as if it accumulates:
+
+```c
+notrace unsigned long interrupt_exit_user_restart(struct pt_regs *regs)
+{
+	...
+	regs->exit_result |= interrupt_exit_user_prepare(regs);
+	return regs->exit_result;
+}
+```
+
+but the callee overwrites the very field the caller is OR-ing into:
+
+```c
+notrace unsigned long interrupt_exit_user_prepare(struct pt_regs *regs)
+{
+	...
+	/* Clear exit_flags so only flags set during this exit are visible */
+	current_thread_info()->exit_flags = 0;
+	...
+	ret = current_thread_info()->exit_flags & _TIF_RESTOREALL;
+#ifdef CONFIG_PPC64
+	regs->exit_result = ret;          /* <-- destroys the accumulation */
+#endif
+	return ret;
+}
+```
+
+Sequence on a restart:
+
+1. `interrupt_exit_user_prepare()` zeroes `exit_flags`, discarding the
+   `_TIF_RESTOREALL` that `arch_do_signal_or_restart()`
+   (`arch/powerpc/kernel/signal.c:359`) set during the first pass;
+2. `ret` is therefore 0;
+3. `regs->exit_result = 0` overwrites the value the first pass accumulated;
+4. the caller's `|= 0` is a no-op;
+5. 0 is returned, the asm takes the fast path, and r4-r12 are zeroed on a
+   return that required a full restore.
+
+The `|=` in the caller is the tell: accumulation was clearly intended there and
+is silently defeated.
+
+### Proposed fix
+
+Same shape as the accepted `syscall_exit_restart()` fix -- preserve the
+accumulated value across the call rather than changing `..._prepare()`, which
+is also called on the non-restart path where `regs->exit_result` is stale:
+
+```c
+ notrace unsigned long interrupt_exit_user_restart(struct pt_regs *regs)
+ {
++	unsigned long accumulated = regs->exit_result;
++
+ 	__hard_irq_disable();
+ 	local_paca->irq_happened |= PACA_IRQ_HARD_DIS;
+ 	...
+-	regs->exit_result |= interrupt_exit_user_prepare(regs);
+-
++	accumulated |= interrupt_exit_user_prepare(regs);
++	regs->exit_result = accumulated;
+ 	return regs->exit_result;
+ }
+```
+
+### Status / caveats
+
+- Reviewed by reading 7.2.2 source; **not compiled or booted**. The kernel is
+  the daily-driver boot path and was not rebuilt.
+- `~/Development/linux-7.2.2` is a plain tree with no `.git`, so
+  `git log v7.1..v7.2` could not be run there to date the change or find the
+  introducing commit. A clone would be needed.
+- Worth sending alongside the `syscall_exit_restart()` patch already in review,
+  since it is the same reviewer, same file, same argument.
