@@ -37,9 +37,16 @@ mapfile -t deps < <("$here/extract-deps.sh" "$f" \
 want=(); ours=(); absent=()
 for d in "${deps[@]}"; do
   [ -n "$d" ] || continue
-  pacman -Qq "$d" >/dev/null 2>&1 && continue          # already on the system
+  # Our own build wins over whatever is installed.  Checking "is it installed"
+  # first meant a package we had deliberately rebuilt was skipped in favour of
+  # the older system copy: attica needs ECM >= 6.29 and kept finding the
+  # installed 6.27, and libheif would have gone on linking the system
+  # libde265 1.0.18 that is missing de265_get_security_limits instead of the
+  # 1.1.2 sitting in repo/.
   if ls "$REPOROOT/repo"/${d}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; then
     ours+=("$d")                                        # we built it earlier
+  elif pacman -Qq "$d" >/dev/null 2>&1; then
+    continue                                            # already on the system
   elif pacman -Si "$d" >/dev/null 2>&1; then want+=("$d")
   else absent+=("$d"); fi
 done
