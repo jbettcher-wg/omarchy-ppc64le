@@ -127,8 +127,13 @@ class GitSource(Source):
         url = self.urlfmt % pkgbase
         tmp = dest + ".git-tmp"
         shutil.rmtree(tmp, ignore_errors=True)
+        # A pkgbase that does not exist upstream answers 404, and git then
+        # asks for a username -- which in an unattended 600-package run means
+        # it blocks until the timeout. Fail fast instead.
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0",
+               "GIT_ASKPASS": "", "SSH_ASKPASS": ""}
         r = subprocess.run(["git", "clone", "-q", "--depth", "1", url, tmp],
-                           capture_output=True, text=True, timeout=600)
+                           capture_output=True, text=True, timeout=600, env=env)
         if r.returncode != 0 or not os.path.isfile(os.path.join(tmp, "PKGBUILD")):
             shutil.rmtree(tmp, ignore_errors=True)
             return False
@@ -292,6 +297,30 @@ def _from_pkgbuild(path):
     return out
 
 
+_PKGBASE = None
+
+
+def pkgbase_of(name):
+    """Map a package name to its pkgbase.
+
+    The closure is a list of *package names*; recipe repositories are keyed by
+    *pkgbase*.  Most of the time they are equal, and when they are not the
+    difference is invisible until a fetch 404s -- `adwaita-cursors` is built by
+    `adwaita-icon-theme`, and there is no adwaita-cursors.git to clone.  The
+    sync DB records the mapping in %BASE%, so use it.
+    """
+    global _PKGBASE
+    if _PKGBASE is None:
+        _PKGBASE = {}
+        try:
+            from closure import load_sync
+            for n, p in load_sync().items():
+                _PKGBASE[n] = p.base
+        except Exception:
+            pass
+    return _PKGBASE.get(name, name)
+
+
 def find_source(pkgbase, order):
     for sname in order:
         s = SOURCES[sname]
@@ -347,21 +376,24 @@ def resolve_order(targets, source_order, assume_installed=True):
     os.makedirs(stage, exist_ok=True)
 
     for t in targets:
-        src = find_source(t, source_order)
+        base = pkgbase_of(t)
+        src = find_source(base, source_order)
         if src is None:
             continue
-        d = os.path.join(stage, t)
+        d = os.path.join(stage, base)
         if not os.path.isdir(d) or not os.path.isfile(os.path.join(d, "PKGBUILD")):
             shutil.rmtree(d, ignore_errors=True)
-            if not src.materialise(t, d):
+            if not src.materialise(base, d):
                 continue
         info = read_recipe(d)
         if not info["pkgname"]:
             continue
         info["source"] = src.name
-        recipes[t] = info
+        # Key the queue by pkgbase: one build produces every split package, so
+        # listing them separately would build the same recipe several times.
+        recipes[base] = info
         for n in info["pkgname"] + info["provides"]:
-            provided_by.setdefault(n, t)
+            provided_by.setdefault(n, base)
 
     present = set()
     if assume_installed:
@@ -432,7 +464,7 @@ def resolve_order(targets, source_order, assume_installed=True):
             edges[c[0]] -= set(c)
         ordered = drain(ordered)
 
-    return ordered, recipes, real_cycles
+    return ordered, recipes, real_cycles, provided_by
 
 
 # ==========================================================================
@@ -707,6 +739,7 @@ def build_one(pkgbase, recipe_src, args, st):
                 "detail": "only %.1f GiB free at %s" % (free, BUILDROOT)}
 
     shutil.rmtree(work, ignore_errors=True)
+    pkgbase = pkgbase_of(pkgbase)
     src = SOURCES[recipe_src] if recipe_src in SOURCES else \
         find_source(pkgbase, args.sources.split(","))
     if src is None or not src.materialise(pkgbase, work):
@@ -876,9 +909,15 @@ def dir_size_gib(path):
 
 def cmd_plan(args):
     targets = read_targets(args)
-    order, recipes, stuck = resolve_order(targets, args.sources.split(","),
-                                         assume_installed=not args.full_bootstrap)
-    missing = [t for t in targets if t not in recipes]
+    order, recipes, stuck, provided_by = resolve_order(
+        targets, args.sources.split(","),
+        assume_installed=not args.full_bootstrap)
+    # A target with no recipe of its own is not missing if some recipe already
+    # in the queue produces it as a split package -- gexiv2-common comes out of
+    # gexiv2, libnautilus-extension out of nautilus. Reporting those as missing
+    # would send someone looking for repositories that do not exist.
+    missing = sorted(b for b in ({pkgbase_of(t) for t in targets} - set(recipes))
+                     if b not in provided_by)
     q = {"order": order, "cycles": stuck, "missing_recipe": sorted(missing),
          "sources": {t: recipes[t].get("source") for t in order},
          "generated": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -924,7 +963,7 @@ def cmd_build(args):
     qf = args.queue or os.path.join(BUILDROOT, "queue.json")
     if args.targets or args.targets_file:
         targets = read_targets(args)
-        order, recipes, stuck = resolve_order(
+        order, recipes, stuck, _ = resolve_order(
             targets, args.sources.split(","),
             assume_installed=not getattr(args, "full_bootstrap", False))
         srcmap = {t: recipes[t].get("source") for t in order}
