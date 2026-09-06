@@ -54,10 +54,11 @@ The remaining 42 are `x86_64` and need a real ppc64le build:
 - `mise-bin` | `tensaku` | `ttf-ia-writer` | `tzupdate`
 - `ufw-docker` | `xdg-terminal-exec` | `yaru-icon-theme` | `yay`
 
-`yay` matters disproportionately: it is Omarchy's AUR helper, it is Go (so it
-builds on ppc64le), but *the AUR packages it will then be asked to build mostly
-lack `powerpc64le` in `arch=()`*. That is the structural friction in this whole
-project, not a per-package bug.
+All twelve now have a recipe except `localsend` (Flutter, no ppc64le target).
+See "Clump 10 -- the AUR / Omarchy tail" below, and `aur-on-ppc64le.md` for
+what `yay` can and cannot do here: it builds and runs, but the AUR *install*
+path is closed by libalpm's architecture guard rather than by anything in yay,
+and the replacement is a pipeline rather than a configuration change.
 
 ## Missing — Omarchy's own repo (10)
 
@@ -150,19 +151,129 @@ merely by compiling. Ordering follows the tiers in `dependency-closure.md`.
 | 8 — editor tooling | 9 | 0 | `prettier`, `typescript-language-server`, `vtsls` |
 | beyond the clumps | 6 | 0 | — |
 | 9 — the editor | 13 | 0 | — |
+| 10 — the AUR / Omarchy tail | 9 | 0 | `localsend` (Flutter), `obsidian` (Electron) |
 
-The last row is the remainder of the "missing — Arch official" list that the
+The "beyond the clumps" row is the remainder of the "missing — Arch official" list that the
 clumps did not name: `mpv-mpris` 1.2, `usage` 5.1.0, `fcitx5-gtk` 5.1.7,
 `fcitx5-qt` 5.1.14, `moonlight-qt` 6.1.0 and `gpu-screen-recorder` 6.1.0. All
 six were `arch()` and nothing else — including `gpu-screen-recorder`, which the
 known-hard table below had flagged for its NVENC/VAAPI paths.
 
-**129 packages in `repo/`** (excluding `-debug-`), from **106 PKGBUILDs**.
+**150 packages in `repo/`** (excluding `-debug-`), from **119 PKGBUILDs**.
 
 **Of the 50 missing Arch-official packages, 47 are built.** The three that are
 not — `pinta`, `obsidian`, `localsend` — were all blocked before a compiler was
 ever invoked, by a missing prebuilt runtime rather than by anything about the
 architecture.
+
+## Clump 10 — the AUR / Omarchy tail
+
+The nine packages Omarchy's base list wants that came from the AUR or from
+Omarchy's own repo, rather than from Arch official. Eight built; the ninth
+(`aether`) is covered below.
+
+| Package | Version | Change needed |
+|---|---|---|
+| `ttf-ia-writer` | 20181225 | nothing — genuinely `arch=any`, sixteen .ttf from a pinned commit |
+| `xdg-terminal-exec` | 0.14.3 | nothing — `arch=any`, shell + scdoc, zero ELF in the package |
+| `ufw-docker` | 251123 | nothing — `arch=any`, one bash script (plus a corrected `install -t` that made a directory named LICENSE) |
+| `tobi-try` | 1.8.1-3 | **new PKGBUILD** (Omarchy publishes none) — `arch=any` Ruby, sourced from a pinned commit rather than the v1.8.1 tag |
+| `yaru-icon-theme` | 26.04.5.1ubuntu | **new PKGBUILD** (not in the AUR either) — `arch=any` icon data; the work was meson configuration, not porting |
+| `tzupdate` | 3.1.0 | `arch()`, plus a Cargo.lock refresh to get off `ring` 0.16.20 |
+| `yay` | 13.0.1-2 | `arch()`, plus dropping `-buildmode=pie` on this architecture |
+| `mise` | 2026.9.1 | **new PKGBUILD** — built from source instead of repackaging `mise-bin`; `self_update` disabled |
+| `aether` | 4.29.8 | **new PKGBUILD** — built from source instead of repackaging release binaries; needs one native node addon compiled |
+
+So five of nine needed **no architecture change at all**. That is the
+opposite of the 65-of-93 pattern the earlier clumps set, and it is not a
+coincidence: what is left at the tail of a package gap is disproportionately
+data — fonts, icons, shell scripts — and data has no architecture. The rule
+that saves the most time here is to check whether a package is `any` before
+assuming it needs porting.
+
+The four that needed work all needed it for the **same underlying reason**,
+which is the reason this project keeps hitting: somebody upstream shipped a
+prebuilt artifact, or a table of known architectures, and ppc64le is not in
+it.
+
+- `mise` and `aether` were only ever blocked because their AUR recipes install
+  release binaries. Both compile from source unmodified.
+- `tzupdate` died in `ring` 0.16.20's build script, which indexes a
+  per-target asset table with an unconditional `.unwrap()` and has no
+  powerpc64le row. ring 0.17 has a portable fallback; the fix is entirely a
+  dependency-version question, no patch.
+- `aether`'s frontend needed `lightningcss`'s napi addon compiled, because the
+  npm package ships prebuilt `.node` binaries with no ppc64le artifact and,
+  unlike `@tailwindcss/oxide`, no wasm fallback.
+
+`yay` is the exception, and the only genuine runtime bug in the batch.
+
+### yay: compiles everywhere, ran nowhere
+
+yay 13 dropped its cgo libalpm bindings for `github.com/Jguer/dyalpm`, which
+dlopen()s libalpm and calls into it through `github.com/ebitengine/purego`'s
+hand-written FFI trampoline. purego's ppc64le backend is new — `sys_ppc64le.s`
+carries a 2026 copyright. Built as upstream builds it, yay compiled clean,
+linked clean, started, printed a correct version banner, and then died:
+
+```
+$ yay --version
+yay v13.0.1 - libalpm v16.0.1
+SIGSEGV: segmentation violation
+PC=0x121d813d8 m=0 sigcode=1 addr=0x1000000cd
+signal arrived during cgo execution
+github.com/ebitengine/purego.RegisterFunc.func4(...)  func.go:312
+github.com/Jguer/dyalpm.(*handle).Release(...)        handle.go:208
+```
+
+Every subcommand died in whatever libalpm call it made: `-Ss` in
+`alpm_db_search`, `-Si` in `alpm_find_group_pkgs`. Bisected to a single build
+flag — `go build` works, `-trimpath` works, `-linkmode=external` works,
+`-buildmode=pie` segfaults — so ppc64le builds with `EXTRA_FLAGS` empty, which
+is upstream's own Makefile knob and needs no patch. Diffing the two
+disassemblies of `syscall15X` shows PIE adding the ELFv2 global-entry TOC
+sequence (`addis r2,r12,hi; addi r2,r2,lo; std r2,24(r1)`) around a
+hand-rolled frame that is otherwise instruction-for-instruction identical;
+locating the exact fault inside that is upstream's job, and the bisection is
+the useful half of the report.
+
+Worth recording as method: **this is the failure a build-only check cannot
+see.** yay produced a correct-looking package, ran, read `/etc/pacman.conf`,
+opened every sync database and printed the right answer before crashing.
+Nothing short of running it would have caught this.
+
+A first attempt patched purego's LR save slot — `sys_ppc64le.s` stores the
+caller's LR in `16(R1)`, the ELFv2 linkage-area word a callee writes its own
+return address into, which is precisely the LuaJIT `SAVE_CR` bug above. That
+reading was wrong. Go wraps the function in its own prologue and epilogue
+(`mflr R31; stdu R31,-32(R1)` … `ld R31,0(R1); mtlr R31`), so LR really comes
+back from R31 and purego's slot is dead stores; the control experiment —
+unpatched purego, non-PIE, fully working — is what settled it. Noted because
+the wrong answer was plausible, matched a bug this project had already found
+once, and survived one confirming build before the control killed it.
+
+### What yay does and does not get you
+
+See `aur-on-ppc64le.md`. In short: `yay -Ss`, `-Si`, `-Sia`, `-Gp`, `-Qi`,
+`-Qu` and `-Ps` all work, so searching and inspecting the AUR is available.
+Installing an AUR package whose `arch=()` lacks powerpc64le is not, and no yay
+flag changes that — the guard is `ALPM_ERR_PKG_INVALID_ARCH` inside libalpm,
+below both yay and paru.
+
+Measured, and slightly surprising: **the build half was never the problem.**
+`makepkg -A` on an unmodified AUR checkout of `cliamp` 2.0.1
+(`arch=('x86_64' 'aarch64')`) built on POWER9 first try and still tagged the
+output `powerpc64le` — `-A` skips the check, it does not mislabel the
+artifact. So the AUR tool this repo needs is a pipeline that owns every step
+(fetch → rewrite `arch=()` → regenerate `.SRCINFO` → makepkg → local repo),
+not a wrapper that passes flags through a helper.
+
+Omarchy's fzf AUR browser, `bin/omarchy-pkg-aur-install`, is the concrete
+case: its listing (`yay -Slqa`), its preview (`yay -Siia`) and its PKGBUILD
+preview (`yay -Gpa`) all work here untouched, and only its final
+`xargs yay -S` has to point somewhere else. That is a structural change rather
+than a configuration one, but it is one line, and the interactive half — the
+part that would be tedious to rebuild — already works.
 
 ## The editor (clump 9)
 
