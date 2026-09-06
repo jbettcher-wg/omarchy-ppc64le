@@ -716,6 +716,27 @@ def preflight_deps(recipedir, staged):
     return [d for d in r.stdout.split() if d and d not in staged]
 
 
+def stage_deps(pkgbase, recipedir, sysroot, log):
+    """Fetch this package's depends/makedepends/checkdepends into the sysroot.
+
+    Without this a missing makedepend only surfaced as whatever meson or cmake
+    chose to say about it, halfway through the build.
+    """
+    try:
+        r = subprocess.run(
+            [os.path.join(TOOLS, "stage-deps.sh"), pkgbase, recipedir],
+            capture_output=True, text=True, timeout=2400,
+            env={**os.environ, "SYSROOT": sysroot, "BUILDROOT": BUILDROOT})
+        out = r.stdout + r.stderr
+    except Exception as exc:
+        out = "stage-deps failed to run: %s: %s\n" % (type(exc).__name__, exc)
+    try:
+        with open(log, "a") as fh:
+            fh.write("\n--- stage-deps ---\n" + out)
+    except OSError:
+        pass
+
+
 def sysroot_add(names, sysroot):
     subprocess.run([os.path.join(TOOLS, "sysroot-add.sh")] + list(names),
                    capture_output=True, text=True, timeout=900,
@@ -771,8 +792,37 @@ def build_one(pkgbase, recipe_src, args, st):
     pre = bwrap_prefix(sysroot)
     env = build_env(sysroot, bool(pre))
 
+    # Already built by an earlier run?  Plain makepkg fails with "A package has
+    # already been built" and -f would rebuild it; at queue scale neither is
+    # right, because ~120 packages are already in the repo and rebuilding them
+    # would eat the night without adding coverage.  Mark ok, but still stage
+    # the package so later queue entries can link against it.  --force wins.
+    if not args.force:
+        _pl = subprocess.run(["makepkg", "--config", conf, "--packagelist"],
+                             cwd=work, capture_output=True, text=True,
+                             env=env, timeout=120)
+        _want = [f for f in _pl.stdout.split() if "-debug-" not in f]
+        if _want and all(os.path.isfile(f) for f in _want):
+            _ri = read_recipe(work)
+            _names = list(_ri["pkgname"])
+            if _names:
+                sysroot_add(_names, sysroot)
+                _staged = set(st.get("staged", []))
+                _staged.update(_names)
+                _staged.update(_ri["provides"])
+                st["staged"] = sorted(_staged)
+            return {"status": "ok", "class": "existing", "seconds": 0.0,
+                    "reused": True,
+                    "packages": [os.path.basename(f) for f in _want]}
+
+    # Stage depends+makedepends+checkdepends into the sysroot.  bq never called
+    # stage-deps.sh at all: preflight_deps() only *reported* what was missing,
+    # so bluez went in without `ell libical` and bolt without `asciidoc` even
+    # though all three are packaged in Arch POWER.
+    stage_deps(pkgbase, work, sysroot, log)
+
     cmd = pre + ["makepkg", "--config", conf, "-d", "--noconfirm",
-                 "--needed", "--nocheck", "--log"]
+                 "--needed", "--nocheck", "--log", "--skippgpcheck"]
     if args.force:
         cmd.append("-f")
 
@@ -978,8 +1028,11 @@ def cmd_build(args):
     st.setdefault("packages", {})
     st["started"] = st.get("started") or time.strftime("%Y-%m-%dT%H:%M:%S")
 
+    excluded = {x.strip() for x in getattr(args, "exclude", "").split(",") if x.strip()}
     todo = []
     for t in order:
+        if t in excluded:
+            continue
         prev = st["packages"].get(t, {})
         if prev.get("status") == "ok" and not args.rebuild:
             continue
@@ -1127,6 +1180,8 @@ def main():
     p.add_argument("--retry-failed", action="store_true")
     p.add_argument("--rebuild", action="store_true")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--exclude", default="",
+                   help="comma-separated pkgbases to skip entirely")
     p.add_argument("--keep", action="store_true", help="do not clean build trees")
     p.add_argument("--stop-on-fail", action="store_true")
     p.add_argument("--fix-arch", action="store_true",
