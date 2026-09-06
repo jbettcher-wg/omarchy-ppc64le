@@ -658,6 +658,14 @@ def build_env(sysroot, bwrapped):
     e["XDG_DATA_DIRS"] = "%s/share:/usr/share" % su
     e["PATH"] = "%s/bin:%s" % (su, e["PATH"])
     e["ELF_PATHGUARD"] = os.path.join(TOOLS, "elf-pathguard.sh")
+    # Inside bwrap's user namespace the real chown(uid 0) returns EINVAL
+    # because the id is not mapped, and fakeroot propagates that instead of
+    # just recording the ownership it is pretending to set.  Any package()
+    # that runs `cp -a` or `install -o` then dies with "failed to preserve
+    # ownership: Invalid argument" -- alsa-ucm-conf and boost both did.
+    # Telling fakeroot not to attempt the real call is exactly right here:
+    # we are staging a package tree, not changing anything on the system.
+    e["FAKEROOTDONTTRYCHOWN"] = "1"
     return e
 
 
