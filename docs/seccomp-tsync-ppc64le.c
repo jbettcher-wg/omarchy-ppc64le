@@ -7,6 +7,15 @@
  *
  * gcc -O2 -o tsync seccomp-tsync-ppc64le.c -lpthread ; ./tsync 8
  */
+/*
+ * Does SECCOMP_FILTER_FLAG_TSYNC work for multi-threaded processes on this
+ * kernel? Chromium renderers are multi-threaded and must use TSYNC, and no
+ * successful TSYNC install appears in any chromium trace -- so this was a
+ * suspect. It is not: TSYNC installs succeed on 7.2.2 both single-threaded and
+ * with 8 spinning threads, alone and combined with SPEC_ALLOW.
+ *
+ * gcc -O2 -o tsync seccomp-tsync-ppc64le.c -lpthread ; ./tsync 8
+ */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stddef.h>
