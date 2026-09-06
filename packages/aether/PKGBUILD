@@ -1,0 +1,190 @@
+# Maintainer: Jeremy Bettcher <thebettcher@gmail.com>
+#
+# Omarchy's theming tool, built from source.
+#
+# The AUR recipe (aur/aether) is a prebuilt-binary repackage: it downloads
+# aether-linux-amd64 or aether-linux-arm64 from the GitHub release and installs
+# it, with the source tarball present only to supply the .desktop files and
+# icons.  There is no ppc64le release asset, so that recipe cannot work here at
+# all -- the same shape of block as mise-bin, and with the same answer, which
+# is to compile it.  Omarchy compiles it too: their repo carries an
+# aether-debug package, which only exists for a package built from source.
+#
+# aether is Go + Wails v2 (webkit2gtk-4.1) with a Svelte/Vite frontend, and the
+# Go half needed nothing: `go build -tags webkit2_41` produces a working POWER9
+# binary with no patch, no flag and no dependency change.
+#
+# The frontend half is where the work was, and none of it is aether's fault.
+# Two of its build-time npm packages ship prebuilt native node addons with no
+# ppc64le artifact and no usable fallback:
+#
+#   lightningcss 1.32.0        Required by @tailwindcss/node, so not optional
+#                              and not configurable away.  Its loader tries
+#                              `lightningcss-<platform>-<arch>-gnu` and then
+#                              `../lightningcss.<platform>-<arch>-gnu.node`,
+#                              with no wasm path at all.  Fixed by building the
+#                              addon from lightningcss's own source: it is a
+#                              napi-rs cdylib, `cargo build -p
+#                              lightningcss_node` produces it, and dropping the
+#                              .so in under the name the loader looks for is
+#                              the whole fix.  6m29s on this machine.
+#
+#   @tailwindcss/oxide 4.2.4   Has a wasm32-wasi fallback, but npm refuses to
+#                              install the package that carries it because its
+#                              "cpu": ["wasm32"] does not match the host.  So
+#                              it is installed with --cpu=wasm32, and oxide's
+#                              own loader then finds it after the native
+#                              lookup fails.  Slower than native; it runs once
+#                              per build and does not ship.
+#
+# The name the addon has to be given is `linux-ppc64`, not `linux-ppc64le`:
+# Node reports process.arch as "ppc64" on this machine (there is no "ppc64le"
+# in Node's list), and both loaders build the filename from process.arch.  It
+# is derived at build time rather than hardcoded, so the recipe stays correct
+# on any architecture.
+#
+# What was NOT needed, and is worth recording so nobody re-derives it: the
+# `wails` CLI.  `wails build` runs the frontend build, then a plain `go build`;
+# frontend/wailsjs is pre-generated in the tree and main.go embeds
+# frontend/dist with go:embed.  Doing those two steps directly removes a build
+# dependency that would itself have to be packaged -- but it does mean
+# reproducing the CLI's build tags by hand, and that is the one place this
+# recipe can silently go wrong.  See the comment on the tag list in build().
+#
+# Verified by running, not by compiling: `--help` and `--version` are the weak
+# test, so the real one is `--extract-palette` over a JPEG, which exercises the
+# image decode and the colour-quantisation engine that is the entire point of
+# the program.  It returns a 16-colour palette.  The Wails GUI itself was not
+# opened -- this is the user's live COSMIC desktop, not a test rig -- so
+# "the window appears" remains unverified; everything behind it is not.
+
+pkgname=aether
+pkgver=4.29.8
+pkgrel=1
+pkgdesc='Desktop theming application - extract colors from wallpapers and apply cohesive themes'
+arch=('x86_64' 'aarch64' 'powerpc64le')
+url='https://github.com/omacom/aether'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'glibc')
+makedepends=('go' 'nodejs' 'npm' 'rust' 'cargo')
+# The lightningcss revision the frontend build resolves to.  Asserted against
+# node_modules in build(), so a drift fails loudly instead of silently
+# building an addon that does not match the JS that loads it.
+_lightningcss_ver=1.32.0
+source=("aether-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz"
+        "lightningcss-${_lightningcss_ver}.tar.gz::https://github.com/parcel-bundler/lightningcss/archive/refs/tags/v${_lightningcss_ver}.tar.gz")
+sha256sums=('b83e0eeb1332b4ed655389a051d5b9b14a3e109968b7f278005e52c5e69a1e9c'
+            'ca67b9ba532d439f5f91d23debfc2543d6decac130ee88bc4c66202fc7173ad9')
+
+prepare() {
+  # lightningcss pins a rust-toolchain.toml (channel 1.92.0) that would send
+  # cargo looking for rustup.  Arch POWER ships rust 1.97.1 as the system
+  # toolchain and the crate builds fine on it, so the pin just gets in the way.
+  rm -f "${srcdir}/lightningcss-${_lightningcss_ver}/rust-toolchain.toml"
+}
+
+build() {
+  local nodeplat
+  # e.g. "linux-ppc64"; both native loaders derive their filename this way.
+  nodeplat=$(node -p 'process.platform + "-" + process.arch')
+
+  # 1. The lightningcss node addon (see header).
+  cd "${srcdir}/lightningcss-${_lightningcss_ver}"
+  cargo build --release -p lightningcss_node
+
+  # 2. The frontend.  npm's cache and its update notifier both default into
+  # $HOME; keep everything this build touches inside $srcdir.
+  export npm_config_cache="${srcdir}/.npm-cache"
+  export npm_config_update_notifier=false
+  cd "${srcdir}/${pkgname}-${pkgver}/frontend"
+  # `npm ci` is not usable: on this architecture npm resolves a different set
+  # of @emnapi packages than the committed package-lock.json records, and ci
+  # refuses a lockfile that is not in sync.  npm install resolves the same
+  # dependency ranges and the assertion below covers the one version that has
+  # to match something outside node_modules.
+  npm install --no-audit --no-fund
+
+  local have
+  have=$(node -p 'require("./node_modules/lightningcss/package.json").version')
+  if [[ "$have" != "$_lightningcss_ver" ]]; then
+    printf '%s: frontend resolved lightningcss %s, addon built from %s\n' \
+      "$pkgname" "$have" "$_lightningcss_ver" >&2
+    return 1
+  fi
+  install -Dm755 \
+    "${srcdir}/lightningcss-${_lightningcss_ver}/target/release/liblightningcss_node.so" \
+    "node_modules/lightningcss/lightningcss.${nodeplat}-gnu.node"
+
+  # @tailwindcss/oxide's wasm fallback, which npm will not install on its own
+  # because the package declares "cpu": ["wasm32"].  --force is what gets past
+  # that check; --cpu=wasm32 is what makes it install the right artifact.
+  local oxidever
+  oxidever=$(node -p 'require("./node_modules/@tailwindcss/oxide/package.json").version')
+  npm install --no-audit --no-fund --force --cpu=wasm32 \
+    "@tailwindcss/oxide-wasm32-wasi@${oxidever}"
+
+  npm run build
+  [ -f dist/index.html ] || { printf '%s: frontend build produced no dist\n' "$pkgname" >&2; return 1; }
+
+  # 3. The Go binary.  This is what `wails build` runs after the frontend step,
+  # and the tag list is the part that is easy to get wrong.  Wails assembles it
+  # in pkg/commands/build/base.go as <output type> + <user tags> + "production":
+  #
+  #   desktop      selects the cgo/webkit2gtk backend.  WITHOUT IT the build
+  #                still succeeds and still produces a working CLI -- it just
+  #                has no GUI in it at all, no gtk or webkit symbol anywhere in
+  #                the binary and libc as its only DT_NEEDED.  That is what a
+  #                bare `go build -tags webkit2_41` produces here, and it is
+  #                silent, which is why check() greps for a webkit symbol.
+  #   production   the mode Wails uses for a release build.
+  #   webkit2_41   what upstream's Makefile selects when webkit2gtk-4.0 is
+  #                absent, which it is on a current Arch.
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  export CGO_CPPFLAGS="${CPPFLAGS}" CGO_CFLAGS="${CFLAGS}" \
+         CGO_CXXFLAGS="${CXXFLAGS}" CGO_LDFLAGS="${LDFLAGS}" CGO_ENABLED=1
+  go build -tags desktop,production,webkit2_41 \
+    -ldflags "-X aether/cli.Version=${pkgver}" \
+    -o aether .
+}
+
+check() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  ./aether --version | grep -qx "aether ${pkgver}" || {
+    printf '%s: version was not injected into the binary\n' "$pkgname" >&2
+    return 1
+  }
+  # The GUI is the whole product; a build that quietly dropped it still passes
+  # every CLI test.  Two independent signals that the desktop backend is in:
+  # a webkit call site in the text, and webkit2gtk in DT_NEEDED.
+  grep -q webkit_web_view <(strings -a aether) || {
+    printf '%s: no webkit symbols -- built without the desktop tag?\n' "$pkgname" >&2
+    return 1
+  }
+  readelf -dW aether | grep -q 'libwebkit2gtk-4\.1' || {
+    printf '%s: binary does not link webkit2gtk-4.1\n' "$pkgname" >&2
+    return 1
+  }
+  go test ./internal/... ./cli/...
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 aether "${pkgdir}/usr/bin/aether"
+  install -Dm644 build/linux/aether.desktop \
+    "${pkgdir}/usr/share/applications/aether.desktop"
+  install -Dm644 li.oever.aether.url-handler.desktop \
+    "${pkgdir}/usr/share/applications/li.oever.aether.url-handler.desktop"
+  install -Dm644 icon.png "${pkgdir}/usr/share/pixmaps/aether.png"
+  install -Dm644 assets/aether-icon-512.png \
+    "${pkgdir}/usr/share/icons/hicolor/512x512/apps/aether.png"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/aether/README.md"
+  # No licence file to install: upstream declares MIT in package metadata but
+  # ships no LICENSE in the repository, and the AUR recipe installs none
+  # either.  Recorded here rather than silently skipped.
+
+  # Fail the build if any shipped ELF records a build-tree path
+  # (tools/elf-pathguard.sh -- house policy, applied to every recipe here).
+  # This one matters: aether is cgo-linked against webkit2gtk and gtk3, which
+  # are staged into a sysroot on this build host.
+  "${ELF_PATHGUARD:-$startdir/../../tools/elf-pathguard.sh}" "$pkgdir"
+}
