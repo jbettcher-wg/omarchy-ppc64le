@@ -1,0 +1,12 @@
+omarchy pinned to v4.0.2 (commit 346e69e1), tagged 2026-08-31.
+
+Pinned deliberately: the installer manifest, the built omarchy/omarchy-settings
+packages (4.0.2-2) and this clone must agree, or a break cannot be attributed
+between upstream drift and porting work. Move the pin when you choose to, not
+by accident.
+
+Note: the version file at this tag still reads "4.0.0.alpha" -- upstream tags
+releases without bumping it. Trust the tag, not the file.
+
+To move:  git -C upstream/omarchy fetch --tags && git -C upstream/omarchy checkout <tag>
+          then regenerate the installer manifest from install/*.packages
