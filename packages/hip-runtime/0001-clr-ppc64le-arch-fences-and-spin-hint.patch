@@ -1,0 +1,55 @@
+Subject: [clr] ppc64le: arch detection, kernarg read-back fences, spin hint
+
+Portability fix worth sending upstream (ROCm/rocm-systems, projects/clr).
+
+rocclr/include/top.hpp knows ARM and x86 and defines nothing for any other
+host, which is mostly harmless (Os::spinPause() silently becomes a no-op),
+except that device/rocm/rocvirtual.cpp and hipamd/src/hip_graph_internal.cpp
+call _mm_sfence()/_mm_mfence() with no arch guard at all, around the
+write-then-read-back that flushes the large-BAR kernarg buffer.  ppc64le
+fails to compile there.
+
+* top.hpp: ATI_ARCH_PPC64 for __powerpc64__, and under it the two fence
+  names as a full `sync`.  The buffer they guard is device memory mapped
+  caching-inhibited on POWER; Power ISA 3.0B Book II 4.6.1 excludes such
+  storage from lwsync's ordering, so a release fence would compile and
+  order nothing.
+* os.cpp: Os::spinPause() lowers and restores SMT priority
+  (`or 1,1,1; or 2,2,2`), the powerpc kernel's cpu_relax(), instead of
+  falling through to nothing.
+
+diff -ruN a/rocclr/include/top.hpp b/rocclr/include/top.hpp
+--- a/rocclr/include/top.hpp	2026-05-19 16:18:44.000000000 -0600
++++ b/rocclr/include/top.hpp	2026-09-10 21:49:11.802360792 -0600
+@@ -28,6 +28,18 @@
+     defined(__x86__) || defined(__x86_64) || defined(__x86_64__) || defined(__amd64) ||            \
+     defined(__amd64__) || defined(_M_X64) || defined(_M_AMD64)
+ #define ATI_ARCH_X86
++#elif defined(__powerpc64__)
++#define ATI_ARCH_PPC64
++#endif
++
++#if defined(ATI_ARCH_PPC64)
++// rocvirtual.cpp and hip_graph_internal.cpp fence the large-BAR kernarg
++// read-back with the x86 spellings.  Those pages are caching-inhibited on
++// POWER, and only a full `sync` orders a cacheable store ahead of a subsequent
++// caching-inhibited one (Power ISA 3.0B Book II 4.6.1; lwsync excludes CI
++// storage), so both fences are the full barrier here.
++static inline void _mm_sfence(void) { __asm__ __volatile__("sync" ::: "memory"); }
++static inline void _mm_mfence(void) { __asm__ __volatile__("sync" ::: "memory"); }
+ #endif
+ 
+ #if defined(ATI_ARCH_ARM)
+diff -ruN a/rocclr/os/os.cpp b/rocclr/os/os.cpp
+--- a/rocclr/os/os.cpp	2026-05-19 16:18:44.000000000 -0600
++++ b/rocclr/os/os.cpp	2026-09-10 21:49:11.802704852 -0600
+@@ -125,6 +125,9 @@
+   _mm_pause();
+ #elif defined(ATI_ARCH_ARM)
+   __asm__ __volatile__("yield");
++#elif defined(ATI_ARCH_PPC64)
++  // Lower then restore SMT thread priority; the powerpc kernel's cpu_relax().
++  __asm__ __volatile__("or 1,1,1\n\tor 2,2,2" ::: "memory");
+ #endif
+ }
+ 
