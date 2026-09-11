@@ -8,7 +8,7 @@
 
 pkgname=blender
 pkgver=5.1.0
-pkgrel=3
+pkgrel=4
 epoch=17
 pkgdesc="A fully integrated 3D graphics creation suite (Cycles CPU with Embree and OpenImageDenoise)"
 arch=(powerpc64le)
@@ -122,8 +122,8 @@ prepare() {
   # Arch's own fix, from the blender 5.2.1 recipe.
   patch -Np1 -i "$srcdir"/ffmpeg-9.patch
 
-  # Cycles' SSE4.2 CPU kernel on VSX via GCC's x86-intrinsic compatibility
-  # headers (the Embree technique).  See README.md and the patch header.
+  # Cycles' CPU kernel on VSX: native, or the SSE kernel through GCC's
+  # x86-intrinsic compatibility headers.  See README.md and the patch header.
   patch -Np1 -i "$srcdir"/cycles-vsx.patch
 
   # Cycles and the compositor gate OIDN on an x86 cpuid SSE4.2 probe, which
@@ -136,11 +136,13 @@ prepare() {
     doc/manpage/blender.1.py
 }
 
-# ppc64le: 1 = Cycles' SSE4.2 CPU kernel compiled on VSX through GCC's
-# x86-intrinsic compatibility headers (cycles-vsx.patch); 0 = the scalar
-# kernel.  Output parity between the two is verified (README.md); which one
-# renders faster on POWER9 has not been measured yet.
-_cycles_vsx=1
+# ppc64le: which Cycles CPU kernel (cycles-vsx.patch, README.md):
+#   native  the 4-wide kernel written on VSX (default)
+#   sse     the x86 SSE4.2 kernel through GCC's SSE-on-VSX compat headers
+#   scalar  no SIMD kernel
+# Output parity of all three is verified; render speed is not yet measured
+# on an idle machine.
+_cycles_vsx=native
 
 _get_pyver() {
   python -c 'import sys; print(str(sys.version_info[0]) + "." + str(sys.version_info[1]))'
@@ -174,7 +176,7 @@ build() {
     # WITH_CYCLES=OFF because neither library existed for ppc64le.
     -D WITH_CYCLES=ON
     -D WITH_CYCLES_EMBREE=ON
-    -D SUPPORTS_SSE2VSX_BUILD=$([ "$_cycles_vsx" = 1 ] && echo ON || echo OFF)
+    -D CYCLES_PPC64LE_SIMD=$(case "$_cycles_vsx" in native) echo VSX;; sse) echo SSE2VSX;; *) echo SCALAR;; esac)
     -D WITH_CYCLES_OSL=ON
     -D WITH_OPENIMAGEDENOISE=ON
     # ppc64le: not packaged for POWER -- openpgl (path guiding), usd.

@@ -25,7 +25,7 @@ and `oidn-ppc64le-supported.patch` (ours; headers explain each hunk).
 |---|---|---|
 | Cycles CPU device | **on** | `_cycles` module imports; `bpy.app.build_options.cycles == True`; BMW27 and Classroom render `[MEASURED]` |
 | BVH build + ray traversal | **Embree 4.4.1, SSE4.2 kernels on VSX** (`packages/embree`) | `ldd`: `libembree4.so.4`; `_cycles.with_embree == True` `[MEASURED]` |
-| Cycles shading/integrator kernel | **SSE4.2 kernel on VSX** via `cycles-vsx.patch` (see below) | `_cycles.system_info()` -> `CPU device capabilities: VSX`; 5.2x more `xvmulsp`/`xvaddsp` in the binary `[MEASURED]` |
+| Cycles shading/integrator kernel | **native VSX 4-wide kernel** via `cycles-vsx.patch` (see below); the SSE-through-compat-headers kernel and scalar are build-time alternatives | `_cycles.system_info()` -> `CPU device capabilities: VSX`; 2,194 fused vector multiply-adds and 895 control-vector permutes in the kernel object vs 6 and 10,675 for the compat kernel `[MEASURED]` |
 | Denoiser | **OpenImageDenoise 2.4.1 CPU device** (`packages/openimagedenoise`) | `ldd`: `libOpenImageDenoise.so.2`; `_cycles.with_openimagedenoise == True` `[MEASURED]` |
 | Open Shading Language | on | `_cycles.with_osl == True` `[MEASURED]` |
 | Path guiding (Open PGL) | **off** -- `openpgl` is not packaged for ppc64le; it is Embree-based and portable, a later job | |
@@ -74,41 +74,75 @@ and `oidn-ppc64le-supported.patch` (ours; headers explain each hunk).
 
 ## `cycles-vsx.patch` -- the Cycles kernel on VSX
 
-Cycles' CPU kernel has an SSE path (`__KERNEL_SSE__` .. `__KERNEL_SSE42__`,
-set in `util/optimization.h`) and an ARM path that compiles the same SSE
-code through `sse2neon`. Nothing set those macros on POWER, so every kernel
-was scalar. GCC ships `<xmmintrin.h>` .. `<nmmintrin.h>` for powerpc64le
-implementing SSE..SSE4.2 on VSX -- the technique `packages/embree` was ported
-with -- and Cycles turned out to need almost nothing beyond them:
+Cycles has one 4-wide CPU kernel, written against SSE intrinsics and selected
+by `__KERNEL_SSE__`..`__KERNEL_SSE42__` in `util/optimization.h`; ARM
+compiles the same code through `sse2neon`. Nothing set those macros on
+POWER, so every kernel was scalar. The patch adds two ways to have one,
+chosen with `_cycles_vsx=` in the PKGBUILD (`CYCLES_PPC64LE_SIMD` in cmake):
 
-- probe-compiling `util/math.h`, `simd.h`, `types.h`, `math_intersect.h`,
-  `transform.h`, `half.h`, `hash.h` with the SSE macros defined produced
-  exactly one error class, `_mm_dp_ps` undeclared `[MEASURED]`. Everything
-  else Cycles uses (`_mm_round_ps`, `_mm_blendv_ps`, `_mm_hadd_ps`,
-  `_mm_min/max_epi32`, `_mm_extract_epi16`, `_mm_shuffle_epi32`, ...) is in
-  the compatibility headers. The FMA and F16C intrinsics only appear under
-  `__KERNEL_AVX2__` / `__F16C__`, which stay off.
-- The full `kernel/device/cpu/kernel.cpp` (the whole integrator, ~2 min to
-  compile) builds with the real flags plus `-DWITH_SSE2VSX` and no
-  `-flax-vector-conversions` `[MEASURED]`.
+| `_cycles_vsx` | what | marker |
+|---|---|---|
+| `native` (default) | the vector layer written on VSX: `float4`/`float3` hold a `__vector float`, `int4`/`int3` a `__vector int`, every operation is `vec_*` or a GCC vector-extension expression. No x86 intrinsic used or emulated -- no compat header is included, so any leftover `_mm_*` is a compile error | `__KERNEL_VSX__` |
+| `sse` | the x86 SSE4.2 kernel unchanged, through GCC's `<xmmintrin.h>`..`<nmmintrin.h>` for powerpc64le (the Embree technique), plus a 15-line `_mm_dp_ps` they lack | `__KERNEL_SSE2VSX__` |
+| `scalar` | no SIMD kernel | -- |
 
-So the patch is: a CMake probe for the headers and a POWER branch beside the
-NEON one in `intern/cycles/CMakeLists.txt`; `__KERNEL_VSX__` plus the four
-SSE macros in `optimization.h`; the includes, a 15-line `_mm_dp_ps`, and
-`__builtin_ctz/clz` bit scans in `simd.h` (the generic fallback loops up to
-64 times per call and has a `1 << bit` int shift in `bitscan(uint64_t)`);
-`"VSX"` in `device_cpu_capabilities()` so the active kernel is visible.
+Both SIMD modes also define the `__KERNEL_SSE*__` macros: that is what the
+kernel tests for "a 4-wide kernel exists" (`svm/noise.h`, `hash.h`,
+`color.h`, `transform.h`), and those sites use only the `float4`/`int4` API.
+`_cycles.system_info()` reports `VSX` or `SSE4.2 on VSX` accordingly.
 
-**Parity before timing.** BMW27 rendered by a scalar-kernel build (this
-recipe with the patch reverted, same tree, same flags) and by the VSX build,
-compared with OpenImageIO's `idiff` `[MEASURED]`:
+### What the native layer does differently, and why (all `[MEASURED]` on the disassembly, GCC 16, `-mcpu=power9`)
 
-    Mean error = 6.45e-05   RMS error = 9.5e-04   Peak SNR = 60.4 dB
-    8456 pixels (1.63%) over 1e-06, max 0.082 (one pixel, headlight)
+- **Shuffles.** SSE encodes lane selection in an immediate; VSX has no such
+  instruction, so the compat header loads a control vector and `xxperm`s for
+  every shuffle. The native layer uses `__builtin_shuffle` with a constant
+  mask, which lets GCC emit the single-op permute where one exists
+  (`xxswapd`, `xxmrghd/ld`, `xxspltw`, `xxmrghw/lw`), and rotates with
+  `vec_sld(a, a, 12|8)` (one `vsldoi`, no control vector) in every horizontal
+  reduction. Kernel object: `xxperm`+`vperm` 10,675 -> 895.
+- **FMA.** With Cycles' `-ffp-contract=on`, GCC does not fuse `a * b + c`
+  written with vector operators (it fuses the scalar kernel's expressions,
+  and it fuses under `-ffp-contract=fast`). `madd`/`msub` are `vec_madd`/
+  `vec_msub`: fused vector ops 6 -> 2,194.
+- **Registers.** Both the compat and the native kernel objects already use
+  all 64 VSRs; spill traffic is the same within noise. The emulation tax was
+  permutes and un-fused math, not register pressure.
+- **Reductions.** `dot()` sums `(a0+a1)+(a2+a3)`, the scalar association;
+  `float3` reductions zero the w lane with `vec_insert(0, a, 3)`
+  (`xxspltib`+`xxinsertw`, ISA 3.0, no memory constant).
+- **Conversions.** `make_int4(float4)` truncates (`vctsxs`) like the scalar
+  `(int)` casts; SSE's `cvtps` rounds to nearest, a difference the x86
+  kernel carries against its own scalar path. `float3 / float` multiplies by
+  the reciprocal as the scalar code does.
+- **Transforms.** `transform_point/direction` transpose the three rows with
+  `vec_mergeh/mergel` + `xxmrghd/xxmrgld` (8 ops) and apply three `vec_madd`
+  of `xxspltw`-splatted components, the shape of the SSE path.
+- **Single instructions** for `neg`, `abs`, `sqrt`, `floor`, `ceil`,
+  `trunc`, `select` (`xxsel`), compares (`xvcmp*sp`).
+- **Two documented semantic differences** from the scalar definitions:
+  `round()` is `vrfin`, ties to even (as SSE's `roundps`; scalar `roundf` is
+  ties-away); `min/max` are `xvminsp/xvmaxsp`, which return the non-NaN
+  operand (scalar `(a<b)?a:b` returns `b`). Both are listed by name in the
+  probe.
 
-98.4% of pixels bit-identical; the rest are the rounding-level path
-divergence one also gets between the scalar and SSE kernels on x86 (the
-diff image is scattered noise in the headlight highlights, no structure).
+Kernel object (`kernel/device/cpu/kernel.cpp`): 296,749 / 336,909 / 303,769
+instructions scalar / sse / native; the full census is in the handbook,
+`docs/cycles-native-vsx-kernel.md`.
+
+**Parity before timing.** Two levels `[MEASURED]`:
+
+1. Operation level: the handbook's `probes/cycles_vsx_probe.cpp` compiles the
+   real patched headers twice (scalar, native), dumps 8,967 operation results
+   over identical inputs and compares: 8,276 bit-identical, 688 within an
+   operand-scaled rounding tolerance (GCC contracts the *scalar* reference
+   into FMAs; cancellation in transforms), 3 documented differences, 0
+   mismatches. The same probe against the `sse` layer reports 217 deviations
+   from the scalar definitions -- all of them x86-SSE semantics (rounding
+   `make_int4`, dividing `float3/float`, `fast_rint`), not bugs.
+2. Render level, below: BMW27 PSNR 59.0 dB and Classroom 48.9 dB against the
+   scalar kernel, the same as the `sse` kernel scores.
+
+The native kernel is what the package ships (`_cycles_vsx=native`).
 
 ## Parity, and the benchmark that is still outstanding
 
@@ -123,9 +157,10 @@ options, differing in exactly one variable each:
 
 | binary | Cycles kernel | BVH |
 |---|---|---|
-| `blender-A` | scalar (`cycles-vsx.patch` reverted) | Embree |
-| `blender-B` | SSE4.2 on VSX | Embree |
-| `blender-C` | SSE4.2 on VSX | Cycles' own BVH2 (`WITH_CYCLES_EMBREE=OFF`) |
+| `blender-A` | scalar (`_cycles_vsx=scalar`) | Embree |
+| `blender-B` | SSE4.2 through the compat headers (`sse`) | Embree |
+| `blender-C` | SSE4.2 through the compat headers | Cycles' own BVH2 (`WITH_CYCLES_EMBREE=OFF`) |
+| `blender-N` | **native VSX** (`native`, what the package ships) | Embree |
 
 Render command, for every binary and scene:
 
@@ -144,12 +179,15 @@ kernel, not the run.
 BMW27: mean error 3.2e-3, PSNR 42.7 dB, 69.6% of pixels differ. That is what
 "a different but equally correct render" looks like.
 
-**Scalar vs VSX kernel (A vs B)** `[MEASURED]`:
+**Scalar vs SIMD kernels** `[MEASURED]`:
 
-| scene | mean error | PSNR | pixels over 1e-6 |
-|---|---|---|---|
-| BMW27 | 6.5e-05 | 60.4 dB | 1.63% (max 0.082, one headlight pixel) |
-| Classroom | 1.3e-03 | 48.9 dB | 37.2% |
+| scene | pair | mean error | PSNR | pixels over 1e-6 |
+|---|---|---|---|---|
+| BMW27 | A vs B (sse) | 6.5e-05 | 60.4 dB | 1.63% (max 0.082, one headlight pixel) |
+| BMW27 | A vs N (native) | 7.3e-05 | 59.0 dB | 1.61% |
+| BMW27 | B vs N | 6.2e-05 | 59.6 dB | 1.38% |
+| Classroom | A vs B (sse) | 1.3e-03 | 48.9 dB | 37.2% |
+| Classroom | A vs N (native) | 1.3e-03 | 48.9 dB | 37.2% |
 
 BMW27: 18 dB below the sampling-noise floor, 98.4% of pixels bit-identical;
 the amplified diff is scattered noise in the headlight highlights. Classroom
@@ -180,6 +218,7 @@ those runs is reported here. To measure on an idle box:
     cd /var/tmp/blender-bq/bench          # blender-A / -B / -C and stageB/ are still there
     export BLENDER_SYSTEM_RESOURCES=/var/tmp/blender-bq/bench/stageB/usr/share/blender/5.1
     ../scratch/in-overlay.sh ./final.sh   # interleaved A,B,C x2 on BMW27 -> results-final.tsv + out/F-*.log
+                                           # add blender-N (native) to the loop in final.sh for the four-way comparison
 
 `final.sh` records wall time, Blender's own `Time:` line and the 1-minute
 load before each run; the `Kernel statistics:` block in each log is the
@@ -188,9 +227,8 @@ POWER9 is an open question: the SSE code gains 4-wide `xvmulsp`/`xvaddsp`
 but also ~23k lane-shuffle instructions (`xxinsertw`, `vperm`, `xxsldwi`)
 that x86 addressing forms get for free, and the scalar build already keeps
 its float math in VSX registers (`xsmulsp`). If it turns out slower, the
-recipe builds the scalar kernel with `_cycles_vsx=0` (passes
-`-D SUPPORTS_SSE2VSX_BUILD=OFF`; the patch honours a predefined value) --
-parity holds either way.
+recipe builds any of the three kernels with `_cycles_vsx=native|sse|scalar`
+-- parity holds for all of them.
 
 ## GPU: HIP is compiled in and dormant
 
