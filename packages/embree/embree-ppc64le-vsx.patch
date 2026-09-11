@@ -1,0 +1,3466 @@
+powerpc64le: a native VSX backend for Embree's 4-wide SIMD layer.
+
+Applies on top of embree-ppc64le.patch (the port itself: CMake detection,
+the __SSE*__ ISA switch, the compat-header shim).  This patch is kept
+separate because the base port is a self-contained upstreamable change and
+stays the fallback: the CMake option added here, EMBREE_PPC64LE_NATIVE_VSX
+(default ON on ppc64le), selects between the two; OFF rebuilds 4.4.1-1
+exactly.  The PKGBUILD exposes it as _embree_vsx=native|sse.
+
+What it replaces.  With the base patch, Embree's SSE4.2 kernels compile
+through GCC's <xmmintrin.h>..<nmmintrin.h> for powerpc64le: every
+_mm_shuffle_ps becomes a control-vector load plus xxperm/vperm, every
+_mm_blendv_ps an xxsel, every lane extraction a round trip, and nothing in
+the SIMD abstraction is written for the machine.  With this patch the four
+4-wide types (vfloat4, vint4, vuint4, vboolf4 -- common/simd/*_vsx.h), the
+SSE-backed math types (Vec3fa/Vec3fx, Vec3ia, Vec3ba, Vec2fa, Color/Color4
+-- common/math/*_vsx.h) and the scalar helpers in emath.h are written on
+__vector float/int storage, GCC vector extensions and the altivec builtins.
+No x86 SIMD intrinsic exists in the build: <immintrin.h> is never included,
+so any surviving _mm_* is a compile error.  The only x86 spellings kept are
+the non-SIMD platform hints Embree's system layer calls by name (_mm_pause,
+_mm_mfence, _mm_prefetch, _mm_malloc/_mm_free, the MXCSR accessors), defined
+in common/simd/vsx/vsx.h.
+
+Design (common/simd/vsx/vsx.h carries the details):
+- movemask is one vbpermq (ISA 2.07) gathering the four word sign bits in
+  x86 bit order; all/any/none are record-form compares (vcmpequw.) that
+  branch on CR6; masks are canonical all-ones/zero lanes.
+- madd/msub/nmadd/nmsub are vec_madd/vec_msub/vec_nmsub/vec_nmadd
+  (xvmadd*/xvmsub*/xvnmsub*/xvnmadd*), for vfloat4, Vec3fa, Vec3fx, Vec2fa
+  and the scalar helpers (xsmaddasp).  node_intersector1.h and
+  node_intersector_packet.h take the fused traversal shape (org*rdir
+  precomputed, msub per plane) that upstream enables for AVX2 and NEON.
+- shuffles are __builtin_shuffle with a constant mask, so GCC emits the
+  single-instruction permutes (xxswapd, xxspltd, xxspltw, xxmrghw/lw,
+  vmrgew/ow, xxpermdi); shuffle<1,0,3,2> is a doubleword rotate (vrld 32),
+  the word rotations are vec_sld, shift_right_1 is one vsldoi against zero.
+  Blends with immediate masks are xxsel with a constant.
+- float min/max keep SSE minps/maxps NaN semantics (compare+select: the
+  second operand when unordered).  xvminsp/xvmaxsp return the non-NaN
+  operand, and the kernels depend on propagation: OBBNode::clear() marks
+  empty children with NaN transforms and culls them through
+  max(tnear, tNearXYZ) <= min(tfar, tFarXYZ).  With xvminsp those children
+  were traversed and embree_verify's regression_static crashed on the
+  emptyNode leaf.  mini/maxi (integer min/max on the float bits) are
+  vminsw/vmaxsw as on x86.
+- vint4(vfloat4) rounds to nearest even (xvrspic + vctsxs) like cvtps2dq.
+  vfloat4(vuint4) is one xvcvuxwsp; the SSE tier's two-step trick double
+  rounds for values >= 2^31, so this is the correctly rounded one.
+- rcp/rsqrt: xvresp/xvrsqrtesp (14.6/15.4 bits, measured) plus one fused
+  Newton step (24.0/23.4 bits).  The SSE tier seeds from 12-bit rcpps.
+- narrow loads (vfloat4::load(const unsigned char*) etc.) widen with two
+  merges against zero or two unpacks, no memory constants;
+  vint4::store(unsigned char*) is the SSE packus pair (vpkswus+vpkshus),
+  vint4::store(unsigned short*) the modulo pack (vpkuwum) upstream's scalar
+  cast implies.
+- !=, > and >= are the ordered/unordered IEEE forms the NEON tier uses:
+  != is true for NaN operands, > and >= are false (SSE's cmpnlt/cmpnle
+  are true).
+- Everything lowers to ISA 2.07 at -mcpu=power8 (verified: the
+  -mcpu=power8 library decodes identically under objdump -M power8 and
+  -M power9); -mcpu=power9 lets GCC pick lxv/stxv, xxinsertw/xxextractuw,
+  mtvsrws, lxvwsx for the same builtins.
+
+Verified on POWER9 (GCC 16.1.1, -mcpu=power9): the operation-level
+differential probe (powerpc64le-handbook/probes/embree_vsx_probe.cpp) over
+32,067 records against the compat-header build: 29,470 bit-identical, 661
+within the fused/estimate tolerances, 77 documented (rcp(0), uint->float
+rounding), 0 mismatches; embree_verify passes (see packages/embree/README.md);
+BMW27 renders at parity with the compat build.
+
+Send to github.com/RenderKit/embree together with embree-ppc64le.patch.
+
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/CMakeLists.txt embree-4.4.1/CMakeLists.txt
+--- embree-4.4.1.orig/CMakeLists.txt	2026-09-11 11:05:46.319232935 -0600
++++ embree-4.4.1/CMakeLists.txt	2026-09-11 11:34:35.683158338 -0600
+@@ -225,8 +225,17 @@
+   MESSAGE(STATUS "Building for AArch64")
+   SET(EMBREE_ARM ON)
+ ELSEIF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64le|powerpc64le)$")
+-  MESSAGE(STATUS "Building for ppc64le (SSE kernels on VSX via the compiler's compatibility headers)")
+   SET(EMBREE_PPC64LE ON)
++  # The 4-wide SIMD layer written directly on VSX (common/simd/vsx, *_vsx.h);
++  # OFF selects the SSE kernels compiled through the compiler's x86
++  # compatibility headers instead.  Both build the same sse42 ISA tier.
++  OPTION(EMBREE_PPC64LE_NATIVE_VSX "Use the native VSX 4-wide SIMD layer instead of the SSE-on-VSX compatibility headers." ON)
++  IF (EMBREE_PPC64LE_NATIVE_VSX)
++    MESSAGE(STATUS "Building for ppc64le (native VSX 4-wide SIMD layer)")
++    ADD_DEFINITIONS(-DEMBREE_PPC64LE_VSX=1)
++  ELSE()
++    MESSAGE(STATUS "Building for ppc64le (SSE kernels on VSX via the compiler's compatibility headers)")
++  ENDIF()
+ ENDIF()
+ 
+ SET(EMBREE_TASKING_SYSTEM "TBB" CACHE STRING "Selects tasking system")
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/color.h embree-4.4.1/common/math/color.h
+--- embree-4.4.1.orig/common/math/color.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/math/color.h	2026-09-11 11:34:08.194865343 -0600
+@@ -5,6 +5,8 @@
+ 
+ #if defined(EMBREE_SYCL_SUPPORT) && defined(__SYCL_DEVICE_ONLY__)
+ #  include "color_sycl.h"
++#elif defined(EMBREE_PPC64LE_VSX)
++#  include "color_vsx.h"
+ #else
+ 
+ #include "constants.h"
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/color_vsx.h embree-4.4.1/common/math/color_vsx.h
+--- embree-4.4.1.orig/common/math/color_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/math/color_vsx.h	2026-09-11 12:03:00.853054760 -0600
+@@ -0,0 +1,224 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: Color / Color4 on VSX (see ../simd/vsx/vsx.h).
++
++#pragma once
++
++#include "constants.h"
++#include "col3.h"
++#include "col4.h"
++
++#include "../simd/sse.h"
++
++namespace embree
++{
++  ////////////////////////////////////////////////////////////////////////////////
++  /// VSX RGBA Color Class
++  ////////////////////////////////////////////////////////////////////////////////
++
++  struct Color4
++  {
++    union {
++      vsx::f32x4 m128;
++      struct { float r,g,b,a; };
++    };
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Construction
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Color4 () {}
++    __forceinline Color4 ( const vsx::f32x4 a ) : m128(a) {}
++
++    __forceinline explicit Color4 (const float v) : m128(vec_splats(v)) {}
++    __forceinline          Color4 (const float r, const float g, const float b, const float a) : m128((vsx::f32x4){r, g, b, a}) {}
++
++    __forceinline explicit Color4 ( const Col3uc& other ) { m128 = (vsx::f32x4){(float)other.r, (float)other.g, (float)other.b, 255.0f} * vec_splats(one_over_255); }
++    __forceinline explicit Color4 ( const Col3f&  other ) { m128 = (vsx::f32x4){other.r, other.g, other.b, 1.0f}; }
++    __forceinline explicit Color4 ( const Col4uc& other ) { m128 = (vsx::f32x4){(float)other.r, (float)other.g, (float)other.b, (float)other.a} * vec_splats(one_over_255); }
++    __forceinline explicit Color4 ( const Col4f&  other ) { m128 = (vsx::f32x4){other.r, other.g, other.b, other.a}; }
++
++    __forceinline Color4           ( const Color4& other ) : m128(other.m128) {}
++    __forceinline Color4& operator=( const Color4& other ) { m128 = other.m128; return *this; }
++
++    __forceinline operator const vsx::f32x4&() const { return m128; }
++    __forceinline operator       vsx::f32x4&()       { return m128; }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Set
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline void set(Col3f& d) const { d.r = r; d.g = g; d.b = b; }
++    __forceinline void set(Col4f& d) const { d.r = r; d.g = g; d.b = b; d.a = a; }
++    __forceinline void set(Col3uc& d) const
++    {
++      vfloat4 s = clamp(vfloat4(m128))*255.0f;
++      d.r = (unsigned char)(s[0]);
++      d.g = (unsigned char)(s[1]);
++      d.b = (unsigned char)(s[2]);
++    }
++    __forceinline void set(Col4uc& d) const
++    {
++      vfloat4 s = clamp(vfloat4(m128))*255.0f;
++      d.r = (unsigned char)(s[0]);
++      d.g = (unsigned char)(s[1]);
++      d.b = (unsigned char)(s[2]);
++      d.a = (unsigned char)(s[3]);
++    }
++    __forceinline void set(float &f) const
++    {
++      f = 0.2126f*r+0.7125f*g+0.0722f*b; // sRGB luminance.
++    }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Color4( ZeroTy   ) : m128(vec_splats(0.0f)) {}
++    __forceinline Color4( OneTy    ) : m128(vec_splats(1.0f)) {}
++    __forceinline Color4( PosInfTy ) : m128(vec_splats((float)pos_inf)) {}
++    __forceinline Color4( NegInfTy ) : m128(vec_splats((float)neg_inf)) {}
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// VSX RGB Color Class
++  ////////////////////////////////////////////////////////////////////////////////
++
++  struct Color
++  {
++    union {
++      vsx::f32x4 m128;
++      struct { float r,g,b; };
++    };
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Construction
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Color () {}
++    __forceinline Color ( const vsx::f32x4 a ) : m128(a) {}
++
++    __forceinline explicit Color  (const float v)                               : m128(vec_splats(v)) {}
++    __forceinline          Color  (const float r, const float g, const float b) : m128((vsx::f32x4){r, g, b, 0.0f}) {}
++
++    __forceinline Color           ( const Color& other ) : m128(other.m128) {}
++    __forceinline Color& operator=( const Color& other ) { m128 = other.m128; return *this; }
++
++    __forceinline Color           ( const Color4& other ) : m128(other.m128) {}
++    __forceinline Color& operator=( const Color4& other ) { m128 = other.m128; return *this; }
++
++    __forceinline operator const vsx::f32x4&() const { return m128; }
++    __forceinline operator       vsx::f32x4&()       { return m128; }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Set
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline void set(Col3f& d) const { d.r = r; d.g = g; d.b = b; }
++    __forceinline void set(Col4f& d) const { d.r = r; d.g = g; d.b = b; d.a = 1.0f; }
++    __forceinline void set(Col3uc& d) const
++    {
++      vfloat4 s = clamp(vfloat4(m128))*255.0f;
++      d.r = (unsigned char)(s[0]);
++      d.g = (unsigned char)(s[1]);
++      d.b = (unsigned char)(s[2]);
++    }
++    __forceinline void set(Col4uc& d) const
++    {
++      vfloat4 s = clamp(vfloat4(m128))*255.0f;
++      d.r = (unsigned char)(s[0]);
++      d.g = (unsigned char)(s[1]);
++      d.b = (unsigned char)(s[2]);
++      d.a = 255;
++    }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Color( ZeroTy   ) : m128(vec_splats(0.0f)) {}
++    __forceinline Color( OneTy    ) : m128(vec_splats(1.0f)) {}
++    __forceinline Color( PosInfTy ) : m128(vec_splats((float)pos_inf)) {}
++    __forceinline Color( NegInfTy ) : m128(vec_splats((float)neg_inf)) {}
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline const Color operator +( const Color& a ) { return a; }
++  __forceinline const Color operator -( const Color& a ) { return vec_neg(a.m128); }
++  __forceinline const Color abs  ( const Color& a ) { return vec_abs(a.m128); }
++  __forceinline const Color rcp  ( const Color& a ) { return vsx::rcp(a.m128); }
++  __forceinline const Color rsqrt( const Color& a ) { return vsx::rsqrt(a.m128); }
++  __forceinline const Color sqrt ( const Color& a ) { return vec_sqrt(a.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline const Color operator +( const Color& a, const Color& b ) { return a.m128 + b.m128; }
++  __forceinline const Color operator -( const Color& a, const Color& b ) { return a.m128 - b.m128; }
++  __forceinline const Color operator *( const Color& a, const Color& b ) { return a.m128 * b.m128; }
++  __forceinline const Color operator *( const Color& a, const float  b ) { return a * Color(b); }
++  __forceinline const Color operator *( const float  a, const Color& b ) { return Color(a) * b; }
++  __forceinline const Color operator /( const Color& a, const Color& b ) { return a * rcp(b); }
++  __forceinline const Color operator /( const Color& a, const float  b ) { return a * rcp(b); }
++
++  __forceinline const Color min( const Color& a, const Color& b ) { return vsx::fmin(a.m128, b.m128); }
++  __forceinline const Color max( const Color& a, const Color& b ) { return vsx::fmax(a.m128, b.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline const Color operator+=(Color& a, const Color& b) { return a = a + b; }
++  __forceinline const Color operator-=(Color& a, const Color& b) { return a = a - b; }
++  __forceinline const Color operator*=(Color& a, const Color& b) { return a = a * b; }
++  __forceinline const Color operator/=(Color& a, const Color& b) { return a = a / b; }
++  __forceinline const Color operator*=(Color& a, const float b      ) { return a = a * b; }
++  __forceinline const Color operator/=(Color& a, const float b      ) { return a = a / b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reductions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline float reduce_add(const Color& v) { return v.r+v.g+v.b; }
++  __forceinline float reduce_mul(const Color& v) { return v.r*v.g*v.b; }
++  __forceinline float reduce_min(const Color& v) { return min(v.r,v.g,v.b); }
++  __forceinline float reduce_max(const Color& v) { return max(v.r,v.g,v.b); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool operator ==( const Color& a, const Color& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) == 7; }
++  __forceinline bool operator !=( const Color& a, const Color& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) != 7; }
++  __forceinline bool operator < ( const Color& a, const Color& b ) {
++    if (a.r != b.r) return a.r < b.r;
++    if (a.g != b.g) return a.g < b.g;
++    if (a.b != b.b) return a.b < b.b;
++    return false;
++  }
++
++   ////////////////////////////////////////////////////////////////////////////////
++  /// Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline const Color select( bool s, const Color& t, const Color& f ) {
++    return vec_sel(f.m128, t.m128, vsx::splat_mask(s));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Special Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  /*! computes luminance of a color */
++  __forceinline float luminance (const Color& a) { return madd(0.212671f,a.r,madd(0.715160f,a.g,0.072169f*a.b)); }
++
++  /*! output operator */
++  __forceinline embree_ostream operator<<(embree_ostream cout, const Color& a) {
++    return cout << "(" << a.r << ", " << a.g << ", " << a.b << ")";
++  }
++}
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/emath.h embree-4.4.1/common/math/emath.h
+--- embree-4.4.1.orig/common/math/emath.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/math/emath.h	2026-09-11 11:36:05.913524083 -0600
+@@ -14,6 +14,8 @@
+ 
+ #if defined(__ARM_NEON)
+ #include "../simd/arm/emulation.h"
++#elif defined(EMBREE_PPC64LE_VSX)
++#include "../simd/vsx/vsx.h"
+ #else
+ #include <emmintrin.h>
+ #include <xmmintrin.h>
+@@ -58,6 +60,21 @@
+   __forceinline float sign ( const float x ) { return x<0?-1.0f:1.0f; }
+   __forceinline float sqr  ( const float x ) { return x*x; }
+ 
++#if defined(EMBREE_PPC64LE_VSX)
++
++  /* powerpc64le: scalar helpers.  rcp is an exact xsdivsp (the SSE rcpss +
++     Newton step is 23 bits; this is 24 and one instruction).  rsqrt is the
++     xvrsqrtesp estimate plus one Newton step on a splat.  The bit tricks go
++     through integer casts; madd and friends are the scalar VSX fused ops
++     (xsmaddasp etc., ISA 2.07). */
++  __forceinline float rcp  ( const float x ) { return 1.0f / x; }
++  __forceinline float signmsk ( const float x ) { return cast_i2f(cast_f2i(x) & (int)0x80000000); }
++  __forceinline float xorf( const float x, const float y ) { return cast_i2f(cast_f2i(x) ^ cast_f2i(y)); }
++  __forceinline float andf( const float x, const unsigned y ) { return cast_i2f(cast_f2i(x) & (int)y); }
++  __forceinline float rsqrt( const float x ) { return vec_extract(vsx::rsqrt(vec_splats(x)), 0); }
++
++#else
++
+   __forceinline float rcp  ( const float x )
+   {
+ #if defined(__aarch64__)
+@@ -150,6 +167,8 @@
+ #endif
+   }
+ 
++#endif // EMBREE_PPC64LE_VSX
++
+ #if defined(__WIN32__) && defined(_MSC_VER) && (_MSC_VER <= 1700)
+   __forceinline float nextafter(float x, float y) { if ((x<y) == (x>0)) return x*(1.1f+float(ulp)); else return x*(0.9f-float(ulp)); }
+   __forceinline double nextafter(double x, double y) { return _nextafter(x, y); }
+@@ -204,7 +223,12 @@
+   __forceinline double floor( const double x ) { return ::floor (x); }
+   __forceinline double ceil ( const double x ) { return ::ceil (x); }
+ 
+-#if defined(__aarch64__)
++#if defined(EMBREE_PPC64LE_VSX)
++  __forceinline float mini(float a, float b) {
++    const int ai = cast_f2i(a), bi = cast_f2i(b);
++    return cast_i2f(ai < bi ? ai : bi);
++  }
++#elif defined(__aarch64__)
+     __forceinline float mini(float a, float b) {
+         // FP and Neon shares same vector register in arm64
+         __m128 x;
+@@ -223,7 +247,12 @@
+   }
+ #endif
+ 
+-#if defined(__aarch64__)
++#if defined(EMBREE_PPC64LE_VSX)
++  __forceinline float maxi(float a, float b) {
++    const int ai = cast_f2i(a), bi = cast_f2i(b);
++    return cast_i2f(ai < bi ? bi : ai);
++  }
++#elif defined(__aarch64__)
+     __forceinline float maxi(float a, float b) {
+         // FP and Neon shares same vector register in arm64
+         __m128 x;
+@@ -310,7 +339,13 @@
+   template<typename T> __forceinline T  sin2cos ( const T& x )  { return sqrt(max(T(zero),T(one)-x*x)); }
+   template<typename T> __forceinline T  cos2sin ( const T& x )  { return sin2cos(x); }
+ 
+-#if defined(__AVX2__)
++#if defined(EMBREE_PPC64LE_VSX)
++  __forceinline float madd  ( const float a, const float b, const float c) { return __builtin_fmaf( a, b,  c); }   // xsmaddasp
++  __forceinline float msub  ( const float a, const float b, const float c) { return __builtin_fmaf( a, b, -c); }   // xsmsubasp
++  __forceinline float nmadd ( const float a, const float b, const float c) { return __builtin_fmaf(-a, b,  c); }   // xsnmsubasp
++  __forceinline float nmsub ( const float a, const float b, const float c) { return __builtin_fmaf(-a, b, -c); }   // xsnmaddasp
++
++#elif defined(__AVX2__)
+   __forceinline float madd  ( const float a, const float b, const float c) { return _mm_cvtss_f32(_mm_fmadd_ss(_mm_set_ss(a),_mm_set_ss(b),_mm_set_ss(c))); }
+   __forceinline float msub  ( const float a, const float b, const float c) { return _mm_cvtss_f32(_mm_fmsub_ss(_mm_set_ss(a),_mm_set_ss(b),_mm_set_ss(c))); }
+   __forceinline float nmadd ( const float a, const float b, const float c) { return _mm_cvtss_f32(_mm_fnmadd_ss(_mm_set_ss(a),_mm_set_ss(b),_mm_set_ss(c))); }
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/vec2fa.h embree-4.4.1/common/math/vec2fa.h
+--- embree-4.4.1.orig/common/math/vec2fa.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/math/vec2fa.h	2026-09-11 11:34:05.690867287 -0600
+@@ -8,6 +8,8 @@
+ 
+ #if defined(EMBREE_SYCL_SUPPORT) && defined(__SYCL_DEVICE_ONLY__)
+ #  include "vec2fa_sycl.h"
++#elif defined(EMBREE_PPC64LE_VSX)
++#  include "vec2fa_vsx.h"
+ #else
+ 
+ #include "../simd/sse.h"
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/vec2fa_vsx.h embree-4.4.1/common/math/vec2fa_vsx.h
+--- embree-4.4.1.orig/common/math/vec2fa_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/math/vec2fa_vsx.h	2026-09-11 12:03:00.852992982 -0600
+@@ -0,0 +1,239 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: Vec2fa on VSX (see ../simd/vsx/vsx.h).
++
++#pragma once
++
++#include "../sys/alloc.h"
++#include "emath.h"
++#include "../simd/sse.h"
++
++namespace embree
++{
++  ////////////////////////////////////////////////////////////////////////////////
++  /// VSX Vec2fa Type
++  ////////////////////////////////////////////////////////////////////////////////
++
++  struct __aligned(16) Vec2fa
++  {
++    ALIGNED_STRUCT_(16);
++
++    typedef float Scalar;
++    enum { N = 2 };
++    union {
++      vsx::f32x4 m128;
++      struct { float x,y,az,aw; };
++    };
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec2fa( ) {}
++    __forceinline Vec2fa( const vsx::f32x4 a ) : m128(a) {}
++
++    __forceinline Vec2fa            ( const Vec2<float>& other  ) { x = other.x; y = other.y; }
++    __forceinline Vec2fa& operator =( const Vec2<float>& other ) { x = other.x; y = other.y; return *this; }
++
++    __forceinline Vec2fa            ( const Vec2fa& other ) { m128 = other.m128; }
++    __forceinline Vec2fa& operator =( const Vec2fa& other ) { m128 = other.m128; return *this; }
++
++    __forceinline explicit Vec2fa( const float a ) : m128(vec_splats(a)) {}
++    __forceinline          Vec2fa( const float x, const float y) : m128((vsx::f32x4){x, y, y, y}) {}
++
++    __forceinline explicit Vec2fa( const vsx::i32x4 a ) : m128(vec_ctf(a, 0)) {}
++
++    __forceinline operator const vsx::f32x4&() const { return m128; }
++    __forceinline operator       vsx::f32x4&()       { return m128; }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Loads and Stores
++    ////////////////////////////////////////////////////////////////////////////////
++
++    static __forceinline Vec2fa load( const void* const a ) {
++      const vsx::u32x4 xy = { ~0u, ~0u, 0u, 0u };
++      return Vec2fa(vec_and(vec_xl(0, (const float*)a), (vsx::f32x4)xy));
++    }
++
++    static __forceinline Vec2fa loadu( const void* const a ) {
++      const vsx::u32x4 xy = { ~0u, ~0u, 0u, 0u };
++      return Vec2fa(vec_and(vec_xl(0, (const float*)a), (vsx::f32x4)xy));
++    }
++
++    static __forceinline void storeu ( void* ptr, const Vec2fa& v ) {
++      vec_xst(v.m128, 0, (float*)ptr);
++    }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec2fa( ZeroTy   ) : m128(vec_splats(0.0f)) {}
++    __forceinline Vec2fa( OneTy    ) : m128(vec_splats(1.0f)) {}
++    __forceinline Vec2fa( PosInfTy ) : m128(vec_splats((float)pos_inf)) {}
++    __forceinline Vec2fa( NegInfTy ) : m128(vec_splats((float)neg_inf)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline const float& operator []( const size_t index ) const { assert(index < 2); return (&x)[index]; }
++    __forceinline       float& operator []( const size_t index )       { assert(index < 2); return (&x)[index]; }
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec2fa operator +( const Vec2fa& a ) { return a; }
++  __forceinline Vec2fa operator -( const Vec2fa& a ) { return vec_neg(a.m128); }
++  __forceinline Vec2fa abs  ( const Vec2fa& a ) { return vec_abs(a.m128); }
++  __forceinline Vec2fa sign ( const Vec2fa& a ) {
++    return vec_sel(vec_splats(1.0f), vec_splats(-1.0f), vec_cmplt(a.m128, vec_splats(0.0f)));
++  }
++
++  __forceinline Vec2fa rcp  ( const Vec2fa& a ) { return vsx::rcp(a.m128); }
++  __forceinline Vec2fa sqrt ( const Vec2fa& a ) { return vec_sqrt(a.m128); }
++  __forceinline Vec2fa sqr  ( const Vec2fa& a ) { return a.m128 * a.m128; }
++  __forceinline Vec2fa rsqrt( const Vec2fa& a ) { return vsx::rsqrt(a.m128); }
++
++  __forceinline Vec2fa zero_fix(const Vec2fa& a) {
++    return vec_sel(a.m128, vec_splats(min_rcp_input), vec_cmplt(vec_abs(a.m128), vec_splats(min_rcp_input)));
++  }
++  __forceinline Vec2fa rcp_safe(const Vec2fa& a) {
++    return rcp(zero_fix(a));
++  }
++  __forceinline Vec2fa log ( const Vec2fa& a ) {
++    return Vec2fa(logf(a.x),logf(a.y));
++  }
++
++  __forceinline Vec2fa exp ( const Vec2fa& a ) {
++    return Vec2fa(expf(a.x),expf(a.y));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec2fa operator +( const Vec2fa& a, const Vec2fa& b ) { return a.m128 + b.m128; }
++  __forceinline Vec2fa operator -( const Vec2fa& a, const Vec2fa& b ) { return a.m128 - b.m128; }
++  __forceinline Vec2fa operator *( const Vec2fa& a, const Vec2fa& b ) { return a.m128 * b.m128; }
++  __forceinline Vec2fa operator *( const Vec2fa& a, const float b ) { return a * Vec2fa(b); }
++  __forceinline Vec2fa operator *( const float a, const Vec2fa& b ) { return Vec2fa(a) * b; }
++  __forceinline Vec2fa operator /( const Vec2fa& a, const Vec2fa& b ) { return a.m128 / b.m128; }
++  __forceinline Vec2fa operator /( const Vec2fa& a, const float b        ) { return a.m128 / vec_splats(b); }
++  __forceinline Vec2fa operator /( const        float a, const Vec2fa& b ) { return vec_splats(a) / b.m128; }
++
++  __forceinline Vec2fa min( const Vec2fa& a, const Vec2fa& b ) { return vsx::fmin(a.m128, b.m128); }
++  __forceinline Vec2fa max( const Vec2fa& a, const Vec2fa& b ) { return vsx::fmax(a.m128, b.m128); }
++
++  __forceinline Vec2fa mini(const Vec2fa& a, const Vec2fa& b) {
++    return (vsx::f32x4)vec_min((vsx::i32x4)a.m128, (vsx::i32x4)b.m128);
++  }
++
++  __forceinline Vec2fa maxi(const Vec2fa& a, const Vec2fa& b) {
++    return (vsx::f32x4)vec_max((vsx::i32x4)a.m128, (vsx::i32x4)b.m128);
++  }
++
++  __forceinline Vec2fa pow ( const Vec2fa& a, const float& b ) {
++    return Vec2fa(powf(a.x,b),powf(a.y,b));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Ternary Operators (fused)
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec2fa madd  ( const Vec2fa& a, const Vec2fa& b, const Vec2fa& c) { return vec_madd (a.m128, b.m128, c.m128); }
++  __forceinline Vec2fa msub  ( const Vec2fa& a, const Vec2fa& b, const Vec2fa& c) { return vec_msub (a.m128, b.m128, c.m128); }
++  __forceinline Vec2fa nmadd ( const Vec2fa& a, const Vec2fa& b, const Vec2fa& c) { return vec_nmsub(a.m128, b.m128, c.m128); }
++  __forceinline Vec2fa nmsub ( const Vec2fa& a, const Vec2fa& b, const Vec2fa& c) { return vec_nmadd(a.m128, b.m128, c.m128); }
++
++  __forceinline Vec2fa madd  ( const float a, const Vec2fa& b, const Vec2fa& c) { return madd(Vec2fa(a),b,c); }
++  __forceinline Vec2fa msub  ( const float a, const Vec2fa& b, const Vec2fa& c) { return msub(Vec2fa(a),b,c); }
++  __forceinline Vec2fa nmadd ( const float a, const Vec2fa& b, const Vec2fa& c) { return nmadd(Vec2fa(a),b,c); }
++  __forceinline Vec2fa nmsub ( const float a, const Vec2fa& b, const Vec2fa& c) { return nmsub(Vec2fa(a),b,c); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec2fa& operator +=( Vec2fa& a, const Vec2fa& b ) { return a = a + b; }
++  __forceinline Vec2fa& operator -=( Vec2fa& a, const Vec2fa& b ) { return a = a - b; }
++  __forceinline Vec2fa& operator *=( Vec2fa& a, const Vec2fa& b ) { return a = a * b; }
++  __forceinline Vec2fa& operator *=( Vec2fa& a, const float   b ) { return a = a * b; }
++  __forceinline Vec2fa& operator /=( Vec2fa& a, const Vec2fa& b ) { return a = a / b; }
++  __forceinline Vec2fa& operator /=( Vec2fa& a, const float   b ) { return a = a / b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reductions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline float reduce_add(const Vec2fa& v) { return v.x+v.y; }
++  __forceinline float reduce_mul(const Vec2fa& v) { return v.x*v.y; }
++  __forceinline float reduce_min(const Vec2fa& v) { return min(v.x,v.y); }
++  __forceinline float reduce_max(const Vec2fa& v) { return max(v.x,v.y); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool operator ==( const Vec2fa& a, const Vec2fa& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 3) == 3; }
++  __forceinline bool operator !=( const Vec2fa& a, const Vec2fa& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 3) != 3; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Euclidean Space Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  /* SSE4.1 _mm_dp_ps(a,b,0x3F) through the compat emulation is (a.x*b.x)+(a.y*b.y) */
++  __forceinline float dot ( const Vec2fa& a, const Vec2fa& b ) {
++    return reduce_add(a*b);
++  }
++
++  __forceinline Vec2fa cross ( const Vec2fa& a ) {
++    return Vec2fa(-a.y,a.x);
++  }
++
++  __forceinline float  sqr_length ( const Vec2fa& a )                { return dot(a,a); }
++  __forceinline float  rcp_length ( const Vec2fa& a )                { return rsqrt(dot(a,a)); }
++  __forceinline float  rcp_length2( const Vec2fa& a )                { return rcp(dot(a,a)); }
++  __forceinline float  length   ( const Vec2fa& a )                  { return sqrt(dot(a,a)); }
++  __forceinline Vec2fa normalize( const Vec2fa& a )                  { return a*rsqrt(dot(a,a)); }
++  __forceinline float  distance ( const Vec2fa& a, const Vec2fa& b ) { return length(a-b); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec2fa select( bool s, const Vec2fa& t, const Vec2fa& f ) {
++    return vec_sel(f.m128, t.m128, vsx::splat_mask(s));
++  }
++
++  __forceinline Vec2fa lerp(const Vec2fa& v0, const Vec2fa& v1, const float t) {
++    return madd(1.0f-t,v0,t*v1);
++  }
++
++  __forceinline int maxDim ( const Vec2fa& a )
++  {
++    const Vec2fa b = abs(a);
++    if (b.x > b.y) return 0;
++    else return 1;
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Rounding Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec2fa floor( const Vec2fa& a ) { return vec_floor(a.m128); }
++  __forceinline Vec2fa ceil ( const Vec2fa& a ) { return vec_ceil (a.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator<<(embree_ostream cout, const Vec2fa& a) {
++    return cout << "(" << a.x << ", " << a.y << ")";
++  }
++
++  typedef Vec2fa Vec2fa_t;
++}
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/vec3ba.h embree-4.4.1/common/math/vec3ba.h
+--- embree-4.4.1.orig/common/math/vec3ba.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/math/vec3ba.h	2026-09-11 11:34:03.122869285 -0600
+@@ -8,6 +8,8 @@
+ 
+ #if defined(EMBREE_SYCL_SUPPORT) && defined(__SYCL_DEVICE_ONLY__)
+ #  include "vec3ba_sycl.h"
++#elif defined(EMBREE_PPC64LE_VSX)
++#  include "vec3ba_vsx.h"
+ #else
+ 
+ #include "../simd/sse.h"
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/vec3ba_vsx.h embree-4.4.1/common/math/vec3ba_vsx.h
+--- embree-4.4.1.orig/common/math/vec3ba_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/math/vec3ba_vsx.h	2026-09-11 11:30:46.455040801 -0600
+@@ -0,0 +1,123 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: Vec3ba on VSX (see ../simd/vsx/vsx.h).  Lanes are canonical
++// masks in a __vector unsigned int; lane 3 is ignored by every reduction.
++
++#pragma once
++
++#include "../sys/alloc.h"
++#include "emath.h"
++#include "../simd/sse.h"
++
++namespace embree
++{
++  ////////////////////////////////////////////////////////////////////////////////
++  /// VSX Vec3ba Type
++  ////////////////////////////////////////////////////////////////////////////////
++
++  struct __aligned(16) Vec3ba
++  {
++    ALIGNED_STRUCT_(16);
++
++    union {
++      vsx::u32x4 m128;
++      struct { int x,y,z; };
++    };
++
++    typedef int Scalar;
++    enum { N = 3 };
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec3ba( ) {}
++    __forceinline Vec3ba( const vsx::u32x4 input ) : m128(input) {}
++    __forceinline Vec3ba( const Vec3ba& other ) : m128(other.m128) {}
++    __forceinline Vec3ba& operator =(const Vec3ba& other) { m128 = other.m128; return *this; }
++
++    __forceinline explicit Vec3ba( bool a )
++      : m128(vsx::splat_mask(a)) {}
++    __forceinline Vec3ba( bool a, bool b, bool c)
++      : m128((vsx::u32x4){ a ? ~0u : 0u, b ? ~0u : 0u, c ? ~0u : 0u, 0u }) {}
++
++    __forceinline operator const vsx::u32x4&() const { return m128; }
++    __forceinline operator       vsx::u32x4&()       { return m128; }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec3ba( FalseTy ) : m128(vec_splats(0u)) {}
++    __forceinline Vec3ba( TrueTy  ) : m128(vec_splats(~0u)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline const int& operator []( const size_t index ) const { assert(index < 3); return (&x)[index]; }
++    __forceinline       int& operator []( const size_t index )       { assert(index < 3); return (&x)[index]; }
++  };
++
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3ba operator !( const Vec3ba& a ) { return vec_nor(a.m128, a.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3ba operator &( const Vec3ba& a, const Vec3ba& b ) { return vec_and(a.m128, b.m128); }
++  __forceinline Vec3ba operator |( const Vec3ba& a, const Vec3ba& b ) { return vec_or (a.m128, b.m128); }
++  __forceinline Vec3ba operator ^( const Vec3ba& a, const Vec3ba& b ) { return vec_xor(a.m128, b.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3ba& operator &=( Vec3ba& a, const Vec3ba& b ) { return a = a & b; }
++  __forceinline Vec3ba& operator |=( Vec3ba& a, const Vec3ba& b ) { return a = a | b; }
++  __forceinline Vec3ba& operator ^=( Vec3ba& a, const Vec3ba& b ) { return a = a ^ b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators + Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool operator ==( const Vec3ba& a, const Vec3ba& b ) {
++    return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) == 7;
++  }
++  __forceinline bool operator !=( const Vec3ba& a, const Vec3ba& b ) {
++    return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) != 7;
++  }
++  __forceinline bool operator < ( const Vec3ba& a, const Vec3ba& b ) {
++    if (a.x != b.x) return a.x < b.x;
++    if (a.y != b.y) return a.y < b.y;
++    if (a.z != b.z) return a.z < b.z;
++    return false;
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reduction Operations
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool reduce_and( const Vec3ba& a ) { return (vsx::movemask(a.m128) & 0x7) == 0x7; }
++  __forceinline bool reduce_or ( const Vec3ba& a ) { return (vsx::movemask(a.m128) & 0x7) != 0x0; }
++
++  __forceinline bool all       ( const Vec3ba& b ) { return (vsx::movemask(b.m128) & 0x7) == 0x7; }
++  __forceinline bool any       ( const Vec3ba& b ) { return (vsx::movemask(b.m128) & 0x7) != 0x0; }
++  __forceinline bool none      ( const Vec3ba& b ) { return (vsx::movemask(b.m128) & 0x7) == 0x0; }
++
++  __forceinline size_t movemask(const Vec3ba& a) { return vsx::movemask(a.m128) & 0x7; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator<<(embree_ostream cout, const Vec3ba& a) {
++    return cout << "(" << (a.x ? "1" : "0") << ", " << (a.y ? "1" : "0") << ", " << (a.z ? "1" : "0") << ")";
++  }
++}
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/vec3fa.h embree-4.4.1/common/math/vec3fa.h
+--- embree-4.4.1.orig/common/math/vec3fa.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/math/vec3fa.h	2026-09-11 11:33:58.042873254 -0600
+@@ -8,6 +8,8 @@
+ 
+ #if defined(EMBREE_SYCL_SUPPORT) && defined(__SYCL_DEVICE_ONLY__)
+ #  include "vec3fa_sycl.h"
++#elif defined(EMBREE_PPC64LE_VSX)
++#  include "vec3fa_vsx.h"
+ #else
+ 
+ #include "../simd/sse.h"
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/vec3fa_vsx.h embree-4.4.1/common/math/vec3fa_vsx.h
+--- embree-4.4.1.orig/common/math/vec3fa_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/math/vec3fa_vsx.h	2026-09-11 12:03:00.852920537 -0600
+@@ -0,0 +1,589 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: Vec3fa / Vec3fx on VSX (see ../simd/vsx/vsx.h).  The storage
++// member keeps its name m128 because common/math/vec3.h and the tutorials
++// reach into it; it is a __vector float.
++
++#pragma once
++
++#include "../sys/alloc.h"
++#include "emath.h"
++#include "../simd/sse.h"
++
++namespace embree
++{
++  ////////////////////////////////////////////////////////////////////////////////
++  /// VSX Vec3fa Type
++  ////////////////////////////////////////////////////////////////////////////////
++
++  struct __aligned(16) Vec3fa
++  {
++    ALIGNED_STRUCT_(16);
++
++    typedef float Scalar;
++    enum { N = 3 };
++    union {
++      vsx::f32x4 m128;
++      struct { float x,y,z; };
++    };
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec3fa( ) {}
++    __forceinline Vec3fa( const vsx::f32x4 a ) : m128(a) {}
++
++    __forceinline Vec3fa            ( const Vec3<float>& other ) { m128 = (vsx::f32x4){other.x, other.y, other.z, 0.0f}; }
++
++    __forceinline Vec3fa            ( const Vec3fa& other ) { m128 = other.m128; }
++    __forceinline Vec3fa& operator =( const Vec3fa& other ) { m128 = other.m128; return *this; }
++
++    __forceinline explicit Vec3fa( const float a ) : m128(vec_splats(a)) {}
++    __forceinline          Vec3fa( const float x, const float y, const float z) : m128((vsx::f32x4){x, y, z, 0.0f}) {}
++
++    __forceinline explicit Vec3fa( const vsx::i32x4 a ) : m128(vec_ctf(a, 0)) {}
++
++    __forceinline explicit operator const vfloat4() const { return vfloat4(m128); }
++    __forceinline explicit operator const   vint4() const { return vint4(vsx::cvt_nearest(m128)); }
++    __forceinline explicit operator const  Vec2fa() const { return Vec2fa(m128); }
++    __forceinline explicit operator const  Vec3ia() const { return Vec3ia(vsx::cvt_nearest(m128)); }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Loads and Stores
++    ////////////////////////////////////////////////////////////////////////////////
++
++    static __forceinline Vec3fa load( const void* const a ) {
++      const vsx::u32x4 xyz = { ~0u, ~0u, ~0u, 0u };
++      return Vec3fa(vec_and(vec_xl(0, (const float*)a), (vsx::f32x4)xyz));
++    }
++
++    static __forceinline Vec3fa loadu( const void* const a ) {
++      return Vec3fa(vec_xl(0, (const float*)a));
++    }
++
++    static __forceinline void storeu ( void* ptr, const Vec3fa& v ) {
++      vec_xst(v.m128, 0, (float*)ptr);
++    }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec3fa( ZeroTy   ) : m128(vec_splats(0.0f)) {}
++    __forceinline Vec3fa( OneTy    ) : m128(vec_splats(1.0f)) {}
++    __forceinline Vec3fa( PosInfTy ) : m128(vec_splats((float)pos_inf)) {}
++    __forceinline Vec3fa( NegInfTy ) : m128(vec_splats((float)neg_inf)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline const float& operator []( const size_t index ) const { assert(index < 3); return (&x)[index]; }
++    __forceinline       float& operator []( const size_t index )       { assert(index < 3); return (&x)[index]; }
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fa operator +( const Vec3fa& a ) { return a; }
++  __forceinline Vec3fa operator -( const Vec3fa& a ) { return vec_neg(a.m128); }
++  __forceinline Vec3fa abs  ( const Vec3fa& a ) { return vec_abs(a.m128); }
++  __forceinline Vec3fa sign ( const Vec3fa& a ) {
++    return vec_sel(vec_splats(1.0f), vec_splats(-1.0f), vec_cmplt(a.m128, vec_splats(0.0f)));
++  }
++
++  __forceinline Vec3fa rcp  ( const Vec3fa& a ) { return vsx::rcp(a.m128); }
++  __forceinline Vec3fa sqrt ( const Vec3fa& a ) { return vec_sqrt(a.m128); }
++  __forceinline Vec3fa sqr  ( const Vec3fa& a ) { return a.m128 * a.m128; }
++  __forceinline Vec3fa rsqrt( const Vec3fa& a ) { return vsx::rsqrt(a.m128); }
++
++  __forceinline Vec3fa zero_fix(const Vec3fa& a) {
++    return vec_sel(a.m128, vec_splats(min_rcp_input), vec_cmplt(vec_abs(a.m128), vec_splats(min_rcp_input)));
++  }
++  __forceinline Vec3fa rcp_safe(const Vec3fa& a) {
++    return rcp(zero_fix(a));
++  }
++  __forceinline Vec3fa log ( const Vec3fa& a ) {
++    return Vec3fa(logf(a.x),logf(a.y),logf(a.z));
++  }
++
++  __forceinline Vec3fa exp ( const Vec3fa& a ) {
++    return Vec3fa(expf(a.x),expf(a.y),expf(a.z));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fa operator +( const Vec3fa& a, const Vec3fa& b ) { return a.m128 + b.m128; }
++  __forceinline Vec3fa operator -( const Vec3fa& a, const Vec3fa& b ) { return a.m128 - b.m128; }
++  __forceinline Vec3fa operator *( const Vec3fa& a, const Vec3fa& b ) { return a.m128 * b.m128; }
++  __forceinline Vec3fa operator *( const Vec3fa& a, const float b ) { return a * Vec3fa(b); }
++  __forceinline Vec3fa operator *( const float a, const Vec3fa& b ) { return Vec3fa(a) * b; }
++  __forceinline Vec3fa operator /( const Vec3fa& a, const Vec3fa& b ) { return a.m128 / b.m128; }
++  __forceinline Vec3fa operator /( const Vec3fa& a, const float b        ) { return a.m128 / vec_splats(b); }
++  __forceinline Vec3fa operator /( const        float a, const Vec3fa& b ) { return vec_splats(a) / b.m128; }
++
++  __forceinline Vec3fa min( const Vec3fa& a, const Vec3fa& b ) { return vsx::fmin(a.m128, b.m128); }
++  __forceinline Vec3fa max( const Vec3fa& a, const Vec3fa& b ) { return vsx::fmax(a.m128, b.m128); }
++
++  __forceinline Vec3fa mini(const Vec3fa& a, const Vec3fa& b) {
++    return (vsx::f32x4)vec_min((vsx::i32x4)a.m128, (vsx::i32x4)b.m128);
++  }
++
++  __forceinline Vec3fa maxi(const Vec3fa& a, const Vec3fa& b) {
++    return (vsx::f32x4)vec_max((vsx::i32x4)a.m128, (vsx::i32x4)b.m128);
++  }
++
++  __forceinline Vec3fa pow ( const Vec3fa& a, const float& b ) {
++    return Vec3fa(powf(a.x,b),powf(a.y,b),powf(a.z,b));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Ternary Operators (fused)
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fa madd  ( const Vec3fa& a, const Vec3fa& b, const Vec3fa& c) { return vec_madd (a.m128, b.m128, c.m128); }
++  __forceinline Vec3fa msub  ( const Vec3fa& a, const Vec3fa& b, const Vec3fa& c) { return vec_msub (a.m128, b.m128, c.m128); }
++  __forceinline Vec3fa nmadd ( const Vec3fa& a, const Vec3fa& b, const Vec3fa& c) { return vec_nmsub(a.m128, b.m128, c.m128); }
++  __forceinline Vec3fa nmsub ( const Vec3fa& a, const Vec3fa& b, const Vec3fa& c) { return vec_nmadd(a.m128, b.m128, c.m128); }
++
++  __forceinline Vec3fa madd  ( const float a, const Vec3fa& b, const Vec3fa& c) { return madd(Vec3fa(a),b,c); }
++  __forceinline Vec3fa msub  ( const float a, const Vec3fa& b, const Vec3fa& c) { return msub(Vec3fa(a),b,c); }
++  __forceinline Vec3fa nmadd ( const float a, const Vec3fa& b, const Vec3fa& c) { return nmadd(Vec3fa(a),b,c); }
++  __forceinline Vec3fa nmsub ( const float a, const Vec3fa& b, const Vec3fa& c) { return nmsub(Vec3fa(a),b,c); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fa& operator +=( Vec3fa& a, const Vec3fa& b ) { return a = a + b; }
++  __forceinline Vec3fa& operator -=( Vec3fa& a, const Vec3fa& b ) { return a = a - b; }
++  __forceinline Vec3fa& operator *=( Vec3fa& a, const Vec3fa& b ) { return a = a * b; }
++  __forceinline Vec3fa& operator *=( Vec3fa& a, const float   b ) { return a = a * b; }
++  __forceinline Vec3fa& operator /=( Vec3fa& a, const Vec3fa& b ) { return a = a / b; }
++  __forceinline Vec3fa& operator /=( Vec3fa& a, const float   b ) { return a = a / b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reductions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline float reduce_add(const Vec3fa& v) {
++    const vsx::f32x4 a = v.m128;
++    return vec_extract((a + vec_splat(a, 1)) + vec_splat(a, 2), 0);   // (x+y)+z
++  }
++
++  __forceinline float reduce_mul(const Vec3fa& v) { return v.x*v.y*v.z; }
++  __forceinline float reduce_min(const Vec3fa& v) { return min(v.x,v.y,v.z); }
++  __forceinline float reduce_max(const Vec3fa& v) { return max(v.x,v.y,v.z); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool operator ==( const Vec3fa& a, const Vec3fa& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) == 7; }
++  __forceinline bool operator !=( const Vec3fa& a, const Vec3fa& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) != 7; }
++
++  __forceinline Vec3ba eq_mask( const Vec3fa& a, const Vec3fa& b ) { return (vsx::u32x4)vec_cmpeq(a.m128, b.m128); }
++  __forceinline Vec3ba neq_mask(const Vec3fa& a, const Vec3fa& b ) { const vsx::u32x4 e = (vsx::u32x4)vec_cmpeq(a.m128, b.m128); return vec_nor(e, e); }
++  __forceinline Vec3ba lt_mask( const Vec3fa& a, const Vec3fa& b ) { return (vsx::u32x4)vec_cmplt(a.m128, b.m128); }
++  __forceinline Vec3ba le_mask( const Vec3fa& a, const Vec3fa& b ) { return (vsx::u32x4)vec_cmple(a.m128, b.m128); }
++  __forceinline Vec3ba gt_mask( const Vec3fa& a, const Vec3fa& b ) { return (vsx::u32x4)vec_cmpgt(a.m128, b.m128); }
++  __forceinline Vec3ba ge_mask( const Vec3fa& a, const Vec3fa& b ) { return (vsx::u32x4)vec_cmpge(a.m128, b.m128); }
++
++  __forceinline bool isvalid ( const Vec3fa& v ) {
++    return all(gt_mask(v,Vec3fa(-FLT_LARGE)) & lt_mask(v,Vec3fa(+FLT_LARGE)));
++  }
++
++  __forceinline bool is_finite ( const Vec3fa& a ) {
++    return all(ge_mask(a,Vec3fa(-FLT_MAX)) & le_mask(a,Vec3fa(+FLT_MAX)));
++  }
++
++  __forceinline bool isvalid4 ( const Vec3fa& v ) {
++    return all((vfloat4(v.m128) > vfloat4(-FLT_LARGE)) & (vfloat4(v.m128) < vfloat4(+FLT_LARGE)));
++  }
++
++  __forceinline bool is_finite4 ( const Vec3fa& a ) {
++    return all((vfloat4(a.m128) >= vfloat4(-FLT_MAX)) & (vfloat4(a.m128) <= vfloat4(+FLT_MAX)));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Euclidean Space Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline float dot ( const Vec3fa& a, const Vec3fa& b ) {
++    return vsx::dot3(a.m128, b.m128);
++  }
++
++  __forceinline Vec3fa cross ( const Vec3fa& a, const Vec3fa& b )
++  {
++    vfloat4 a0 = vfloat4(a.m128);
++    vfloat4 b0 = shuffle<1,2,0,3>(vfloat4(b.m128));
++    vfloat4 a1 = shuffle<1,2,0,3>(vfloat4(a.m128));
++    vfloat4 b1 = vfloat4(b.m128);
++    return Vec3fa(shuffle<1,2,0,3>(msub(a0,b0,a1*b1)));
++  }
++
++  __forceinline float  sqr_length ( const Vec3fa& a )                { return dot(a,a); }
++  __forceinline float  rcp_length ( const Vec3fa& a )                { return rsqrt(dot(a,a)); }
++  __forceinline float  rcp_length2( const Vec3fa& a )                { return rcp(dot(a,a)); }
++  __forceinline float  length   ( const Vec3fa& a )                  { return sqrt(dot(a,a)); }
++  __forceinline Vec3fa normalize( const Vec3fa& a )                  { return a*rsqrt(dot(a,a)); }
++  __forceinline float  distance ( const Vec3fa& a, const Vec3fa& b ) { return length(a-b); }
++  __forceinline float  halfArea ( const Vec3fa& d )                  { return madd(d.x,(d.y+d.z),d.y*d.z); }
++  __forceinline float  area     ( const Vec3fa& d )                  { return 2.0f*halfArea(d); }
++
++  __forceinline Vec3fa normalize_safe( const Vec3fa& a ) {
++    const float d = dot(a,a); if (unlikely(d == 0.0f)) return a; else return a*rsqrt(d);
++  }
++
++  /*! differentiated normalization */
++  __forceinline Vec3fa dnormalize(const Vec3fa& p, const Vec3fa& dp)
++  {
++    const float pp  = dot(p,p);
++    const float pdp = dot(p,dp);
++    return (pp*dp-pdp*p)*rcp(pp)*rsqrt(pp);
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fa select( bool s, const Vec3fa& t, const Vec3fa& f ) {
++    return vec_sel(f.m128, t.m128, vsx::splat_mask(s));
++  }
++
++  __forceinline Vec3fa select( const Vec3ba& s, const Vec3fa& t, const Vec3fa& f ) {
++    return vec_sel(f.m128, t.m128, s.m128);
++  }
++
++  __forceinline Vec3fa lerp(const Vec3fa& v0, const Vec3fa& v1, const float t) {
++    return madd(1.0f-t,v0,t*v1);
++  }
++
++  __forceinline int maxDim ( const Vec3fa& a )
++  {
++    const Vec3fa b = abs(a);
++    if (b.x > b.y) {
++      if (b.x > b.z) return 0; else return 2;
++    } else {
++      if (b.y > b.z) return 1; else return 2;
++    }
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Rounding Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  /* upstream's SSE4.1 trunc(Vec3fa) is _mm_round_ps(NEAREST_INT); kept, since
++     curveNi.h quantizes with it and the x86 build must round the same way */
++  __forceinline Vec3fa trunc( const Vec3fa& a ) { return vec_rint (a.m128); }
++  __forceinline Vec3fa floor( const Vec3fa& a ) { return vec_floor(a.m128); }
++  __forceinline Vec3fa ceil ( const Vec3fa& a ) { return vec_ceil (a.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator<<(embree_ostream cout, const Vec3fa& a) {
++    return cout << "(" << a.x << ", " << a.y << ", " << a.z << ")";
++  }
++
++  typedef Vec3fa Vec3fa_t;
++
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// VSX Vec3fx Type
++  ////////////////////////////////////////////////////////////////////////////////
++
++  struct __aligned(16) Vec3fx
++  {
++    ALIGNED_STRUCT_(16);
++
++    typedef float Scalar;
++    enum { N = 3 };
++    union {
++      vsx::f32x4 m128;
++      struct { float x,y,z; union { int a; unsigned u; float w; }; };
++    };
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec3fx( ) {}
++    __forceinline Vec3fx( const vsx::f32x4 a ) : m128(a) {}
++
++    __forceinline explicit Vec3fx(const Vec3fa& v) : m128(v.m128) {}
++    __forceinline operator Vec3fa () const { return Vec3fa(m128); }
++
++    __forceinline explicit Vec3fx            ( const Vec3<float>& other ) { m128 = (vsx::f32x4){other.x, other.y, other.z, 0.0f}; }
++
++    __forceinline Vec3fx            ( const Vec3fx& other ) { m128 = other.m128; }
++    __forceinline Vec3fx& operator =( const Vec3fx& other ) { m128 = other.m128; return *this; }
++
++    __forceinline explicit Vec3fx( const float a ) : m128(vec_splats(a)) {}
++    __forceinline          Vec3fx( const float x, const float y, const float z) : m128((vsx::f32x4){x, y, z, 0.0f}) {}
++
++    __forceinline Vec3fx( const Vec3fa& other, const int      a1) { m128 = other.m128; a = a1; }
++    __forceinline Vec3fx( const Vec3fa& other, const unsigned a1) { m128 = other.m128; u = a1; }
++    __forceinline Vec3fx( const Vec3fa& other, const float    w1) { m128 = vec_insert(w1, other.m128, 3); }
++    __forceinline Vec3fx( const float x, const float y, const float z, const float w) : m128((vsx::f32x4){x, y, z, w}) {}
++
++    __forceinline explicit operator const vfloat4() const { return vfloat4(m128); }
++    __forceinline explicit operator const   vint4() const { return vint4(vsx::cvt_nearest(m128)); }
++    __forceinline explicit operator const  Vec2fa() const { return Vec2fa(m128); }
++    __forceinline explicit operator const  Vec3ia() const { return Vec3ia(vsx::cvt_nearest(m128)); }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Loads and Stores
++    ////////////////////////////////////////////////////////////////////////////////
++
++    static __forceinline Vec3fx load( const void* const a ) {
++      const vsx::u32x4 xyz = { ~0u, ~0u, ~0u, 0u };
++      return Vec3fx(vec_and(vec_xl(0, (const float*)a), (vsx::f32x4)xyz));
++    }
++
++    static __forceinline Vec3fx loadu( const void* const a ) {
++      return Vec3fx(vec_xl(0, (const float*)a));
++    }
++
++    static __forceinline void storeu ( void* ptr, const Vec3fx& v ) {
++      vec_xst(v.m128, 0, (float*)ptr);
++    }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec3fx( ZeroTy   ) : m128(vec_splats(0.0f)) {}
++    __forceinline Vec3fx( OneTy    ) : m128(vec_splats(1.0f)) {}
++    __forceinline Vec3fx( PosInfTy ) : m128(vec_splats((float)pos_inf)) {}
++    __forceinline Vec3fx( NegInfTy ) : m128(vec_splats((float)neg_inf)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline const float& operator []( const size_t index ) const { assert(index < 3); return (&x)[index]; }
++    __forceinline       float& operator []( const size_t index )       { assert(index < 3); return (&x)[index]; }
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fx operator +( const Vec3fx& a ) { return a; }
++  __forceinline Vec3fx operator -( const Vec3fx& a ) { return vec_neg(a.m128); }
++  __forceinline Vec3fx abs  ( const Vec3fx& a ) { return vec_abs(a.m128); }
++  __forceinline Vec3fx sign ( const Vec3fx& a ) {
++    return vec_sel(vec_splats(1.0f), vec_splats(-1.0f), vec_cmplt(a.m128, vec_splats(0.0f)));
++  }
++
++  /* upstream refines Vec3fx rcp as r*(2 - r*a); same shape, fused */
++  __forceinline Vec3fx rcp  ( const Vec3fx& a )
++  {
++    const vsx::f32x4 r = vec_re(a.m128);
++    return r * vec_nmsub(r, a.m128, vec_splats(2.0f));
++  }
++
++  __forceinline Vec3fx sqrt ( const Vec3fx& a ) { return vec_sqrt(a.m128); }
++  __forceinline Vec3fx sqr  ( const Vec3fx& a ) { return a.m128 * a.m128; }
++  __forceinline Vec3fx rsqrt( const Vec3fx& a ) { return vsx::rsqrt(a.m128); }
++
++  __forceinline Vec3fx zero_fix(const Vec3fx& a) {
++    return vec_sel(a.m128, vec_splats(min_rcp_input), vec_cmplt(vec_abs(a.m128), vec_splats(min_rcp_input)));
++  }
++  __forceinline Vec3fx rcp_safe(const Vec3fx& a) {
++    return rcp(zero_fix(a));
++  }
++  __forceinline Vec3fx log ( const Vec3fx& a ) {
++    return Vec3fx(logf(a.x),logf(a.y),logf(a.z));
++  }
++
++  __forceinline Vec3fx exp ( const Vec3fx& a ) {
++    return Vec3fx(expf(a.x),expf(a.y),expf(a.z));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fx operator +( const Vec3fx& a, const Vec3fx& b ) { return a.m128 + b.m128; }
++  __forceinline Vec3fx operator -( const Vec3fx& a, const Vec3fx& b ) { return a.m128 - b.m128; }
++  __forceinline Vec3fx operator *( const Vec3fx& a, const Vec3fx& b ) { return a.m128 * b.m128; }
++  __forceinline Vec3fx operator *( const Vec3fx& a, const float b ) { return a * Vec3fx(b); }
++  __forceinline Vec3fx operator *( const float a, const Vec3fx& b ) { return Vec3fx(a) * b; }
++  __forceinline Vec3fx operator /( const Vec3fx& a, const Vec3fx& b ) { return a.m128 / b.m128; }
++  __forceinline Vec3fx operator /( const Vec3fx& a, const float b        ) { return a.m128 / vec_splats(b); }
++  __forceinline Vec3fx operator /( const        float a, const Vec3fx& b ) { return vec_splats(a) / b.m128; }
++
++  __forceinline Vec3fx min( const Vec3fx& a, const Vec3fx& b ) { return vsx::fmin(a.m128, b.m128); }
++  __forceinline Vec3fx max( const Vec3fx& a, const Vec3fx& b ) { return vsx::fmax(a.m128, b.m128); }
++
++  __forceinline Vec3fx mini(const Vec3fx& a, const Vec3fx& b) {
++    return (vsx::f32x4)vec_min((vsx::i32x4)a.m128, (vsx::i32x4)b.m128);
++  }
++
++  __forceinline Vec3fx maxi(const Vec3fx& a, const Vec3fx& b) {
++    return (vsx::f32x4)vec_max((vsx::i32x4)a.m128, (vsx::i32x4)b.m128);
++  }
++
++  __forceinline Vec3fx pow ( const Vec3fx& a, const float& b ) {
++    return Vec3fx(powf(a.x,b),powf(a.y,b),powf(a.z,b));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Ternary Operators (fused)
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fx madd  ( const Vec3fx& a, const Vec3fx& b, const Vec3fx& c) { return vec_madd (a.m128, b.m128, c.m128); }
++  __forceinline Vec3fx msub  ( const Vec3fx& a, const Vec3fx& b, const Vec3fx& c) { return vec_msub (a.m128, b.m128, c.m128); }
++  __forceinline Vec3fx nmadd ( const Vec3fx& a, const Vec3fx& b, const Vec3fx& c) { return vec_nmsub(a.m128, b.m128, c.m128); }
++  __forceinline Vec3fx nmsub ( const Vec3fx& a, const Vec3fx& b, const Vec3fx& c) { return vec_nmadd(a.m128, b.m128, c.m128); }
++
++  __forceinline Vec3fx madd  ( const float a, const Vec3fx& b, const Vec3fx& c) { return madd(Vec3fx(a),b,c); }
++  __forceinline Vec3fx msub  ( const float a, const Vec3fx& b, const Vec3fx& c) { return msub(Vec3fx(a),b,c); }
++  __forceinline Vec3fx nmadd ( const float a, const Vec3fx& b, const Vec3fx& c) { return nmadd(Vec3fx(a),b,c); }
++  __forceinline Vec3fx nmsub ( const float a, const Vec3fx& b, const Vec3fx& c) { return nmsub(Vec3fx(a),b,c); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fx& operator +=( Vec3fx& a, const Vec3fx& b ) { return a = a + b; }
++  __forceinline Vec3fx& operator -=( Vec3fx& a, const Vec3fx& b ) { return a = a - b; }
++  __forceinline Vec3fx& operator *=( Vec3fx& a, const Vec3fx& b ) { return a = a * b; }
++  __forceinline Vec3fx& operator *=( Vec3fx& a, const float   b ) { return a = a * b; }
++  __forceinline Vec3fx& operator /=( Vec3fx& a, const Vec3fx& b ) { return a = a / b; }
++  __forceinline Vec3fx& operator /=( Vec3fx& a, const float   b ) { return a = a / b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reductions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline float reduce_add(const Vec3fx& v) {
++    const vsx::f32x4 a = v.m128;
++    return vec_extract((a + vec_splat(a, 1)) + vec_splat(a, 2), 0);   // (x+y)+z
++  }
++
++  __forceinline float reduce_mul(const Vec3fx& v) { return v.x*v.y*v.z; }
++  __forceinline float reduce_min(const Vec3fx& v) { return min(v.x,v.y,v.z); }
++  __forceinline float reduce_max(const Vec3fx& v) { return max(v.x,v.y,v.z); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool operator ==( const Vec3fx& a, const Vec3fx& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) == 7; }
++  __forceinline bool operator !=( const Vec3fx& a, const Vec3fx& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) != 7; }
++
++  __forceinline Vec3ba eq_mask( const Vec3fx& a, const Vec3fx& b ) { return (vsx::u32x4)vec_cmpeq(a.m128, b.m128); }
++  __forceinline Vec3ba neq_mask(const Vec3fx& a, const Vec3fx& b ) { const vsx::u32x4 e = (vsx::u32x4)vec_cmpeq(a.m128, b.m128); return vec_nor(e, e); }
++  __forceinline Vec3ba lt_mask( const Vec3fx& a, const Vec3fx& b ) { return (vsx::u32x4)vec_cmplt(a.m128, b.m128); }
++  __forceinline Vec3ba le_mask( const Vec3fx& a, const Vec3fx& b ) { return (vsx::u32x4)vec_cmple(a.m128, b.m128); }
++  __forceinline Vec3ba gt_mask( const Vec3fx& a, const Vec3fx& b ) { return (vsx::u32x4)vec_cmpgt(a.m128, b.m128); }
++  __forceinline Vec3ba ge_mask( const Vec3fx& a, const Vec3fx& b ) { return (vsx::u32x4)vec_cmpge(a.m128, b.m128); }
++
++  __forceinline bool isvalid ( const Vec3fx& v ) {
++    return all(gt_mask(v,Vec3fx(-FLT_LARGE)) & lt_mask(v,Vec3fx(+FLT_LARGE)));
++  }
++
++  __forceinline bool is_finite ( const Vec3fx& a ) {
++    return all(ge_mask(a,Vec3fx(-FLT_MAX)) & le_mask(a,Vec3fx(+FLT_MAX)));
++  }
++
++  __forceinline bool isvalid4 ( const Vec3fx& v ) {
++    return all((vfloat4(v.m128) > vfloat4(-FLT_LARGE)) & (vfloat4(v.m128) < vfloat4(+FLT_LARGE)));
++  }
++
++  __forceinline bool is_finite4 ( const Vec3fx& a ) {
++    return all((vfloat4(a.m128) >= vfloat4(-FLT_MAX)) & (vfloat4(a.m128) <= vfloat4(+FLT_MAX)));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Euclidean Space Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline float dot ( const Vec3fx& a, const Vec3fx& b ) {
++    return vsx::dot3(a.m128, b.m128);
++  }
++
++  __forceinline Vec3fx cross ( const Vec3fx& a, const Vec3fx& b )
++  {
++    vfloat4 a0 = vfloat4(a.m128);
++    vfloat4 b0 = shuffle<1,2,0,3>(vfloat4(b.m128));
++    vfloat4 a1 = shuffle<1,2,0,3>(vfloat4(a.m128));
++    vfloat4 b1 = vfloat4(b.m128);
++    return Vec3fx(shuffle<1,2,0,3>(msub(a0,b0,a1*b1)));
++  }
++
++  __forceinline float  sqr_length ( const Vec3fx& a )                { return dot(a,a); }
++  __forceinline float  rcp_length ( const Vec3fx& a )                { return rsqrt(dot(a,a)); }
++  __forceinline float  rcp_length2( const Vec3fx& a )                { return rcp(dot(a,a)); }
++  __forceinline float  length   ( const Vec3fx& a )                  { return sqrt(dot(a,a)); }
++  __forceinline Vec3fx normalize( const Vec3fx& a )                  { return a*rsqrt(dot(a,a)); }
++  __forceinline float  distance ( const Vec3fx& a, const Vec3fx& b ) { return length(a-b); }
++  __forceinline float  halfArea ( const Vec3fx& d )                  { return madd(d.x,(d.y+d.z),d.y*d.z); }
++  __forceinline float  area     ( const Vec3fx& d )                  { return 2.0f*halfArea(d); }
++
++  __forceinline Vec3fx normalize_safe( const Vec3fx& a ) {
++    const float d = dot(a,a); if (unlikely(d == 0.0f)) return a; else return a*rsqrt(d);
++  }
++
++  /*! differentiated normalization */
++  __forceinline Vec3fx dnormalize(const Vec3fx& p, const Vec3fx& dp)
++  {
++    const float pp  = dot(p,p);
++    const float pdp = dot(p,dp);
++    return (pp*dp-pdp*p)*rcp(pp)*rsqrt(pp);
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fx select( bool s, const Vec3fx& t, const Vec3fx& f ) {
++    return vec_sel(f.m128, t.m128, vsx::splat_mask(s));
++  }
++
++  __forceinline Vec3fx select( const Vec3ba& s, const Vec3fx& t, const Vec3fx& f ) {
++    return vec_sel(f.m128, t.m128, s.m128);
++  }
++
++  __forceinline Vec3fx lerp(const Vec3fx& v0, const Vec3fx& v1, const float t) {
++    return madd(1.0f-t,v0,t*v1);
++  }
++
++  __forceinline int maxDim ( const Vec3fx& a )
++  {
++    const Vec3fx b = abs(a);
++    if (b.x > b.y) {
++      if (b.x > b.z) return 0; else return 2;
++    } else {
++      if (b.y > b.z) return 1; else return 2;
++    }
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Rounding Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3fx trunc( const Vec3fx& a ) { return vec_rint (a.m128); }   // as Vec3fa::trunc (SSE4.1 rounds to nearest)
++  __forceinline Vec3fx floor( const Vec3fx& a ) { return vec_floor(a.m128); }
++  __forceinline Vec3fx ceil ( const Vec3fx& a ) { return vec_ceil (a.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator<<(embree_ostream cout, const Vec3fx& a) {
++    return cout << "(" << a.x << ", " << a.y << ", " << a.z << ")";
++  }
++
++
++  typedef Vec3fx Vec3ff;
++}
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/vec3ia.h embree-4.4.1/common/math/vec3ia.h
+--- embree-4.4.1.orig/common/math/vec3ia.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/math/vec3ia.h	2026-09-11 11:34:00.498871333 -0600
+@@ -8,6 +8,8 @@
+ 
+ #if defined(EMBREE_SYCL_SUPPORT) && defined(__SYCL_DEVICE_ONLY__)
+ #  include "vec3ia_sycl.h"
++#elif defined(EMBREE_PPC64LE_VSX)
++#  include "vec3ia_vsx.h"
+ #else
+ 
+ #include "../simd/sse.h"
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/math/vec3ia_vsx.h embree-4.4.1/common/math/vec3ia_vsx.h
+--- embree-4.4.1.orig/common/math/vec3ia_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/math/vec3ia_vsx.h	2026-09-11 11:30:26.367060687 -0600
+@@ -0,0 +1,173 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: Vec3ia on VSX (see ../simd/vsx/vsx.h).
++
++#pragma once
++
++#include "../sys/alloc.h"
++#include "emath.h"
++#include "../simd/sse.h"
++
++namespace embree
++{
++  ////////////////////////////////////////////////////////////////////////////////
++  /// VSX Vec3ia Type
++  ////////////////////////////////////////////////////////////////////////////////
++
++  struct __aligned(16) Vec3ia
++  {
++    ALIGNED_STRUCT_(16);
++
++    union {
++      vsx::i32x4 m128;
++      struct { int x,y,z; };
++    };
++
++    typedef int Scalar;
++    enum { N = 3 };
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec3ia( ) {}
++    __forceinline Vec3ia( const vsx::i32x4 a ) : m128(a) {}
++    __forceinline Vec3ia( const Vec3ia& other ) : m128(other.m128) {}
++    __forceinline Vec3ia& operator =(const Vec3ia& other) { m128 = other.m128; return *this; }
++
++    __forceinline explicit Vec3ia( const int a ) : m128(vec_splats(a)) {}
++    __forceinline          Vec3ia( const int x, const int y, const int z) : m128((vsx::i32x4){x, y, z, z}) {}
++    __forceinline explicit Vec3ia( const vsx::f32x4 a ) : m128(vsx::cvt_nearest(a)) {}
++
++    __forceinline operator const vsx::i32x4&() const { return m128; }
++    __forceinline operator       vsx::i32x4&()       { return m128; }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline Vec3ia( ZeroTy   ) : m128(vec_splats(0)) {}
++    __forceinline Vec3ia( OneTy    ) : m128(vec_splats(1)) {}
++    __forceinline Vec3ia( PosInfTy ) : m128(vec_splats((int)pos_inf)) {}
++    __forceinline Vec3ia( NegInfTy ) : m128(vec_splats((int)neg_inf)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline const int& operator []( const size_t index ) const { assert(index < 3); return (&x)[index]; }
++    __forceinline       int& operator []( const size_t index )       { assert(index < 3); return (&x)[index]; }
++  };
++
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3ia operator +( const Vec3ia& a ) { return a; }
++  __forceinline Vec3ia operator -( const Vec3ia& a ) { return -a.m128; }
++  __forceinline Vec3ia abs       ( const Vec3ia& a ) { return vec_abs(a.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3ia operator +( const Vec3ia& a, const Vec3ia& b ) { return a.m128 + b.m128; }
++  __forceinline Vec3ia operator +( const Vec3ia& a, const int     b ) { return a+Vec3ia(b); }
++  __forceinline Vec3ia operator +( const int     a, const Vec3ia& b ) { return Vec3ia(a)+b; }
++
++  __forceinline Vec3ia operator -( const Vec3ia& a, const Vec3ia& b ) { return a.m128 - b.m128; }
++  __forceinline Vec3ia operator -( const Vec3ia& a, const int     b ) { return a-Vec3ia(b); }
++  __forceinline Vec3ia operator -( const int     a, const Vec3ia& b ) { return Vec3ia(a)-b; }
++
++  __forceinline Vec3ia operator *( const Vec3ia& a, const Vec3ia& b ) { return a.m128 * b.m128; }
++  __forceinline Vec3ia operator *( const Vec3ia& a, const int     b ) { return a * Vec3ia(b); }
++  __forceinline Vec3ia operator *( const int     a, const Vec3ia& b ) { return Vec3ia(a) * b; }
++
++  __forceinline Vec3ia operator &( const Vec3ia& a, const Vec3ia& b ) { return vec_and(a.m128, b.m128); }
++  __forceinline Vec3ia operator &( const Vec3ia& a, const int     b ) { return a & Vec3ia(b); }
++  __forceinline Vec3ia operator &( const int     a, const Vec3ia& b ) { return Vec3ia(a) & b; }
++
++  __forceinline Vec3ia operator |( const Vec3ia& a, const Vec3ia& b ) { return vec_or(a.m128, b.m128); }
++  __forceinline Vec3ia operator |( const Vec3ia& a, const int     b ) { return a | Vec3ia(b); }
++  __forceinline Vec3ia operator |( const int     a, const Vec3ia& b ) { return Vec3ia(a) | b; }
++
++  __forceinline Vec3ia operator ^( const Vec3ia& a, const Vec3ia& b ) { return vec_xor(a.m128, b.m128); }
++  __forceinline Vec3ia operator ^( const Vec3ia& a, const int     b ) { return a ^ Vec3ia(b); }
++  __forceinline Vec3ia operator ^( const int     a, const Vec3ia& b ) { return Vec3ia(a) ^ b; }
++
++  __forceinline Vec3ia operator <<( const Vec3ia& a, const int n ) { return vec_sl (a.m128, vec_splats((unsigned)n)); }
++  __forceinline Vec3ia operator >>( const Vec3ia& a, const int n ) { return vec_sra(a.m128, vec_splats((unsigned)n)); }
++
++  __forceinline Vec3ia sll ( const Vec3ia& a, const int b ) { return vec_sl (a.m128, vec_splats((unsigned)b)); }
++  __forceinline Vec3ia sra ( const Vec3ia& a, const int b ) { return vec_sra(a.m128, vec_splats((unsigned)b)); }
++  __forceinline Vec3ia srl ( const Vec3ia& a, const int b ) { return vec_sr (a.m128, vec_splats((unsigned)b)); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3ia& operator +=( Vec3ia& a, const Vec3ia& b ) { return a = a + b; }
++  __forceinline Vec3ia& operator +=( Vec3ia& a, const int&   b ) { return a = a + b; }
++
++  __forceinline Vec3ia& operator -=( Vec3ia& a, const Vec3ia& b ) { return a = a - b; }
++  __forceinline Vec3ia& operator -=( Vec3ia& a, const int&   b ) { return a = a - b; }
++
++  __forceinline Vec3ia& operator *=( Vec3ia& a, const Vec3ia& b ) { return a = a * b; }
++  __forceinline Vec3ia& operator *=( Vec3ia& a, const int&    b ) { return a = a * b; }
++
++  __forceinline Vec3ia& operator &=( Vec3ia& a, const Vec3ia& b ) { return a = a & b; }
++  __forceinline Vec3ia& operator &=( Vec3ia& a, const int&    b ) { return a = a & b; }
++
++  __forceinline Vec3ia& operator |=( Vec3ia& a, const Vec3ia& b ) { return a = a | b; }
++  __forceinline Vec3ia& operator |=( Vec3ia& a, const int&    b ) { return a = a | b; }
++
++  __forceinline Vec3ia& operator <<=( Vec3ia& a, const int& b ) { return a = a << b; }
++  __forceinline Vec3ia& operator >>=( Vec3ia& a, const int& b ) { return a = a >> b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline Vec3ia select( const Vec3ba& m, const Vec3ia& t, const Vec3ia& f ) {
++    return vec_sel(f.m128, t.m128, m.m128);
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reductions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline int reduce_add(const Vec3ia& v) { return v.x+v.y+v.z; }
++  __forceinline int reduce_mul(const Vec3ia& v) { return v.x*v.y*v.z; }
++  __forceinline int reduce_min(const Vec3ia& v) { return min(v.x,v.y,v.z); }
++  __forceinline int reduce_max(const Vec3ia& v) { return max(v.x,v.y,v.z); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool operator ==( const Vec3ia& a, const Vec3ia& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) == 7; }
++  __forceinline bool operator !=( const Vec3ia& a, const Vec3ia& b ) { return (vsx::movemask((vsx::u32x4)vec_cmpeq(a.m128, b.m128)) & 7) != 7; }
++  __forceinline bool operator < ( const Vec3ia& a, const Vec3ia& b ) {
++    if (a.x != b.x) return a.x < b.x;
++    if (a.y != b.y) return a.y < b.y;
++    if (a.z != b.z) return a.z < b.z;
++    return false;
++  }
++
++  __forceinline Vec3ba eq_mask( const Vec3ia& a, const Vec3ia& b ) { return (vsx::u32x4)vec_cmpeq(a.m128, b.m128); }
++  __forceinline Vec3ba lt_mask( const Vec3ia& a, const Vec3ia& b ) { return (vsx::u32x4)vec_cmplt(a.m128, b.m128); }
++  __forceinline Vec3ba gt_mask( const Vec3ia& a, const Vec3ia& b ) { return (vsx::u32x4)vec_cmpgt(a.m128, b.m128); }
++
++  __forceinline Vec3ia min( const Vec3ia& a, const Vec3ia& b ) { return vec_min(a.m128, b.m128); }
++  __forceinline Vec3ia max( const Vec3ia& a, const Vec3ia& b ) { return vec_max(a.m128, b.m128); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator<<(embree_ostream cout, const Vec3ia& a) {
++    return cout << "(" << a.x << ", " << a.y << ", " << a.z << ")";
++  }
++}
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/simd/sse.cpp embree-4.4.1/common/simd/sse.cpp
+--- embree-4.4.1.orig/common/simd/sse.cpp	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/simd/sse.cpp	2026-09-11 11:33:15.546907326 -0600
+@@ -3,7 +3,21 @@
+ 
+ #include "sse.h"
+ 
+-namespace embree 
++#if defined(EMBREE_PPC64LE_VSX)
++
++namespace embree
++{
++  const vsx::u32x4 vsx_lookupmask[16] = {
++    { 0u,  0u,  0u,  0u}, {~0u,  0u,  0u,  0u}, { 0u, ~0u,  0u,  0u}, {~0u, ~0u,  0u,  0u},
++    { 0u,  0u, ~0u,  0u}, {~0u,  0u, ~0u,  0u}, { 0u, ~0u, ~0u,  0u}, {~0u, ~0u, ~0u,  0u},
++    { 0u,  0u,  0u, ~0u}, {~0u,  0u,  0u, ~0u}, { 0u, ~0u,  0u, ~0u}, {~0u, ~0u,  0u, ~0u},
++    { 0u,  0u, ~0u, ~0u}, {~0u,  0u, ~0u, ~0u}, { 0u, ~0u, ~0u, ~0u}, {~0u, ~0u, ~0u, ~0u}
++  };
++}
++
++#else
++
++namespace embree
+ {
+   const __m128 mm_lookupmask_ps[16] = {
+     _mm_castsi128_ps(_mm_set_epi32( 0, 0, 0, 0)),
+@@ -32,3 +46,5 @@
+   };
+ 
+ }
++
++#endif
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/simd/sse.h embree-4.4.1/common/simd/sse.h
+--- embree-4.4.1.orig/common/simd/sse.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/simd/sse.h	2026-09-11 11:33:08.378913231 -0600
+@@ -9,15 +9,30 @@
+ #include "../math/constants.h"
+ #include "varying.h"
+ 
+-namespace embree 
++#if defined(EMBREE_PPC64LE_VSX)
++
++/* powerpc64le: the 4-wide types written on VSX (common/simd/vsx/vsx.h) */
++namespace embree
++{
++  extern const vsx::u32x4 vsx_lookupmask[16];
++}
++
++#include "vboolf4_vsx.h"
++#include "vint4_vsx.h"
++#include "vuint4_vsx.h"
++#include "vfloat4_vsx.h"
++
++#else
++
++namespace embree
+ {
+ #if defined(__aarch64__) || defined(__SSE4_1__)
+-  __forceinline __m128 blendv_ps(__m128 f, __m128 t, __m128 mask) { 
++  __forceinline __m128 blendv_ps(__m128 f, __m128 t, __m128 mask) {
+     return _mm_blendv_ps(f,t,mask);
+   }
+ #else
+-  __forceinline __m128 blendv_ps(__m128 f, __m128 t, __m128 mask) { 
+-    return _mm_or_ps(_mm_and_ps(mask, t), _mm_andnot_ps(mask, f)); 
++  __forceinline __m128 blendv_ps(__m128 f, __m128 t, __m128 mask) {
++    return _mm_or_ps(_mm_and_ps(mask, t), _mm_andnot_ps(mask, f));
+   }
+ #endif
+ 
+@@ -33,3 +48,5 @@
+ #include "vint4_sse2.h"
+ #include "vuint4_sse2.h"
+ #include "vfloat4_sse2.h"
++
++#endif
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/simd/vboolf4_vsx.h embree-4.4.1/common/simd/vboolf4_vsx.h
+--- embree-4.4.1.orig/common/simd/vboolf4_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/simd/vboolf4_vsx.h	2026-09-11 11:23:38.211609697 -0600
+@@ -0,0 +1,182 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: 4-wide bool type on VSX (see vsx/vsx.h).  Lanes are canonical
++// masks (all-ones or all-zero) in a __vector unsigned int.
++
++#pragma once
++
++#define vboolf vboolf_impl
++#define vboold vboold_impl
++#define vint vint_impl
++#define vuint vuint_impl
++#define vllong vllong_impl
++#define vfloat vfloat_impl
++#define vdouble vdouble_impl
++
++namespace embree
++{
++  /* 4-wide VSX bool type */
++  template<>
++  struct vboolf<4>
++  {
++    ALIGNED_STRUCT_(16);
++
++    typedef vboolf4 Bool;
++    typedef vint4   Int;
++    typedef vfloat4 Float;
++
++    enum  { size = 4 };                   // number of SIMD elements
++    union { vsx::u32x4 v; int i[4]; };    // data
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline vboolf() {}
++    __forceinline vboolf(const vboolf4& other) { v = other.v; }
++    __forceinline vboolf4& operator =(const vboolf4& other) { v = other.v; return *this; }
++
++    __forceinline vboolf(vsx::u32x4 input) : v(input) {}
++    __forceinline operator const vsx::u32x4&() const { return v; }
++
++    __forceinline vboolf(bool a)
++      : v(vsx::splat_mask(a)) {}
++    __forceinline vboolf(bool a, bool b)
++      : v((vsx::u32x4){ a ? ~0u : 0u, b ? ~0u : 0u, a ? ~0u : 0u, b ? ~0u : 0u }) {}
++    __forceinline vboolf(bool a, bool b, bool c, bool d)
++      : v((vsx::u32x4){ a ? ~0u : 0u, b ? ~0u : 0u, c ? ~0u : 0u, d ? ~0u : 0u }) {}
++    __forceinline vboolf(int mask) { assert(mask >= 0 && mask < 16); v = vsx_lookupmask[mask]; }
++    __forceinline vboolf(unsigned int mask) { assert(mask < 16); v = vsx_lookupmask[mask]; }
++
++    /* return int32 mask */
++    __forceinline vsx::i32x4 mask32() const {
++      return (vsx::i32x4)v;
++    }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline vboolf(FalseTy) : v(vec_splats(0u)) {}
++    __forceinline vboolf(TrueTy)  : v(vec_splats(~0u)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline bool operator [](size_t index) const { assert(index < 4); return i[index] < 0; }
++    __forceinline int& operator [](size_t index)       { assert(index < 4); return i[index]; }
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 operator !(const vboolf4& a) { return vec_nor(a.v, a.v); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 operator &(const vboolf4& a, const vboolf4& b) { return vec_and(a.v, b.v); }
++  __forceinline vboolf4 operator |(const vboolf4& a, const vboolf4& b) { return vec_or (a.v, b.v); }
++  __forceinline vboolf4 operator ^(const vboolf4& a, const vboolf4& b) { return vec_xor(a.v, b.v); }
++
++  __forceinline vboolf4 andn(const vboolf4& a, const vboolf4& b) { return vec_andc(a.v, b.v); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4& operator &=(vboolf4& a, const vboolf4& b) { return a = a & b; }
++  __forceinline vboolf4& operator |=(vboolf4& a, const vboolf4& b) { return a = a | b; }
++  __forceinline vboolf4& operator ^=(vboolf4& a, const vboolf4& b) { return a = a ^ b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators + Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 operator !=(const vboolf4& a, const vboolf4& b) { return vec_xor(a.v, b.v); }
++  __forceinline vboolf4 operator ==(const vboolf4& a, const vboolf4& b) { return (vsx::u32x4)vec_cmpeq(a.v, b.v); }
++
++  __forceinline vboolf4 select(const vboolf4& m, const vboolf4& t, const vboolf4& f) {
++    return vec_sel(f.v, t.v, m.v);
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Movement/Shifting/Shuffling Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 unpacklo(const vboolf4& a, const vboolf4& b) { return vec_mergeh(a.v, b.v); }
++  __forceinline vboolf4 unpackhi(const vboolf4& a, const vboolf4& b) { return vec_mergel(a.v, b.v); }
++
++  template<int i0, int i1, int i2, int i3>
++  __forceinline vboolf4 shuffle(const vboolf4& v) {
++    return __builtin_shuffle(v.v, (vsx::u32x4){i0, i1, i2, i3});
++  }
++
++  template<int i0, int i1, int i2, int i3>
++  __forceinline vboolf4 shuffle(const vboolf4& a, const vboolf4& b) {
++    return __builtin_shuffle(a.v, b.v, (vsx::u32x4){i0, i1, 4+i2, 4+i3});
++  }
++
++  template<int i0>
++  __forceinline vboolf4 shuffle(const vboolf4& v) {
++    return vec_splat(v.v, i0);
++  }
++
++  template<> __forceinline vboolf4 shuffle<1, 0, 3, 2>(const vboolf4& v) { return (vsx::u32x4)vec_rl((vsx::u64x2)v.v, vec_splats(32ull)); }
++  template<> __forceinline vboolf4 shuffle<1, 2, 3, 0>(const vboolf4& v) { return vec_sld(v.v, v.v, 12); }
++  template<> __forceinline vboolf4 shuffle<3, 0, 1, 2>(const vboolf4& v) { return vec_sld(v.v, v.v, 4); }
++
++  template<int dst, int src, int clr> __forceinline vboolf4 insert(const vboolf4& a, const vboolf4& b) {
++    vsx::u32x4 r = __builtin_shuffle(a.v, b.v, (vsx::u32x4){ dst==0 ? 4+src : 0, dst==1 ? 4+src : 1, dst==2 ? 4+src : 2, dst==3 ? 4+src : 3 });
++    if (clr) r = vec_andc(r, vsx::blend_mask<clr>());
++    return r;
++  }
++  template<int dst, int src> __forceinline vboolf4 insert(const vboolf4& a, const vboolf4& b) { return insert<dst, src, 0>(a, b); }
++  template<int dst> __forceinline vboolf4 insert(const vboolf4& a, const bool b) { return insert<dst, 0>(a, vboolf4(b)); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reduction Operations
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool reduce_and(const vboolf4& a) { return vsx::all(a.v); }
++  __forceinline bool reduce_or (const vboolf4& a) { return vsx::any(a.v); }
++
++  __forceinline bool all (const vboolf4& b) { return vsx::all(b.v); }
++  __forceinline bool any (const vboolf4& b) { return vsx::any(b.v); }
++  __forceinline bool none(const vboolf4& b) { return vsx::none(b.v); }
++
++  __forceinline bool all (const vboolf4& valid, const vboolf4& b) { return all((!valid) | b); }
++  __forceinline bool any (const vboolf4& valid, const vboolf4& b) { return any(valid & b); }
++  __forceinline bool none(const vboolf4& valid, const vboolf4& b) { return none(valid & b); }
++
++  __forceinline size_t movemask(const vboolf4& a) { return vsx::movemask(a.v); }
++  __forceinline size_t popcnt(const vboolf4& a) { return __builtin_popcount(vsx::movemask(a.v)); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Get/Set Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline bool get(const vboolf4& a, size_t index) { return a[index]; }
++  __forceinline void set(vboolf4& a, size_t index)       { a[index] = -1; }
++  __forceinline void clear(vboolf4& a, size_t index)     { a[index] =  0; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator <<(embree_ostream cout, const vboolf4& a) {
++    return cout << "<" << a[0] << ", " << a[1] << ", " << a[2] << ", " << a[3] << ">";
++  }
++}
++
++#undef vboolf
++#undef vboold
++#undef vint
++#undef vuint
++#undef vllong
++#undef vfloat
++#undef vdouble
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/simd/vfloat4_vsx.h embree-4.4.1/common/simd/vfloat4_vsx.h
+--- embree-4.4.1.orig/common/simd/vfloat4_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/simd/vfloat4_vsx.h	2026-09-11 12:03:00.852765444 -0600
+@@ -0,0 +1,538 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: 4-wide float type on VSX (see vsx/vsx.h).
++//
++// Semantics decided here, where VSX and SSE differ:
++//  - madd/msub/nmadd/nmsub are fused (xvmadd*/xvmsub*/xvnmsub*/xvnmadd*),
++//    as on the AVX2 and NEON tiers; the SSE4.2 tier computes them unfused.
++//  - min/max keep SSE minps/maxps NaN semantics (second operand when the
++//    compare is unordered) via compare+select; see vsx::fmin.
++//  - vint4(vfloat4) rounds to nearest even (xvrspic + vctsxs) like cvtps2dq;
++//    out-of-range saturates where SSE returns 0x80000000.
++//  - rcp/rsqrt: xvresp/xvrsqrtesp estimates plus one Newton step (24/23 bits).
++//  - !=, >, >= are IEEE ordered/unordered as on the NEON tier: != is true
++//    for NaN operands, > and >= are false.
++
++#pragma once
++
++#define vboolf vboolf_impl
++#define vboold vboold_impl
++#define vint vint_impl
++#define vuint vuint_impl
++#define vllong vllong_impl
++#define vfloat vfloat_impl
++#define vdouble vdouble_impl
++
++namespace embree
++{
++  /* 4-wide VSX float type */
++  template<>
++  struct vfloat<4>
++  {
++    ALIGNED_STRUCT_(16);
++
++    typedef vboolf4 Bool;
++    typedef vint4   Int;
++    typedef vfloat4 Float;
++
++    enum  { size = 4 };                            // number of SIMD elements
++    union { vsx::f32x4 v; float f[4]; int i[4]; }; // data
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline vfloat() {}
++    __forceinline vfloat(const vfloat4& other) { v = other.v; }
++
++    __forceinline vfloat4& operator =(const vfloat4& other) { v = other.v; return *this; }
++
++    __forceinline vfloat(vsx::f32x4 a) : v(a) {}
++    __forceinline operator const vsx::f32x4&() const { return v; }
++    __forceinline operator       vsx::f32x4&()       { return v; }
++
++    __forceinline vfloat(float a) : v(vec_splats(a)) {}
++    __forceinline vfloat(float a, float b, float c, float d) : v((vsx::f32x4){a, b, c, d}) {}
++
++    __forceinline explicit vfloat(const vint4& a) : v(vec_ctf(a.v, 0)) {}
++    __forceinline explicit vfloat(const vuint4& x) : v(vec_ctf(x.v, 0)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline vfloat(ZeroTy)   : v(vec_splats(0.0f)) {}
++    __forceinline vfloat(OneTy)    : v(vec_splats(1.0f)) {}
++    __forceinline vfloat(PosInfTy) : v(vec_splats((float)pos_inf)) {}
++    __forceinline vfloat(NegInfTy) : v(vec_splats((float)neg_inf)) {}
++    __forceinline vfloat(StepTy)   : v((vsx::f32x4){0.0f, 1.0f, 2.0f, 3.0f}) {}
++    __forceinline vfloat(NaNTy)    : v(vec_splats((float)nan)) {}
++    __forceinline vfloat(UndefinedTy) : v(vec_splats(0.0f)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Loads and Stores
++    ////////////////////////////////////////////////////////////////////////////////
++
++    static __forceinline vfloat4 load (const void* a) { return vec_xl(0, (const float*)a); }
++    static __forceinline vfloat4 loadu(const void* a) { return vec_xl(0, (const float*)a); }
++
++    static __forceinline void store (void* ptr, const vfloat4& v) { vec_xst(v.v, 0, (float*)ptr); }
++    static __forceinline void storeu(void* ptr, const vfloat4& v) { vec_xst(v.v, 0, (float*)ptr); }
++
++    static __forceinline vfloat4 load (const vboolf4& mask, const void* ptr) { return vec_and(load (ptr).v, (vsx::f32x4)mask.v); }
++    static __forceinline vfloat4 loadu(const vboolf4& mask, const void* ptr) { return vec_and(loadu(ptr).v, (vsx::f32x4)mask.v); }
++
++    static __forceinline void store (const vboolf4& mask, void* ptr, const vfloat4& v) { store (ptr,select(mask,v,load (ptr))); }
++    static __forceinline void storeu(const vboolf4& mask, void* ptr, const vfloat4& v) { storeu(ptr,select(mask,v,loadu(ptr))); }
++
++    static __forceinline vfloat4 broadcast(const void* a) { return vec_splats(*(const float*)a); }
++
++    static __forceinline vfloat4 load_nt (const float* ptr) {
++      return load(ptr);
++    }
++
++    static __forceinline vfloat4 load(const char* ptr) {
++      return vec_ctf(vsx::load4s8((const signed char*)ptr), 0);
++    }
++
++    static __forceinline vfloat4 load(const unsigned char* ptr) {
++      return vec_ctf(vsx::load4u8(ptr), 0);
++    }
++
++    static __forceinline vfloat4 load(const short* ptr) {
++      return vec_ctf(vsx::load4s16(ptr), 0);
++    }
++
++    static __forceinline vfloat4 load(const unsigned short* ptr) {
++      return vec_ctf(vsx::load4u16(ptr), 0) * vec_splats(1.0f/65535.0f);
++    }
++
++    static __forceinline void store_nt(void* ptr, const vfloat4& v)
++    {
++      store(ptr, v);
++    }
++
++    template<int scale = 4>
++    static __forceinline vfloat4 gather(const float* ptr, const vint4& index) {
++      return vfloat4(
++        *(float*)(((char*)ptr)+scale*index[0]),
++        *(float*)(((char*)ptr)+scale*index[1]),
++        *(float*)(((char*)ptr)+scale*index[2]),
++        *(float*)(((char*)ptr)+scale*index[3]));
++    }
++
++    template<int scale = 4>
++    static __forceinline vfloat4 gather(const vboolf4& mask, const float* ptr, const vint4& index) {
++      vfloat4 r = zero;
++      if (likely(mask[0])) r[0] = *(float*)(((char*)ptr)+scale*index[0]);
++      if (likely(mask[1])) r[1] = *(float*)(((char*)ptr)+scale*index[1]);
++      if (likely(mask[2])) r[2] = *(float*)(((char*)ptr)+scale*index[2]);
++      if (likely(mask[3])) r[3] = *(float*)(((char*)ptr)+scale*index[3]);
++      return r;
++    }
++
++    template<int scale = 4>
++    static __forceinline void scatter(void* ptr, const vint4& index, const vfloat4& v)
++    {
++      *(float*)(((char*)ptr)+scale*index[0]) = v[0];
++      *(float*)(((char*)ptr)+scale*index[1]) = v[1];
++      *(float*)(((char*)ptr)+scale*index[2]) = v[2];
++      *(float*)(((char*)ptr)+scale*index[3]) = v[3];
++    }
++
++    template<int scale = 4>
++    static __forceinline void scatter(const vboolf4& mask, void* ptr, const vint4& index, const vfloat4& v)
++    {
++      if (likely(mask[0])) *(float*)(((char*)ptr)+scale*index[0]) = v[0];
++      if (likely(mask[1])) *(float*)(((char*)ptr)+scale*index[1]) = v[1];
++      if (likely(mask[2])) *(float*)(((char*)ptr)+scale*index[2]) = v[2];
++      if (likely(mask[3])) *(float*)(((char*)ptr)+scale*index[3]) = v[3];
++    }
++
++    static __forceinline void store(const vboolf4& mask, char* ptr, const vint4& ofs, const vfloat4& v) {
++      scatter<1>(mask,ptr,ofs,v);
++    }
++    static __forceinline void store(const vboolf4& mask, float* ptr, const vint4& ofs, const vfloat4& v) {
++      scatter<4>(mask,ptr,ofs,v);
++    }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline const float& operator [](size_t index) const { assert(index < 4); return f[index]; }
++    __forceinline       float& operator [](size_t index)       { assert(index < 4); return f[index]; }
++
++    friend __forceinline vfloat4 select(const vboolf4& m, const vfloat4& t, const vfloat4& f) {
++      return vec_sel(f.v, t.v, m.v);
++    }
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Load/Store
++  ////////////////////////////////////////////////////////////////////////////////
++
++  template<> struct mem<vfloat4>
++  {
++    static __forceinline vfloat4 load (const vboolf4& mask, const void* ptr) { return vfloat4::load (mask,ptr); }
++    static __forceinline vfloat4 loadu(const vboolf4& mask, const void* ptr) { return vfloat4::loadu(mask,ptr); }
++
++    static __forceinline void store (const vboolf4& mask, void* ptr, const vfloat4& v) { vfloat4::store (mask,ptr,v); }
++    static __forceinline void storeu(const vboolf4& mask, void* ptr, const vfloat4& v) { vfloat4::storeu(mask,ptr,v); }
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vfloat4 asFloat(const vint4&   a) { return (vsx::f32x4)a.v; }
++  __forceinline vint4   asInt  (const vfloat4& a) { return (vsx::i32x4)a.v; }
++  __forceinline vuint4  asUInt (const vfloat4& a) { return (vsx::u32x4)a.v; }
++
++  __forceinline vint4   toInt  (const vfloat4& a) { return vint4(a); }
++  __forceinline vfloat4 toFloat(const vint4&   a) { return vfloat4(a); }
++
++  __forceinline vfloat4 operator +(const vfloat4& a) { return a; }
++  __forceinline vfloat4 operator -(const vfloat4& a) { return vec_neg(a.v); }
++
++  __forceinline vfloat4 abs(const vfloat4& a) { return vec_abs(a.v); }
++
++  __forceinline vfloat4 sign(const vfloat4& a) { return vec_sel(vec_splats(1.0f), vec_splats(-1.0f), vec_cmplt(a.v, vec_splats(0.0f))); }
++
++  __forceinline vfloat4 signmsk(const vfloat4& a) { return vec_and(a.v, (vsx::f32x4)vec_splats(0x80000000u)); }
++
++  __forceinline vfloat4 rcp(const vfloat4& a) { return vsx::rcp(a.v); }
++  __forceinline vfloat4 sqr (const vfloat4& a) { return a.v * a.v; }
++  __forceinline vfloat4 sqrt(const vfloat4& a) { return vec_sqrt(a.v); }
++  __forceinline vfloat4 rsqrt(const vfloat4& a) { return vsx::rsqrt(a.v); }
++
++  __forceinline vboolf4 isnan(const vfloat4& a) {
++    const vsx::i32x4 b = vec_and((vsx::i32x4)a.v, vec_splats(0x7fffffff));
++    return (vsx::u32x4)vec_cmpgt(b, vec_splats(0x7f800000));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vfloat4 operator +(const vfloat4& a, const vfloat4& b) { return a.v + b.v; }
++  __forceinline vfloat4 operator +(const vfloat4& a, float          b) { return a + vfloat4(b); }
++  __forceinline vfloat4 operator +(float          a, const vfloat4& b) { return vfloat4(a) + b; }
++
++  __forceinline vfloat4 operator -(const vfloat4& a, const vfloat4& b) { return a.v - b.v; }
++  __forceinline vfloat4 operator -(const vfloat4& a, float          b) { return a - vfloat4(b); }
++  __forceinline vfloat4 operator -(float          a, const vfloat4& b) { return vfloat4(a) - b; }
++
++  __forceinline vfloat4 operator *(const vfloat4& a, const vfloat4& b) { return a.v * b.v; }
++  __forceinline vfloat4 operator *(const vfloat4& a, float          b) { return a * vfloat4(b); }
++  __forceinline vfloat4 operator *(float          a, const vfloat4& b) { return vfloat4(a) * b; }
++
++  __forceinline vfloat4 operator /(const vfloat4& a, const vfloat4& b) { return a.v / b.v; }
++  __forceinline vfloat4 operator /(const vfloat4& a, float          b) { return a/vfloat4(b); }
++  __forceinline vfloat4 operator /(float          a, const vfloat4& b) { return vfloat4(a)/b; }
++
++  __forceinline vfloat4 operator &(const vfloat4& a, const vfloat4& b) { return vec_and(a.v, b.v); }
++  __forceinline vfloat4 operator |(const vfloat4& a, const vfloat4& b) { return vec_or (a.v, b.v); }
++  __forceinline vfloat4 operator ^(const vfloat4& a, const vfloat4& b) { return vec_xor(a.v, b.v); }
++  __forceinline vfloat4 operator ^(const vfloat4& a, const vint4&   b) { return vec_xor(a.v, (vsx::f32x4)b.v); }
++
++  __forceinline vfloat4 min(const vfloat4& a, const vfloat4& b) { return vsx::fmin(a.v, b.v); }
++  __forceinline vfloat4 min(const vfloat4& a, float          b) { return min(a, vfloat4(b)); }
++  __forceinline vfloat4 min(float          a, const vfloat4& b) { return min(vfloat4(a), b); }
++
++  __forceinline vfloat4 max(const vfloat4& a, const vfloat4& b) { return vsx::fmax(a.v, b.v); }
++  __forceinline vfloat4 max(const vfloat4& a, float          b) { return max(a, vfloat4(b)); }
++  __forceinline vfloat4 max(float          a, const vfloat4& b) { return max(vfloat4(a), b); }
++
++  /* integer min/max on the float bit patterns (valid for the non-negative
++     and same-sign inputs the traversal feeds them): vminsw/vmaxsw */
++  __forceinline vfloat4 mini(const vfloat4& a, const vfloat4& b) {
++    return (vsx::f32x4)vec_min((vsx::i32x4)a.v, (vsx::i32x4)b.v);
++  }
++
++  __forceinline vfloat4 maxi(const vfloat4& a, const vfloat4& b) {
++    return (vsx::f32x4)vec_max((vsx::i32x4)a.v, (vsx::i32x4)b.v);
++  }
++
++  __forceinline vfloat4 minui(const vfloat4& a, const vfloat4& b) {
++    return (vsx::f32x4)vec_min((vsx::u32x4)a.v, (vsx::u32x4)b.v);
++  }
++
++  __forceinline vfloat4 maxui(const vfloat4& a, const vfloat4& b) {
++    return (vsx::f32x4)vec_max((vsx::u32x4)a.v, (vsx::u32x4)b.v);
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Ternary Operators (fused)
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vfloat4 madd (const vfloat4& a, const vfloat4& b, const vfloat4& c) { return vec_madd (a.v, b.v, c.v); }  //  a*b+c
++  __forceinline vfloat4 msub (const vfloat4& a, const vfloat4& b, const vfloat4& c) { return vec_msub (a.v, b.v, c.v); }  //  a*b-c
++  __forceinline vfloat4 nmadd(const vfloat4& a, const vfloat4& b, const vfloat4& c) { return vec_nmsub(a.v, b.v, c.v); }  // -a*b+c
++  __forceinline vfloat4 nmsub(const vfloat4& a, const vfloat4& b, const vfloat4& c) { return vec_nmadd(a.v, b.v, c.v); }  // -a*b-c
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vfloat4& operator +=(vfloat4& a, const vfloat4& b) { return a = a + b; }
++  __forceinline vfloat4& operator +=(vfloat4& a, float          b) { return a = a + b; }
++
++  __forceinline vfloat4& operator -=(vfloat4& a, const vfloat4& b) { return a = a - b; }
++  __forceinline vfloat4& operator -=(vfloat4& a, float          b) { return a = a - b; }
++
++  __forceinline vfloat4& operator *=(vfloat4& a, const vfloat4& b) { return a = a * b; }
++  __forceinline vfloat4& operator *=(vfloat4& a, float          b) { return a = a * b; }
++
++  __forceinline vfloat4& operator /=(vfloat4& a, const vfloat4& b) { return a = a / b; }
++  __forceinline vfloat4& operator /=(vfloat4& a, float          b) { return a = a / b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators + Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 operator ==(const vfloat4& a, const vfloat4& b) { return (vsx::u32x4)vec_cmpeq(a.v, b.v); }
++  __forceinline vboolf4 operator !=(const vfloat4& a, const vfloat4& b) { const vsx::u32x4 e = (vsx::u32x4)vec_cmpeq(a.v, b.v); return vec_nor(e, e); }
++  __forceinline vboolf4 operator < (const vfloat4& a, const vfloat4& b) { return (vsx::u32x4)vec_cmplt(a.v, b.v); }
++  __forceinline vboolf4 operator >=(const vfloat4& a, const vfloat4& b) { return (vsx::u32x4)vec_cmpge(a.v, b.v); }
++  __forceinline vboolf4 operator > (const vfloat4& a, const vfloat4& b) { return (vsx::u32x4)vec_cmpgt(a.v, b.v); }
++  __forceinline vboolf4 operator <=(const vfloat4& a, const vfloat4& b) { return (vsx::u32x4)vec_cmple(a.v, b.v); }
++
++  __forceinline vboolf4 operator ==(const vfloat4& a, float          b) { return a == vfloat4(b); }
++  __forceinline vboolf4 operator ==(float          a, const vfloat4& b) { return vfloat4(a) == b; }
++
++  __forceinline vboolf4 operator !=(const vfloat4& a, float          b) { return a != vfloat4(b); }
++  __forceinline vboolf4 operator !=(float          a, const vfloat4& b) { return vfloat4(a) != b; }
++
++  __forceinline vboolf4 operator < (const vfloat4& a, float          b) { return a <  vfloat4(b); }
++  __forceinline vboolf4 operator < (float          a, const vfloat4& b) { return vfloat4(a) <  b; }
++
++  __forceinline vboolf4 operator >=(const vfloat4& a, float          b) { return a >= vfloat4(b); }
++  __forceinline vboolf4 operator >=(float          a, const vfloat4& b) { return vfloat4(a) >= b; }
++
++  __forceinline vboolf4 operator > (const vfloat4& a, float          b) { return a >  vfloat4(b); }
++  __forceinline vboolf4 operator > (float          a, const vfloat4& b) { return vfloat4(a) >  b; }
++
++  __forceinline vboolf4 operator <=(const vfloat4& a, float          b) { return a <= vfloat4(b); }
++  __forceinline vboolf4 operator <=(float          a, const vfloat4& b) { return vfloat4(a) <= b; }
++
++  __forceinline vboolf4 eq(const vfloat4& a, const vfloat4& b) { return a == b; }
++  __forceinline vboolf4 ne(const vfloat4& a, const vfloat4& b) { return a != b; }
++  __forceinline vboolf4 lt(const vfloat4& a, const vfloat4& b) { return a <  b; }
++  __forceinline vboolf4 ge(const vfloat4& a, const vfloat4& b) { return a >= b; }
++  __forceinline vboolf4 gt(const vfloat4& a, const vfloat4& b) { return a >  b; }
++  __forceinline vboolf4 le(const vfloat4& a, const vfloat4& b) { return a <= b; }
++
++  __forceinline vboolf4 eq(const vboolf4& mask, const vfloat4& a, const vfloat4& b) { return mask & (a == b); }
++  __forceinline vboolf4 ne(const vboolf4& mask, const vfloat4& a, const vfloat4& b) { return mask & (a != b); }
++  __forceinline vboolf4 lt(const vboolf4& mask, const vfloat4& a, const vfloat4& b) { return mask & (a <  b); }
++  __forceinline vboolf4 ge(const vboolf4& mask, const vfloat4& a, const vfloat4& b) { return mask & (a >= b); }
++  __forceinline vboolf4 gt(const vboolf4& mask, const vfloat4& a, const vfloat4& b) { return mask & (a >  b); }
++  __forceinline vboolf4 le(const vboolf4& mask, const vfloat4& a, const vfloat4& b) { return mask & (a <= b); }
++
++  template<int mask>
++    __forceinline vfloat4 select(const vfloat4& t, const vfloat4& f)
++  {
++    return vec_sel(f.v, t.v, vsx::blend_mask<mask>());
++  }
++
++  __forceinline vfloat4 lerp(const vfloat4& a, const vfloat4& b, const vfloat4& t) {
++    return madd(t,b-a,a);
++  }
++
++  __forceinline bool isvalid(const vfloat4& v) {
++    return all((v > vfloat4(-FLT_LARGE)) & (v < vfloat4(+FLT_LARGE)));
++  }
++
++  __forceinline bool is_finite(const vfloat4& a) {
++    return all((a >= vfloat4(-FLT_MAX)) & (a <= vfloat4(+FLT_MAX)));
++  }
++
++  __forceinline bool is_finite(const vboolf4& valid, const vfloat4& a) {
++    return all(valid, (a >= vfloat4(-FLT_MAX)) & (a <= vfloat4(+FLT_MAX)));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Rounding Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vfloat4 floor(const vfloat4& a) { return vec_floor(a.v); }  // xvrspim
++  __forceinline vfloat4 ceil (const vfloat4& a) { return vec_ceil (a.v); }  // xvrspip
++  __forceinline vfloat4 trunc(const vfloat4& a) { return vec_trunc(a.v); }  // xvrspiz
++  __forceinline vfloat4 round(const vfloat4& a) { return vec_rint (a.v); }  // xvrspic: nearest even, as _MM_FROUND_TO_NEAREST_INT
++  __forceinline vfloat4 frac(const vfloat4& a) { return a-floor(a); }
++
++  __forceinline vint4 floori(const vfloat4& a) {
++    return vint4(floor(a));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Movement/Shifting/Shuffling Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vfloat4 unpacklo(const vfloat4& a, const vfloat4& b) { return vec_mergeh(a.v, b.v); }
++  __forceinline vfloat4 unpackhi(const vfloat4& a, const vfloat4& b) { return vec_mergel(a.v, b.v); }
++
++  template<int i0, int i1, int i2, int i3>
++  __forceinline vfloat4 shuffle(const vfloat4& v) {
++    return __builtin_shuffle(v.v, (vsx::u32x4){i0, i1, i2, i3});
++  }
++
++  template<int i0, int i1, int i2, int i3>
++  __forceinline vfloat4 shuffle(const vfloat4& a, const vfloat4& b) {
++    return __builtin_shuffle(a.v, b.v, (vsx::u32x4){i0, i1, 4+i2, 4+i3});
++  }
++
++  template<int i>
++  __forceinline vfloat4 shuffle(const vfloat4& v) {
++    return vec_splat(v.v, i);
++  }
++
++  /* the permutes GCC does not fold to one instruction from __builtin_shuffle */
++  template<> __forceinline vfloat4 shuffle<1, 0, 3, 2>(const vfloat4& v) { return vsx::swap_pairs(v.v); }   // vrld 32
++  template<> __forceinline vfloat4 shuffle<1, 2, 3, 0>(const vfloat4& v) { return vec_sld(v.v, v.v, 12); }  // vsldoi
++  template<> __forceinline vfloat4 shuffle<3, 0, 1, 2>(const vfloat4& v) { return vec_sld(v.v, v.v, 4); }   // vsldoi
++
++  template<int i> __forceinline float extract   (const vfloat4& a) { return vec_extract(a.v, i); }
++
++  template<int dst, int src, int clr> __forceinline vfloat4 insert(const vfloat4& a, const vfloat4& b) {
++    vsx::f32x4 r = __builtin_shuffle(a.v, b.v, (vsx::u32x4){ dst==0 ? 4+src : 0, dst==1 ? 4+src : 1, dst==2 ? 4+src : 2, dst==3 ? 4+src : 3 });
++    if (clr) r = vec_andc(r, (vsx::f32x4)vsx::blend_mask<clr>());
++    return r;
++  }
++  template<int dst, int src> __forceinline vfloat4 insert(const vfloat4& a, const vfloat4& b) { return insert<dst, src, 0>(a, b); }
++  template<int dst> __forceinline vfloat4 insert(const vfloat4& a, const float b) { return vec_insert(b, a.v, dst); }
++
++  __forceinline float toScalar(const vfloat4& v) { return vec_extract(v.v, 0); }
++
++  __forceinline vfloat4 shift_right_1(const vfloat4& x) {
++    return vec_sld(vec_splats(0.0f), x.v, 12);   // {x1,x2,x3,0}
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Sorting Network
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vfloat4 sort_ascending(const vfloat4& v)
++  {
++    const vfloat4 a0 = v;
++    const vfloat4 b0 = shuffle<1,0,3,2>(a0);
++    const vfloat4 c0 = min(a0,b0);
++    const vfloat4 d0 = max(a0,b0);
++    const vfloat4 a1 = select<0x5 /* 0b0101 */>(c0,d0);
++    const vfloat4 b1 = shuffle<2,3,0,1>(a1);
++    const vfloat4 c1 = min(a1,b1);
++    const vfloat4 d1 = max(a1,b1);
++    const vfloat4 a2 = select<0x3 /* 0b0011 */>(c1,d1);
++    const vfloat4 b2 = shuffle<0,2,1,3>(a2);
++    const vfloat4 c2 = min(a2,b2);
++    const vfloat4 d2 = max(a2,b2);
++    const vfloat4 a3 = select<0x2 /* 0b0010 */>(c2,d2);
++    return a3;
++  }
++
++  __forceinline vfloat4 sort_descending(const vfloat4& v)
++  {
++    const vfloat4 a0 = v;
++    const vfloat4 b0 = shuffle<1,0,3,2>(a0);
++    const vfloat4 c0 = max(a0,b0);
++    const vfloat4 d0 = min(a0,b0);
++    const vfloat4 a1 = select<0x5 /* 0b0101 */>(c0,d0);
++    const vfloat4 b1 = shuffle<2,3,0,1>(a1);
++    const vfloat4 c1 = max(a1,b1);
++    const vfloat4 d1 = min(a1,b1);
++    const vfloat4 a2 = select<0x3 /* 0b0011 */>(c1,d1);
++    const vfloat4 b2 = shuffle<0,2,1,3>(a2);
++    const vfloat4 c2 = max(a2,b2);
++    const vfloat4 d2 = min(a2,b2);
++    const vfloat4 a3 = select<0x2 /* 0b0010 */>(c2,d2);
++    return a3;
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Transpose (eight single-instruction merges: xxmrglw/xxmrghw)
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline void transpose(const vfloat4& r0, const vfloat4& r1, const vfloat4& r2, const vfloat4& r3, vfloat4& c0, vfloat4& c1, vfloat4& c2, vfloat4& c3)
++  {
++    vfloat4 l02 = unpacklo(r0,r2);
++    vfloat4 h02 = unpackhi(r0,r2);
++    vfloat4 l13 = unpacklo(r1,r3);
++    vfloat4 h13 = unpackhi(r1,r3);
++    c0 = unpacklo(l02,l13);
++    c1 = unpackhi(l02,l13);
++    c2 = unpacklo(h02,h13);
++    c3 = unpackhi(h02,h13);
++  }
++
++  __forceinline void transpose(const vfloat4& r0, const vfloat4& r1, const vfloat4& r2, const vfloat4& r3, vfloat4& c0, vfloat4& c1, vfloat4& c2)
++  {
++    vfloat4 l02 = unpacklo(r0,r2);
++    vfloat4 h02 = unpackhi(r0,r2);
++    vfloat4 l13 = unpacklo(r1,r3);
++    vfloat4 h13 = unpackhi(r1,r3);
++    c0 = unpacklo(l02,l13);
++    c1 = unpackhi(l02,l13);
++    c2 = unpacklo(h02,h13);
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reductions (SSE association: lane 0 = (v0 op v1) op (v2 op v3), all lanes equal)
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vfloat4 vreduce_min(const vfloat4& v) { vfloat4 h = min(shuffle<1,0,3,2>(v),v); return min(shuffle<2,3,0,1>(h),h); }
++  __forceinline vfloat4 vreduce_max(const vfloat4& v) { vfloat4 h = max(shuffle<1,0,3,2>(v),v); return max(shuffle<2,3,0,1>(h),h); }
++  __forceinline vfloat4 vreduce_add(const vfloat4& v) { vfloat4 h = shuffle<1,0,3,2>(v)   + v ; return shuffle<2,3,0,1>(h)   + h ; }
++
++  __forceinline float reduce_min(const vfloat4& v) { return toScalar(vreduce_min(v)); }
++  __forceinline float reduce_max(const vfloat4& v) { return toScalar(vreduce_max(v)); }
++  __forceinline float reduce_add(const vfloat4& v) { return toScalar(vreduce_add(v)); }
++
++  __forceinline size_t select_min(const vboolf4& valid, const vfloat4& v)
++  {
++    const vfloat4 a = select(valid,v,vfloat4(pos_inf));
++    const vbool4 valid_min = valid & (a == vreduce_min(a));
++    return bsf(movemask(any(valid_min) ? valid_min : valid));
++  }
++  __forceinline size_t select_max(const vboolf4& valid, const vfloat4& v)
++  {
++    const vfloat4 a = select(valid,v,vfloat4(neg_inf));
++    const vbool4 valid_max = valid & (a == vreduce_max(a));
++    return bsf(movemask(any(valid_max) ? valid_max : valid));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Euclidean Space Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline float dot(const vfloat4& a, const vfloat4& b) {
++    return reduce_add(a*b);
++  }
++
++  __forceinline vfloat4 cross(const vfloat4& a, const vfloat4& b)
++  {
++    const vfloat4 a0 = a;
++    const vfloat4 b0 = shuffle<1,2,0,3>(b);
++    const vfloat4 a1 = shuffle<1,2,0,3>(a);
++    const vfloat4 b1 = b;
++    return shuffle<1,2,0,3>(msub(a0,b0,a1*b1));
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator <<(embree_ostream cout, const vfloat4& a) {
++    return cout << "<" << a[0] << ", " << a[1] << ", " << a[2] << ", " << a[3] << ">";
++  }
++
++}
++
++#undef vboolf
++#undef vboold
++#undef vint
++#undef vuint
++#undef vllong
++#undef vfloat
++#undef vdouble
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/simd/vint4_vsx.h embree-4.4.1/common/simd/vint4_vsx.h
+--- embree-4.4.1.orig/common/simd/vint4_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/simd/vint4_vsx.h	2026-09-11 11:24:54.275481155 -0600
+@@ -0,0 +1,396 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: 4-wide int type on VSX (see vsx/vsx.h).
++
++#pragma once
++
++#include "../math/emath.h"
++
++#define vboolf vboolf_impl
++#define vboold vboold_impl
++#define vint vint_impl
++#define vuint vuint_impl
++#define vllong vllong_impl
++#define vfloat vfloat_impl
++#define vdouble vdouble_impl
++
++namespace embree
++{
++  /* 4-wide VSX integer type */
++  template<>
++  struct vint<4>
++  {
++    ALIGNED_STRUCT_(16);
++
++    typedef vboolf4 Bool;
++    typedef vint4   Int;
++    typedef vfloat4 Float;
++
++    enum  { size = 4 };                   // number of SIMD elements
++    union { vsx::i32x4 v; int i[4]; };    // data
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline vint() {}
++    __forceinline vint(const vint4& a) { v = a.v; }
++    __forceinline vint4& operator =(const vint4& a) { v = a.v; return *this; }
++
++    __forceinline vint(vsx::i32x4 a) : v(a) {}
++    __forceinline operator const vsx::i32x4&() const { return v; }
++    __forceinline operator       vsx::i32x4&()       { return v; }
++
++    __forceinline vint(int a) : v(vec_splats(a)) {}
++    __forceinline vint(int a, int b, int c, int d) : v((vsx::i32x4){a, b, c, d}) {}
++
++    /* float -> int rounds to nearest even, as SSE cvtps2dq does */
++    __forceinline explicit vint(vsx::f32x4 a) : v(vsx::cvt_nearest(a)) {}
++    __forceinline explicit vint(const vboolf4& a) : v((vsx::i32x4)a.v) {}
++
++    __forceinline vint(long long a, long long b) : v((vsx::i32x4)(vsx::u64x2){(unsigned long long)a, (unsigned long long)b}) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline vint(ZeroTy)        : v(vec_splats(0)) {}
++    __forceinline vint(OneTy)         : v(vec_splats(1)) {}
++    __forceinline vint(PosInfTy)      : v(vec_splats((int)pos_inf)) {}
++    __forceinline vint(NegInfTy)      : v(vec_splats((int)neg_inf)) {}
++    __forceinline vint(StepTy)        : v((vsx::i32x4){0, 1, 2, 3}) {}
++    __forceinline vint(ReverseStepTy) : v((vsx::i32x4){3, 2, 1, 0}) {}
++
++    __forceinline vint(TrueTy)        : v(vec_splats(-1)) {}
++    __forceinline vint(UndefinedTy)   : v(vec_splats(0)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Loads and Stores
++    ////////////////////////////////////////////////////////////////////////////////
++
++    static __forceinline vint4 load (const void* a) { return vec_xl(0, (const int*)a); }
++    static __forceinline vint4 loadu(const void* a) { return vec_xl(0, (const int*)a); }
++
++    static __forceinline void store (void* ptr, const vint4& v) { vec_xst(v.v, 0, (int*)ptr); }
++    static __forceinline void storeu(void* ptr, const vint4& v) { vec_xst(v.v, 0, (int*)ptr); }
++
++    static __forceinline vint4 load (const vbool4& mask, const void* a) { return vec_and(load (a).v, (vsx::i32x4)mask.v); }
++    static __forceinline vint4 loadu(const vbool4& mask, const void* a) { return vec_and(loadu(a).v, (vsx::i32x4)mask.v); }
++
++    static __forceinline void store (const vboolf4& mask, void* ptr, const vint4& i) { store (ptr,select(mask,i,load (ptr))); }
++    static __forceinline void storeu(const vboolf4& mask, void* ptr, const vint4& i) { storeu(ptr,select(mask,i,loadu(ptr))); }
++
++    static __forceinline vint4 load(const unsigned char* ptr) {
++      return (vsx::i32x4)vsx::load4u8(ptr);
++    }
++    static __forceinline vint4 loadu(const unsigned char* ptr) {
++      return (vsx::i32x4)vsx::load4u8(ptr);
++    }
++
++    static __forceinline vint4 load(const unsigned short* ptr) {
++      return (vsx::i32x4)vsx::load4u16(ptr);
++    }
++
++    static __forceinline void store(unsigned char* ptr, const vint4& v) {
++      vsx::store4u8(ptr, v.v);
++    }
++
++    static __forceinline void store(unsigned short* ptr, const vint4& v) {
++      vsx::store4u16(ptr, v.v);
++    }
++
++    static __forceinline vint4 load_nt(void* ptr) {
++      return load(ptr);
++    }
++
++    static __forceinline void store_nt(void* ptr, const vint4& v) {
++      store(ptr, v);
++    }
++
++    template<int scale = 4>
++    static __forceinline vint4 gather(const int* ptr, const vint4& index) {
++      return vint4(
++          *(int*)(((char*)ptr)+scale*index[0]),
++          *(int*)(((char*)ptr)+scale*index[1]),
++          *(int*)(((char*)ptr)+scale*index[2]),
++          *(int*)(((char*)ptr)+scale*index[3]));
++    }
++
++    template<int scale = 4>
++    static __forceinline vint4 gather(const vboolf4& mask, const int* ptr, const vint4& index) {
++      vint4 r = zero;
++      if (likely(mask[0])) r[0] = *(int*)(((char*)ptr)+scale*index[0]);
++      if (likely(mask[1])) r[1] = *(int*)(((char*)ptr)+scale*index[1]);
++      if (likely(mask[2])) r[2] = *(int*)(((char*)ptr)+scale*index[2]);
++      if (likely(mask[3])) r[3] = *(int*)(((char*)ptr)+scale*index[3]);
++      return r;
++    }
++
++    template<int scale = 4>
++    static __forceinline void scatter(void* ptr, const vint4& index, const vint4& v)
++    {
++      *(int*)(((char*)ptr)+scale*index[0]) = v[0];
++      *(int*)(((char*)ptr)+scale*index[1]) = v[1];
++      *(int*)(((char*)ptr)+scale*index[2]) = v[2];
++      *(int*)(((char*)ptr)+scale*index[3]) = v[3];
++    }
++
++    template<int scale = 4>
++    static __forceinline void scatter(const vboolf4& mask, void* ptr, const vint4& index, const vint4& v)
++    {
++      if (likely(mask[0])) *(int*)(((char*)ptr)+scale*index[0]) = v[0];
++      if (likely(mask[1])) *(int*)(((char*)ptr)+scale*index[1]) = v[1];
++      if (likely(mask[2])) *(int*)(((char*)ptr)+scale*index[2]) = v[2];
++      if (likely(mask[3])) *(int*)(((char*)ptr)+scale*index[3]) = v[3];
++    }
++
++    static __forceinline vint4 broadcast64(long long a) { return (vsx::i32x4)vec_splats((unsigned long long)a); }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline const int& operator [](size_t index) const { assert(index < 4); return i[index]; }
++    __forceinline       int& operator [](size_t index)       { assert(index < 4); return i[index]; }
++
++    friend __forceinline vint4 select(const vboolf4& m, const vint4& t, const vint4& f) {
++      return vec_sel(f.v, t.v, m.v);
++    }
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 asBool(const vint4& a) { return vboolf4((vsx::u32x4)a.v); }
++
++  __forceinline vint4 operator +(const vint4& a) { return a; }
++  __forceinline vint4 operator -(const vint4& a) { return -a.v; }
++  __forceinline vint4 abs(const vint4& a) { return vec_abs(a.v); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vint4 operator +(const vint4& a, const vint4& b) { return a.v + b.v; }
++  __forceinline vint4 operator +(const vint4& a, int          b) { return a + vint4(b); }
++  __forceinline vint4 operator +(int          a, const vint4& b) { return vint4(a) + b; }
++
++  __forceinline vint4 operator -(const vint4& a, const vint4& b) { return a.v - b.v; }
++  __forceinline vint4 operator -(const vint4& a, int          b) { return a - vint4(b); }
++  __forceinline vint4 operator -(int          a, const vint4& b) { return vint4(a) - b; }
++
++  __forceinline vint4 operator *(const vint4& a, const vint4& b) { return a.v * b.v; }
++  __forceinline vint4 operator *(const vint4& a, int          b) { return a * vint4(b); }
++  __forceinline vint4 operator *(int          a, const vint4& b) { return vint4(a) * b; }
++
++  __forceinline vint4 operator &(const vint4& a, const vint4& b) { return vec_and(a.v, b.v); }
++  __forceinline vint4 operator &(const vint4& a, int          b) { return a & vint4(b); }
++  __forceinline vint4 operator &(int          a, const vint4& b) { return vint4(a) & b; }
++
++  __forceinline vint4 operator |(const vint4& a, const vint4& b) { return vec_or(a.v, b.v); }
++  __forceinline vint4 operator |(const vint4& a, int          b) { return a | vint4(b); }
++  __forceinline vint4 operator |(int          a, const vint4& b) { return vint4(a) | b; }
++
++  __forceinline vint4 operator ^(const vint4& a, const vint4& b) { return vec_xor(a.v, b.v); }
++  __forceinline vint4 operator ^(const vint4& a, int          b) { return a ^ vint4(b); }
++  __forceinline vint4 operator ^(int          a, const vint4& b) { return vint4(a) ^ b; }
++
++  __forceinline vint4 operator <<(const vint4& a, const int n) { return vec_sl (a.v, vec_splats((unsigned)n)); }
++  __forceinline vint4 operator >>(const vint4& a, const int n) { return vec_sra(a.v, vec_splats((unsigned)n)); }
++
++  __forceinline vint4 sll (const vint4& a, int b) { return vec_sl (a.v, vec_splats((unsigned)b)); }
++  __forceinline vint4 sra (const vint4& a, int b) { return vec_sra(a.v, vec_splats((unsigned)b)); }
++  __forceinline vint4 srl (const vint4& a, int b) { return vec_sr (a.v, vec_splats((unsigned)b)); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vint4& operator +=(vint4& a, const vint4& b) { return a = a + b; }
++  __forceinline vint4& operator +=(vint4& a, int          b) { return a = a + b; }
++
++  __forceinline vint4& operator -=(vint4& a, const vint4& b) { return a = a - b; }
++  __forceinline vint4& operator -=(vint4& a, int          b) { return a = a - b; }
++
++  __forceinline vint4& operator *=(vint4& a, const vint4& b) { return a = a * b; }
++  __forceinline vint4& operator *=(vint4& a, int          b) { return a = a * b; }
++
++  __forceinline vint4& operator &=(vint4& a, const vint4& b) { return a = a & b; }
++  __forceinline vint4& operator &=(vint4& a, int          b) { return a = a & b; }
++
++  __forceinline vint4& operator |=(vint4& a, const vint4& b) { return a = a | b; }
++  __forceinline vint4& operator |=(vint4& a, int          b) { return a = a | b; }
++
++  __forceinline vint4& operator <<=(vint4& a, int b) { return a = a << b; }
++  __forceinline vint4& operator >>=(vint4& a, int b) { return a = a >> b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators + Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 operator ==(const vint4& a, const vint4& b) { return (vsx::u32x4)vec_cmpeq(a.v, b.v); }
++  __forceinline vboolf4 operator !=(const vint4& a, const vint4& b) { return !(a == b); }
++  __forceinline vboolf4 operator < (const vint4& a, const vint4& b) { return (vsx::u32x4)vec_cmplt(a.v, b.v); }
++  __forceinline vboolf4 operator >=(const vint4& a, const vint4& b) { return !(a <  b); }
++  __forceinline vboolf4 operator > (const vint4& a, const vint4& b) { return (vsx::u32x4)vec_cmpgt(a.v, b.v); }
++  __forceinline vboolf4 operator <=(const vint4& a, const vint4& b) { return !(a >  b); }
++
++  __forceinline vboolf4 operator ==(const vint4& a, int          b) { return a == vint4(b); }
++  __forceinline vboolf4 operator ==(int          a, const vint4& b) { return vint4(a) == b; }
++
++  __forceinline vboolf4 operator !=(const vint4& a, int          b) { return a != vint4(b); }
++  __forceinline vboolf4 operator !=(int          a, const vint4& b) { return vint4(a) != b; }
++
++  __forceinline vboolf4 operator < (const vint4& a, int          b) { return a <  vint4(b); }
++  __forceinline vboolf4 operator < (int          a, const vint4& b) { return vint4(a) <  b; }
++
++  __forceinline vboolf4 operator >=(const vint4& a, int          b) { return a >= vint4(b); }
++  __forceinline vboolf4 operator >=(int          a, const vint4& b) { return vint4(a) >= b; }
++
++  __forceinline vboolf4 operator > (const vint4& a, int          b) { return a >  vint4(b); }
++  __forceinline vboolf4 operator > (int          a, const vint4& b) { return vint4(a) >  b; }
++
++  __forceinline vboolf4 operator <=(const vint4& a, int          b) { return a <= vint4(b); }
++  __forceinline vboolf4 operator <=(int          a, const vint4& b) { return vint4(a) <= b; }
++
++  __forceinline vboolf4 eq(const vint4& a, const vint4& b) { return a == b; }
++  __forceinline vboolf4 ne(const vint4& a, const vint4& b) { return a != b; }
++  __forceinline vboolf4 lt(const vint4& a, const vint4& b) { return a <  b; }
++  __forceinline vboolf4 ge(const vint4& a, const vint4& b) { return a >= b; }
++  __forceinline vboolf4 gt(const vint4& a, const vint4& b) { return a >  b; }
++  __forceinline vboolf4 le(const vint4& a, const vint4& b) { return a <= b; }
++
++  __forceinline vboolf4 eq(const vboolf4& mask, const vint4& a, const vint4& b) { return mask & (a == b); }
++  __forceinline vboolf4 ne(const vboolf4& mask, const vint4& a, const vint4& b) { return mask & (a != b); }
++  __forceinline vboolf4 lt(const vboolf4& mask, const vint4& a, const vint4& b) { return mask & (a <  b); }
++  __forceinline vboolf4 ge(const vboolf4& mask, const vint4& a, const vint4& b) { return mask & (a >= b); }
++  __forceinline vboolf4 gt(const vboolf4& mask, const vint4& a, const vint4& b) { return mask & (a >  b); }
++  __forceinline vboolf4 le(const vboolf4& mask, const vint4& a, const vint4& b) { return mask & (a <= b); }
++
++  template<int mask>
++  __forceinline vint4 select(const vint4& t, const vint4& f) {
++    return vec_sel(f.v, t.v, vsx::blend_mask<mask>());
++  }
++
++  __forceinline vint4 min(const vint4& a, const vint4& b) { return vec_min(a.v, b.v); }
++  __forceinline vint4 max(const vint4& a, const vint4& b) { return vec_max(a.v, b.v); }
++
++  __forceinline vint4 umin(const vint4& a, const vint4& b) { return (vsx::i32x4)vec_min((vsx::u32x4)a.v, (vsx::u32x4)b.v); }
++  __forceinline vint4 umax(const vint4& a, const vint4& b) { return (vsx::i32x4)vec_max((vsx::u32x4)a.v, (vsx::u32x4)b.v); }
++
++  __forceinline vint4 min(const vint4& a, int          b) { return min(a,vint4(b)); }
++  __forceinline vint4 min(int          a, const vint4& b) { return min(vint4(a),b); }
++  __forceinline vint4 max(const vint4& a, int          b) { return max(a,vint4(b)); }
++  __forceinline vint4 max(int          a, const vint4& b) { return max(vint4(a),b); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  // Movement/Shifting/Shuffling Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vint4 unpacklo(const vint4& a, const vint4& b) { return vec_mergeh(a.v, b.v); }
++  __forceinline vint4 unpackhi(const vint4& a, const vint4& b) { return vec_mergel(a.v, b.v); }
++
++  template<int i0, int i1, int i2, int i3>
++  __forceinline vint4 shuffle(const vint4& v) {
++    return __builtin_shuffle(v.v, (vsx::u32x4){i0, i1, i2, i3});
++  }
++
++  template<int i0, int i1, int i2, int i3>
++  __forceinline vint4 shuffle(const vint4& a, const vint4& b) {
++    return __builtin_shuffle(a.v, b.v, (vsx::u32x4){i0, i1, 4+i2, 4+i3});
++  }
++
++  template<int i>
++  __forceinline vint4 shuffle(const vint4& v) {
++    return vec_splat(v.v, i);
++  }
++
++  template<> __forceinline vint4 shuffle<1, 0, 3, 2>(const vint4& v) { return vsx::swap_pairs(v.v); }
++  template<> __forceinline vint4 shuffle<1, 2, 3, 0>(const vint4& v) { return vec_sld(v.v, v.v, 12); }
++  template<> __forceinline vint4 shuffle<3, 0, 1, 2>(const vint4& v) { return vec_sld(v.v, v.v, 4); }
++
++  template<int src> __forceinline int extract(const vint4& b) { return vec_extract(b.v, src); }
++  template<int dst> __forceinline vint4 insert(const vint4& a, const int b) { return vec_insert(b, a.v, dst); }
++
++  __forceinline int toScalar(const vint4& v) { return vec_extract(v.v, 0); }
++
++  __forceinline size_t toSizeT(const vint4& v) {
++    return (size_t)vec_extract((vsx::u64x2)v.v, 0);
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Reductions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vint4 vreduce_min(const vint4& v) { vint4 h = min(shuffle<1,0,3,2>(v),v); return min(shuffle<2,3,0,1>(h),h); }
++  __forceinline vint4 vreduce_max(const vint4& v) { vint4 h = max(shuffle<1,0,3,2>(v),v); return max(shuffle<2,3,0,1>(h),h); }
++  __forceinline vint4 vreduce_add(const vint4& v) { vint4 h = shuffle<1,0,3,2>(v)   + v ; return shuffle<2,3,0,1>(h)   + h ; }
++
++  __forceinline int reduce_min(const vint4& v) { return toScalar(vreduce_min(v)); }
++  __forceinline int reduce_max(const vint4& v) { return toScalar(vreduce_max(v)); }
++  __forceinline int reduce_add(const vint4& v) { return toScalar(vreduce_add(v)); }
++
++  __forceinline size_t select_min(const vint4& v) { return bsf(movemask(v == vreduce_min(v))); }
++  __forceinline size_t select_max(const vint4& v) { return bsf(movemask(v == vreduce_max(v))); }
++
++  __forceinline size_t select_min(const vboolf4& valid, const vint4& v) { const vint4 a = select(valid,v,vint4(pos_inf)); return bsf(movemask(valid & (a == vreduce_min(a)))); }
++  __forceinline size_t select_max(const vboolf4& valid, const vint4& v) { const vint4 a = select(valid,v,vint4(neg_inf)); return bsf(movemask(valid & (a == vreduce_max(a)))); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Sorting networks
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vint4 usort_ascending(const vint4& v)
++  {
++    const vint4 a0 = v;
++    const vint4 b0 = shuffle<1,0,3,2>(a0);
++    const vint4 c0 = umin(a0,b0);
++    const vint4 d0 = umax(a0,b0);
++    const vint4 a1 = select<0x5 /* 0b0101 */>(c0,d0);
++    const vint4 b1 = shuffle<2,3,0,1>(a1);
++    const vint4 c1 = umin(a1,b1);
++    const vint4 d1 = umax(a1,b1);
++    const vint4 a2 = select<0x3 /* 0b0011 */>(c1,d1);
++    const vint4 b2 = shuffle<0,2,1,3>(a2);
++    const vint4 c2 = umin(a2,b2);
++    const vint4 d2 = umax(a2,b2);
++    const vint4 a3 = select<0x2 /* 0b0010 */>(c2,d2);
++    return a3;
++  }
++
++  __forceinline vint4 usort_descending(const vint4& v)
++  {
++    const vint4 a0 = v;
++    const vint4 b0 = shuffle<1,0,3,2>(a0);
++    const vint4 c0 = umax(a0,b0);
++    const vint4 d0 = umin(a0,b0);
++    const vint4 a1 = select<0x5 /* 0b0101 */>(c0,d0);
++    const vint4 b1 = shuffle<2,3,0,1>(a1);
++    const vint4 c1 = umax(a1,b1);
++    const vint4 d1 = umin(a1,b1);
++    const vint4 a2 = select<0x3 /* 0b0011 */>(c1,d1);
++    const vint4 b2 = shuffle<0,2,1,3>(a2);
++    const vint4 c2 = umax(a2,b2);
++    const vint4 d2 = umin(a2,b2);
++    const vint4 a3 = select<0x2 /* 0b0010 */>(c2,d2);
++    return a3;
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator <<(embree_ostream cout, const vint4& a) {
++    return cout << "<" << a[0] << ", " << a[1] << ", " << a[2] << ", " << a[3] << ">";
++  }
++}
++
++#undef vboolf
++#undef vboold
++#undef vint
++#undef vuint
++#undef vllong
++#undef vfloat
++#undef vdouble
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/simd/vsx/vsx.h embree-4.4.1/common/simd/vsx/vsx.h
+--- embree-4.4.1.orig/common/simd/vsx/vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/simd/vsx/vsx.h	2026-09-11 12:02:45.144577108 -0600
+@@ -0,0 +1,226 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: the native VSX base for Embree's 4-wide SIMD layer.
++//
++// This header replaces <immintrin.h> when EMBREE_PPC64LE_VSX is defined.  No
++// x86 SIMD intrinsic exists in this build: the vfloat4/vint4/vuint4/vboolf4
++// types (common/simd/*_vsx.h) and the Vec3fa/Vec3ia/Vec3ba/Vec2fa/Color
++// types (common/math/*_vsx.h) are written on GCC's vector extensions and the
++// altivec builtins, so any surviving _mm_* spelling is a compile error.  The
++// only x86 spellings kept are the *non-SIMD* platform hints Embree's system
++// layer calls by name (_mm_pause, _mm_prefetch, _mm_malloc/_mm_free and the
++// MXCSR accessors), defined at the end of this file.
++//
++// ISA floor is POWER8 (ISA 2.07): everything here lowers to 2.07 instructions
++// at -mcpu=power8.  -mcpu=power9 lets GCC pick ISA 3.0 forms (lxvwsx,
++// xxinsertw, xxextractuw, mtvsrws, vextuwrx) for the same builtins; no
++// _ARCH_PWR9 conditionals are needed in this layer for correctness.
++//
++// Lane-level facts this layer relies on were established by
++// probes/vsx_lane_probe.cpp (powerpc64le-handbook) on POWER9 with GCC 16:
++//  - vbpermq with control {96,64,32,0,0x80...} gathers the four word sign
++//    bits into bits 0..3 of doubleword 1 in x86 _mm_movemask_ps order;
++//  - vec_sld(zero, x, 12) == {x1,x2,x3,0} (SSE _mm_srli_si128(x,4));
++//    vec_sld(a,a,12) == {a1,a2,a3,a0}, vec_sld(a,a,4) == {a3,a0,a1,a2};
++//  - vec_mergeh(a,b) == {a0,b0,a1,b1} (SSE unpacklo), vec_mergel == unpackhi;
++//  - vec_cts(vec_rint(x)) rounds to nearest-even like SSE cvtps2dq;
++//  - vec_rl on doublewords by 32 == shuffle<1,0,3,2>;
++//  - xvresp / xvrsqrtesp estimates carry 14.6 / 15.4 bits (x86: 12), one
++//    Newton step gives 24.0 / 23.4 bits.
++
++#pragma once
++
++#include "../../sys/platform.h"
++
++#include <altivec.h>
++#include <cstdlib>
++#include <cstring>
++
++/* altivec.h defines these as macros; 'bool' as a macro breaks every C++
++   header that follows.  GCC's own comment says they may be undefined for
++   C++ compatibility.  Vector bool types are spelled __vector __bool below. */
++#undef vector
++#undef pixel
++#undef bool
++
++namespace embree
++{
++  namespace vsx
++  {
++    typedef __vector float               f32x4;
++    typedef __vector signed int          i32x4;
++    typedef __vector unsigned int        u32x4;
++    typedef __vector __bool int          b32x4;
++    typedef __vector signed short        i16x8;
++    typedef __vector unsigned short      u16x8;
++    typedef __vector signed char         i8x16;
++    typedef __vector unsigned char       u8x16;
++    typedef __vector unsigned long long  u64x2;
++
++    /* movemask: bit i of the result is the sign bit of lane i, x86 order.
++       vbpermq (ISA 2.07) gathers the four sign bits with one permute; the
++       control vector is a constant the compiler hoists. */
++    __forceinline unsigned movemask(u32x4 m)
++    {
++      const u8x16 ctrl = { 96, 64, 32, 0, 0x80,0x80,0x80,0x80, 0x80,0x80,0x80,0x80, 0x80,0x80,0x80,0x80 };
++      const u64x2 r = (u64x2)vec_bperm((u8x16)m, ctrl);
++      return (unsigned)r[1];
++    }
++
++    /* Masks in this layer are canonical (every lane all-ones or all-zero),
++       so "any lane nonzero" is "any sign bit set".  These are record-form
++       compares (vcmpequw.) that feed CR6 straight into a branch. */
++    __forceinline bool any (u32x4 m) { return vec_any_ne(m, (u32x4)vec_splats(0u)); }
++    __forceinline bool none(u32x4 m) { return vec_all_eq(m, (u32x4)vec_splats(0u)); }
++    __forceinline bool all (u32x4 m) { return vec_all_eq(m, (u32x4)vec_splats(~0u)); }
++
++    __forceinline u32x4 splat_mask(bool b) { return vec_splats(b ? ~0u : 0u); }
++
++    /* min/max with SSE minps/maxps semantics: the second operand whenever
++       the comparison is unordered, so a NaN in either operand propagates
++       (min(x,NaN) = NaN, min(NaN,x) = x).  xvminsp/xvmaxsp return the
++       non-NaN operand instead, and the kernels depend on propagation:
++       OBBNode::clear() marks empty children with NaN transforms and culls
++       them through max(ray.tnear, tNearXYZ) <= min(ray.tfar, tFarXYZ).
++       Two instructions (xvcmpgtsp + xxsel) instead of one. */
++    __forceinline f32x4 fmin(f32x4 a, f32x4 b) { return vec_sel(b, a, vec_cmplt(a, b)); }
++    __forceinline f32x4 fmax(f32x4 a, f32x4 b) { return vec_sel(b, a, vec_cmpgt(a, b)); }
++
++    template<int mask>
++    __forceinline u32x4 blend_mask() {
++      return (u32x4){ (mask & 1) ? ~0u : 0u, (mask & 2) ? ~0u : 0u, (mask & 4) ? ~0u : 0u, (mask & 8) ? ~0u : 0u };
++    }
++
++    /* vfloat4::load(const unsigned char*) and friends: four narrow lanes
++       widened to 32 bits without a memory constant (two merges with zero,
++       or two sign-extending unpacks). */
++    __forceinline u32x4 load4u8(const unsigned char* p) {
++      unsigned w; memcpy(&w, p, 4);
++      const u8x16 b = (u8x16)vec_splats(w);
++      const u16x8 h = (u16x8)vec_mergeh(b, (u8x16)vec_splats((unsigned char)0));
++      return (u32x4)vec_mergeh(h, (u16x8)vec_splats((unsigned short)0));
++    }
++    __forceinline i32x4 load4s8(const signed char* p) {
++      unsigned w; memcpy(&w, p, 4);
++      const i8x16 b = (i8x16)vec_splats(w);
++      return vec_unpackh(vec_unpackh(b));
++    }
++    __forceinline u32x4 load4u16(const unsigned short* p) {
++      unsigned long long w; memcpy(&w, p, 8);
++      const u16x8 h = (u16x8)vec_splats(w);
++      return (u32x4)vec_mergeh(h, (u16x8)vec_splats((unsigned short)0));
++    }
++    __forceinline i32x4 load4s16(const short* p) {
++      unsigned long long w; memcpy(&w, p, 8);
++      return vec_unpackh((i16x8)vec_splats(w));
++    }
++    /* SSE _mm_packus_epi32 + _mm_packus_epi16: signed words saturated to
++       unsigned bytes. */
++    __forceinline void store4u8(unsigned char* p, i32x4 v) {
++      const u16x8 h = vec_packsu(v, v);
++      const u8x16 b = vec_packsu((i16x8)h, (i16x8)h);
++      const unsigned w = vec_extract((u32x4)b, 0);
++      memcpy(p, &w, 4);
++    }
++    /* vint4::store(unsigned short*) is a plain (unsigned short) cast per
++       lane upstream: modulo, not saturating -- vpkuwum keeps the low halfword */
++    __forceinline void store4u16(unsigned short* p, i32x4 v) {
++      const u16x8 h = (u16x8)vec_pack(v, v);
++      const unsigned long long w = vec_extract((u64x2)h, 0);
++      memcpy(p, &w, 8);
++    }
++
++    /* SSE cvtps2dq: round to nearest even, then convert.  VSX only truncates
++       (vctsxs), so round first.  Out-of-range values saturate here where SSE
++       returns 0x80000000. */
++    __forceinline i32x4 cvt_nearest(f32x4 a) { return vec_cts(vec_rint(a), 0); }
++
++    /* rcp = estimate refined with one Newton step, the shape of the SSE
++       code: r + r*(1 - a*r), both steps fused. */
++    __forceinline f32x4 rcp(f32x4 a) {
++      const f32x4 r = vec_re(a);
++      return vec_madd(r, vec_nmsub(a, r, vec_splats(1.0f)), r);
++    }
++    /* rsqrt = estimate refined with one Newton step: r*(1.5 - 0.5*a*r*r). */
++    __forceinline f32x4 rsqrt(f32x4 a) {
++      const f32x4 r  = vec_rsqrte(a);
++      const f32x4 ar = a * r;
++      return r * vec_nmsub(ar * r, vec_splats(0.5f), vec_splats(1.5f));
++    }
++
++    /* Horizontal reductions, SSE association: lane 0 = (v0+v1)+(v2+v3),
++       all lanes equal.  shuffle<1,0,3,2> is a doubleword rotate by 32
++       (vrld), shuffle<2,3,0,1> a doubleword swap (xxswapd). */
++    __forceinline f32x4 swap_pairs(f32x4 v) { return (f32x4)vec_rl((u64x2)v, vec_splats(32ull)); }
++    __forceinline f32x4 swap_halves(f32x4 v) { return __builtin_shuffle(v, (u32x4){2,3,0,1}); }
++    __forceinline i32x4 swap_pairs(i32x4 v) { return (i32x4)vec_rl((u64x2)v, vec_splats(32ull)); }
++    __forceinline i32x4 swap_halves(i32x4 v) { return __builtin_shuffle(v, (u32x4){2,3,0,1}); }
++
++    /* (a0*b0 + a1*b1) + a2*b2, lane 3 ignored: what the SSE4.1 build gets
++       from _mm_dp_ps(a,b,0x7F) through the compat-header emulation. */
++    __forceinline float dot3(f32x4 a, f32x4 b) {
++      const f32x4 t = a * b;
++      const f32x4 s = (t + vec_splat(t, 1)) + vec_splat(t, 2);
++      return vec_extract(s, 0);
++    }
++  }
++}
++
++////////////////////////////////////////////////////////////////////////////////
++/// Non-SIMD platform hints that Embree's system layer spells the x86 way.
++/// None of these touch vector state; they are here so common/sys, the task
++/// scheduler and the device code compile unchanged.
++////////////////////////////////////////////////////////////////////////////////
++
++/* spin-wait hint: lower the SMT thread priority for a moment ("or 27,27,27"
++   is the ISA's medium-low priority nop). */
++__forceinline void _mm_pause(void) { __asm__ __volatile__ ("or 27,27,27" ::: "memory"); }
++
++/* full memory fence (the BVH builders publish nodes with it): hwsync */
++__forceinline void _mm_mfence(void) { __sync_synchronize(); }
++
++#define _MM_HINT_T0  3
++#define _MM_HINT_T1  2
++#define _MM_HINT_T2  1
++#define _MM_HINT_NTA 0
++__forceinline void _mm_prefetch(const char* p, int hint) { __builtin_prefetch(p, 0, hint); }
++
++__forceinline void* _mm_malloc(size_t size, size_t align)
++{
++  void* ptr = nullptr;
++  if (align < sizeof(void*)) align = sizeof(void*);
++  if (posix_memalign(&ptr, align, size) != 0) return nullptr;
++  return ptr;
++}
++__forceinline void _mm_free(void* ptr) { free(ptr); }
++
++/* MXCSR does not exist on POWER.  Embree only touches it to enable FTZ/DAZ,
++   an x86 performance hint; POWER handles denormals in hardware at full
++   speed.  Report both as always on and accept writes as no-ops, so the
++   FTZ/DAZ warning in Device::print() stays quiet and Scene::commit()'s
++   save/restore is harmless. */
++#define _MM_FLUSH_ZERO_MASK     0x8000
++#define _MM_FLUSH_ZERO_ON       0x8000
++#define _MM_FLUSH_ZERO_OFF      0x0000
++#define _MM_DENORMALS_ZERO_MASK 0x0040
++#define _MM_DENORMALS_ZERO_ON   0x0040
++#define _MM_DENORMALS_ZERO_OFF  0x0000
++#define _MM_EXCEPT_MASK         0x003f
++#define _MM_MASK_MASK           0x1f80
++#define _MM_MASK_INVALID        0x0080
++#define _MM_MASK_DENORM         0x0100
++#define _MM_MASK_DIV_ZERO       0x0200
++#define _MM_MASK_OVERFLOW       0x0400
++#define _MM_MASK_UNDERFLOW      0x0800
++#define _MM_MASK_INEXACT        0x1000
++
++__forceinline unsigned int _mm_getcsr(void) { return _MM_MASK_MASK | _MM_FLUSH_ZERO_ON | _MM_DENORMALS_ZERO_ON; }
++__forceinline void _mm_setcsr(unsigned int) {}
++
++#define _MM_SET_EXCEPTION_MASK(x) _mm_setcsr((_mm_getcsr() & ~_MM_MASK_MASK) | (x))
++#define _MM_GET_EXCEPTION_MASK()  (_mm_getcsr() & _MM_MASK_MASK)
++#define _MM_SET_FLUSH_ZERO_MODE(x) _mm_setcsr((_mm_getcsr() & ~_MM_FLUSH_ZERO_MASK) | (x))
++#define _MM_GET_FLUSH_ZERO_MODE()  (_mm_getcsr() & _MM_FLUSH_ZERO_MASK)
++#define _MM_SET_DENORMALS_ZERO_MODE(x) _mm_setcsr((_mm_getcsr() & ~_MM_DENORMALS_ZERO_MASK) | (x))
++#define _MM_GET_DENORMALS_ZERO_MODE()  (_mm_getcsr() & _MM_DENORMALS_ZERO_MASK)
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/simd/vuint4_vsx.h embree-4.4.1/common/simd/vuint4_vsx.h
+--- embree-4.4.1.orig/common/simd/vuint4_vsx.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/simd/vuint4_vsx.h	2026-09-11 11:25:51.511393783 -0600
+@@ -0,0 +1,257 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: 4-wide unsigned int type on VSX (see vsx/vsx.h).
++
++#pragma once
++
++#include "../math/emath.h"
++
++#define vboolf vboolf_impl
++#define vboold vboold_impl
++#define vint vint_impl
++#define vuint vuint_impl
++#define vllong vllong_impl
++#define vfloat vfloat_impl
++#define vdouble vdouble_impl
++
++namespace embree
++{
++  /* 4-wide VSX unsigned integer type */
++  template<>
++  struct vuint<4>
++  {
++    ALIGNED_STRUCT_(16);
++
++    typedef vboolf4 Bool;
++    typedef vuint4   Int;
++    typedef vfloat4 Float;
++
++    enum  { size = 4 }; // number of SIMD elements
++    union { vsx::u32x4 v; unsigned int i[4]; }; // data
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constructors, Assignment & Cast Operators
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline vuint() {}
++    __forceinline vuint(const vuint4& a) { v = a.v; }
++    __forceinline vuint4& operator =(const vuint4& a) { v = a.v; return *this; }
++
++    __forceinline vuint(const vsx::u32x4 a) : v(a) {}
++    __forceinline operator const vsx::u32x4&() const { return v; }
++    __forceinline operator       vsx::u32x4&()       { return v; }
++
++    __forceinline vuint(unsigned int a) : v(vec_splats(a)) {}
++    __forceinline vuint(unsigned int a, unsigned int b, unsigned int c, unsigned int d) : v((vsx::u32x4){a, b, c, d}) {}
++
++    __forceinline explicit vuint(const vboolf4& a) : v(a.v) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Constants
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline vuint(ZeroTy)   : v(vec_splats(0u)) {}
++    __forceinline vuint(OneTy)    : v(vec_splats(1u)) {}
++    __forceinline vuint(PosInfTy) : v(vec_splats(unsigned(pos_inf))) {}
++    __forceinline vuint(StepTy)   : v((vsx::u32x4){0, 1, 2, 3}) {}
++    __forceinline vuint(TrueTy)   : v(vec_splats(~0u)) {}
++    __forceinline vuint(UndefinedTy) : v(vec_splats(0u)) {}
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Loads and Stores
++    ////////////////////////////////////////////////////////////////////////////////
++
++    static __forceinline vuint4 load (const void* a) { return vec_xl(0, (const unsigned int*)a); }
++    static __forceinline vuint4 loadu(const void* a) { return vec_xl(0, (const unsigned int*)a); }
++
++    static __forceinline void store (void* ptr, const vuint4& v) { vec_xst(v.v, 0, (unsigned int*)ptr); }
++    static __forceinline void storeu(void* ptr, const vuint4& v) { vec_xst(v.v, 0, (unsigned int*)ptr); }
++
++    static __forceinline vuint4 load (const vbool4& mask, const void* a) { return vec_and(load (a).v, mask.v); }
++    static __forceinline vuint4 loadu(const vbool4& mask, const void* a) { return vec_and(loadu(a).v, mask.v); }
++
++    static __forceinline void store (const vboolf4& mask, void* ptr, const vuint4& i) { store (ptr,select(mask,i,load (ptr))); }
++    static __forceinline void storeu(const vboolf4& mask, void* ptr, const vuint4& i) { storeu(ptr,select(mask,i,loadu(ptr))); }
++
++    static __forceinline vuint4 load(const unsigned char* ptr) {
++      return vsx::load4u8(ptr);
++    }
++
++    static __forceinline vuint4 loadu(const unsigned char* ptr) {
++      return vsx::load4u8(ptr);
++    }
++
++    static __forceinline vuint4 load(const unsigned short* ptr) {
++      return vsx::load4u16(ptr);
++    }
++
++    static __forceinline vuint4 load_nt(void* ptr) {
++      return load(ptr);
++    }
++
++    static __forceinline void store_nt(void* ptr, const vuint4& v) {
++      store(ptr, v);
++    }
++
++    template<int scale = 4>
++    static __forceinline vuint4 gather(const unsigned int* ptr, const vint4& index) {
++      return vuint4(
++          *(unsigned int*)(((char*)ptr)+scale*index[0]),
++          *(unsigned int*)(((char*)ptr)+scale*index[1]),
++          *(unsigned int*)(((char*)ptr)+scale*index[2]),
++          *(unsigned int*)(((char*)ptr)+scale*index[3]));
++    }
++
++    template<int scale = 4>
++    static __forceinline vuint4 gather(const vboolf4& mask, const unsigned int* ptr, const vint4& index) {
++      vuint4 r = zero;
++      if (likely(mask[0])) r[0] = *(unsigned int*)(((char*)ptr)+scale*index[0]);
++      if (likely(mask[1])) r[1] = *(unsigned int*)(((char*)ptr)+scale*index[1]);
++      if (likely(mask[2])) r[2] = *(unsigned int*)(((char*)ptr)+scale*index[2]);
++      if (likely(mask[3])) r[3] = *(unsigned int*)(((char*)ptr)+scale*index[3]);
++      return r;
++    }
++
++    ////////////////////////////////////////////////////////////////////////////////
++    /// Array Access
++    ////////////////////////////////////////////////////////////////////////////////
++
++    __forceinline const unsigned int& operator [](size_t index) const { assert(index < 4); return i[index]; }
++    __forceinline       unsigned int& operator [](size_t index)       { assert(index < 4); return i[index]; }
++
++    friend __forceinline vuint4 select(const vboolf4& m, const vuint4& t, const vuint4& f) {
++      return vec_sel(f.v, t.v, m.v);
++    }
++  };
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Unary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 asBool(const vuint4& a) { return vboolf4(a.v); }
++
++  __forceinline vuint4 operator +(const vuint4& a) { return a; }
++  __forceinline vuint4 operator -(const vuint4& a) { return vec_splats(0u) - a.v; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Binary Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vuint4 operator +(const vuint4& a, const vuint4& b) { return a.v + b.v; }
++  __forceinline vuint4 operator +(const vuint4& a, unsigned int  b) { return a + vuint4(b); }
++  __forceinline vuint4 operator +(unsigned int  a, const vuint4& b) { return vuint4(a) + b; }
++
++  __forceinline vuint4 operator -(const vuint4& a, const vuint4& b) { return a.v - b.v; }
++  __forceinline vuint4 operator -(const vuint4& a, unsigned int  b) { return a - vuint4(b); }
++  __forceinline vuint4 operator -(unsigned int  a, const vuint4& b) { return vuint4(a) - b; }
++
++  __forceinline vuint4 operator &(const vuint4& a, const vuint4& b) { return vec_and(a.v, b.v); }
++  __forceinline vuint4 operator &(const vuint4& a, unsigned int  b) { return a & vuint4(b); }
++  __forceinline vuint4 operator &(unsigned int  a, const vuint4& b) { return vuint4(a) & b; }
++
++  __forceinline vuint4 operator |(const vuint4& a, const vuint4& b) { return vec_or(a.v, b.v); }
++  __forceinline vuint4 operator |(const vuint4& a, unsigned int  b) { return a | vuint4(b); }
++  __forceinline vuint4 operator |(unsigned int  a, const vuint4& b) { return vuint4(a) | b; }
++
++  __forceinline vuint4 operator ^(const vuint4& a, const vuint4& b) { return vec_xor(a.v, b.v); }
++  __forceinline vuint4 operator ^(const vuint4& a, unsigned int  b) { return a ^ vuint4(b); }
++  __forceinline vuint4 operator ^(unsigned int  a, const vuint4& b) { return vuint4(a) ^ b; }
++
++  __forceinline vuint4 operator <<(const vuint4& a, unsigned int n) { return vec_sl(a.v, vec_splats(n)); }
++  __forceinline vuint4 operator >>(const vuint4& a, unsigned int n) { return vec_sr(a.v, vec_splats(n)); }
++
++  __forceinline vuint4 sll (const vuint4& a, unsigned int b) { return vec_sl (a.v, vec_splats(b)); }
++  __forceinline vuint4 sra (const vuint4& a, unsigned int b) { return (vsx::u32x4)vec_sra((vsx::i32x4)a.v, vec_splats(b)); }
++  __forceinline vuint4 srl (const vuint4& a, unsigned int b) { return vec_sr (a.v, vec_splats(b)); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Assignment Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vuint4& operator +=(vuint4& a, const vuint4& b) { return a = a + b; }
++  __forceinline vuint4& operator +=(vuint4& a, unsigned int  b) { return a = a + b; }
++
++  __forceinline vuint4& operator -=(vuint4& a, const vuint4& b) { return a = a - b; }
++  __forceinline vuint4& operator -=(vuint4& a, unsigned int  b) { return a = a - b; }
++
++  __forceinline vuint4& operator &=(vuint4& a, const vuint4& b) { return a = a & b; }
++  __forceinline vuint4& operator &=(vuint4& a, unsigned int  b) { return a = a & b; }
++
++  __forceinline vuint4& operator |=(vuint4& a, const vuint4& b) { return a = a | b; }
++  __forceinline vuint4& operator |=(vuint4& a, unsigned int  b) { return a = a | b; }
++
++  __forceinline vuint4& operator <<=(vuint4& a, unsigned int  b) { return a = a << b; }
++  __forceinline vuint4& operator >>=(vuint4& a, unsigned int  b) { return a = a >> b; }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Comparison Operators + Select
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vboolf4 operator ==(const vuint4& a, const vuint4& b) { return (vsx::u32x4)vec_cmpeq(a.v, b.v); }
++  __forceinline vboolf4 operator !=(const vuint4& a, const vuint4& b) { return !(a == b); }
++
++  __forceinline vboolf4 operator ==(const vuint4& a, unsigned int  b) { return a == vuint4(b); }
++  __forceinline vboolf4 operator ==(unsigned int  a, const vuint4& b) { return vuint4(a) == b; }
++
++  __forceinline vboolf4 operator !=(const vuint4& a, unsigned int  b) { return a != vuint4(b); }
++  __forceinline vboolf4 operator !=(unsigned int  a, const vuint4& b) { return vuint4(a) != b; }
++
++  __forceinline vboolf4 eq(const vuint4& a, const vuint4& b) { return a == b; }
++  __forceinline vboolf4 ne(const vuint4& a, const vuint4& b) { return a != b; }
++
++  __forceinline vboolf4 eq(const vboolf4& mask, const vuint4& a, const vuint4& b) { return mask & (a == b); }
++  __forceinline vboolf4 ne(const vboolf4& mask, const vuint4& a, const vuint4& b) { return mask & (a != b); }
++
++  template<int mask>
++  __forceinline vuint4 select(const vuint4& t, const vuint4& f) {
++    return vec_sel(f.v, t.v, vsx::blend_mask<mask>());
++  }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  // Movement/Shifting/Shuffling Functions
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline vuint4 unpacklo(const vuint4& a, const vuint4& b) { return vec_mergeh(a.v, b.v); }
++  __forceinline vuint4 unpackhi(const vuint4& a, const vuint4& b) { return vec_mergel(a.v, b.v); }
++
++  template<int i0, int i1, int i2, int i3>
++  __forceinline vuint4 shuffle(const vuint4& v) {
++    return __builtin_shuffle(v.v, (vsx::u32x4){i0, i1, i2, i3});
++  }
++
++  template<int i0, int i1, int i2, int i3>
++  __forceinline vuint4 shuffle(const vuint4& a, const vuint4& b) {
++    return __builtin_shuffle(a.v, b.v, (vsx::u32x4){i0, i1, 4+i2, 4+i3});
++  }
++
++  template<int i>
++  __forceinline vuint4 shuffle(const vuint4& v) {
++    return vec_splat(v.v, i);
++  }
++
++  template<> __forceinline vuint4 shuffle<1, 0, 3, 2>(const vuint4& v) { return (vsx::u32x4)vec_rl((vsx::u64x2)v.v, vec_splats(32ull)); }
++  template<> __forceinline vuint4 shuffle<1, 2, 3, 0>(const vuint4& v) { return vec_sld(v.v, v.v, 12); }
++  template<> __forceinline vuint4 shuffle<3, 0, 1, 2>(const vuint4& v) { return vec_sld(v.v, v.v, 4); }
++
++  template<int src> __forceinline unsigned int extract(const vuint4& b) { return vec_extract(b.v, src); }
++  template<int dst> __forceinline vuint4 insert(const vuint4& a, const unsigned b) { return vec_insert(b, a.v, dst); }
++
++  __forceinline unsigned int toScalar(const vuint4& v) { return vec_extract(v.v, 0); }
++
++  ////////////////////////////////////////////////////////////////////////////////
++  /// Output Operators
++  ////////////////////////////////////////////////////////////////////////////////
++
++  __forceinline embree_ostream operator <<(embree_ostream cout, const vuint4& a) {
++    return cout << "<" << a[0] << ", " << a[1] << ", " << a[2] << ", " << a[3] << ">";
++  }
++}
++
++#undef vboolf
++#undef vboold
++#undef vint
++#undef vuint
++#undef vllong
++#undef vfloat
++#undef vdouble
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/sys/intrinsics.h embree-4.4.1/common/sys/intrinsics.h
+--- embree-4.4.1.orig/common/sys/intrinsics.h	2026-09-11 11:05:46.322075894 -0600
++++ embree-4.4.1/common/sys/intrinsics.h	2026-09-11 11:33:26.566898338 -0600
+@@ -11,6 +11,8 @@
+ 
+ #if defined(__ARM_NEON)
+ #include "../simd/arm/emulation.h"
++#elif defined(EMBREE_PPC64LE_VSX)
++#include "../simd/vsx/vsx.h"
+ #elif defined(__powerpc64__)
+ #include "../simd/ppc/emulation.h"
+ #else
+@@ -447,7 +449,7 @@
+ /// All Platforms
+ ////////////////////////////////////////////////////////////////////////////////
+   
+-#if defined(__clang__) || defined(__GNUC__)
++#if (defined(__clang__) || defined(__GNUC__)) && !defined(EMBREE_PPC64LE_VSX)
+ #if !defined(_mm_undefined_ps)
+   __forceinline __m128 _mm_undefined_ps() { return _mm_setzero_ps(); }
+ #endif
+@@ -475,25 +477,40 @@
+   }
+   
+ #else
+-  
+-#if defined(__SSE4_2__) || defined(__ARM_NEON)
+-  
++
++#if defined(EMBREE_PPC64LE_VSX)
++
++  /* popcntw / popcntd (ISA 2.06) */
++  __forceinline int popcnt(int in) {
++    return __builtin_popcount(in);
++  }
++
++  __forceinline unsigned popcnt(unsigned in) {
++    return __builtin_popcount(in);
++  }
++
++  __forceinline size_t popcnt(size_t in) {
++    return __builtin_popcountl(in);
++  }
++
++#elif defined(__SSE4_2__) || defined(__ARM_NEON)
++
+   __forceinline int popcnt(int in) {
+     return _mm_popcnt_u32(in);
+   }
+-  
++
+   __forceinline unsigned popcnt(unsigned in) {
+     return _mm_popcnt_u32(in);
+   }
+-  
++
+ #if defined(__64BIT__)
+   __forceinline size_t popcnt(size_t in) {
+     return _mm_popcnt_u64(in);
+   }
+ #endif
+-  
++
+ #endif
+-  
++
+ #endif
+ 
+ #if defined(__X86_ASM__)
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/common/sys/thread.cpp embree-4.4.1/common/sys/thread.cpp
+--- embree-4.4.1.orig/common/sys/thread.cpp	2026-09-11 11:05:46.323615719 -0600
++++ embree-4.4.1/common/sys/thread.cpp	2026-09-11 11:33:29.446896007 -0600
+@@ -8,6 +8,8 @@
+ #include <iostream>
+ #if defined(__ARM_NEON)
+ #include "../simd/arm/emulation.h"
++#elif defined(EMBREE_PPC64LE_VSX)
++#include "../simd/vsx/vsx.h"
+ #elif defined(__powerpc64__)
+ #include "../simd/ppc/emulation.h"
+ #else
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/kernels/bvh/node_intersector1.h embree-4.4.1/kernels/bvh/node_intersector1.h
+--- embree-4.4.1.orig/kernels/bvh/node_intersector1.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/kernels/bvh/node_intersector1.h	2026-09-11 11:34:10.698863405 -0600
+@@ -13,6 +13,11 @@
+ #define __FMA_X4__
+ #endif
+ 
++/* powerpc64le native VSX: msub is fused (xvmsubmsp), use the x86 FMA shape */
++#if defined(EMBREE_PPC64LE_VSX)
++#define __FMA_X4__
++#endif
++
+ 
+ namespace embree
+ {
+diff -ruN -x rtcore_config.h -x config.h -x hash.h -x README.md embree-4.4.1.orig/kernels/bvh/node_intersector_packet.h embree-4.4.1/kernels/bvh/node_intersector_packet.h
+--- embree-4.4.1.orig/kernels/bvh/node_intersector_packet.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/kernels/bvh/node_intersector_packet.h	2026-09-11 11:34:16.331005638 -0600
+@@ -41,7 +41,7 @@
+         rdir = rcp_safe(ray_dir);
+ #if defined(__aarch64__)
+         neg_org_rdir = -(org * rdir);
+-#elif defined(__AVX2__)
++#elif defined(__AVX2__) || defined(EMBREE_PPC64LE_VSX)
+         org_rdir = org * rdir;
+ #endif
+ 
+@@ -59,7 +59,7 @@
+       Vec3vf<K> rdir;
+ #if defined(__aarch64__)
+       Vec3vf<K> neg_org_rdir;
+-#elif defined(__AVX2__)
++#elif defined(__AVX2__) || defined(EMBREE_PPC64LE_VSX)
+       Vec3vf<K> org_rdir;
+ #endif
+       Vec3vi<K> nearXYZ;
+@@ -130,7 +130,7 @@
+       const vfloat<K> lclipMaxX = madd(node->upper_x[i], ray.rdir.x, ray.neg_org_rdir.x);
+       const vfloat<K> lclipMaxY = madd(node->upper_y[i], ray.rdir.y, ray.neg_org_rdir.y);
+       const vfloat<K> lclipMaxZ = madd(node->upper_z[i], ray.rdir.z, ray.neg_org_rdir.z);
+-#elif defined(__AVX2__)
++#elif defined(__AVX2__) || defined(EMBREE_PPC64LE_VSX)
+       const vfloat<K> lclipMinX = msub(node->lower_x[i], ray.rdir.x, ray.org_rdir.x);
+       const vfloat<K> lclipMinY = msub(node->lower_y[i], ray.rdir.y, ray.org_rdir.y);
+       const vfloat<K> lclipMinZ = msub(node->lower_z[i], ray.rdir.z, ray.org_rdir.z);
+@@ -217,7 +217,7 @@
+       const vfloat<K> lclipMaxX = madd(vupper_x, ray.rdir.x, ray.neg_org_rdir.x);
+       const vfloat<K> lclipMaxY = madd(vupper_y, ray.rdir.y, ray.neg_org_rdir.y);
+       const vfloat<K> lclipMaxZ = madd(vupper_z, ray.rdir.z, ray.neg_org_rdir.z);
+-#elif defined(__AVX2__)
++#elif defined(__AVX2__) || defined(EMBREE_PPC64LE_VSX)
+       const vfloat<K> lclipMinX = msub(vlower_x, ray.rdir.x, ray.org_rdir.x);
+       const vfloat<K> lclipMinY = msub(vlower_y, ray.rdir.y, ray.org_rdir.y);
+       const vfloat<K> lclipMinZ = msub(vlower_z, ray.rdir.z, ray.org_rdir.z);
+@@ -327,7 +327,7 @@
+       const vfloat<K> lclipMaxX = madd(vupper_x, ray.rdir.x, ray.neg_org_rdir.x);
+       const vfloat<K> lclipMaxY = madd(vupper_y, ray.rdir.y, ray.neg_org_rdir.y);
+       const vfloat<K> lclipMaxZ = madd(vupper_z, ray.rdir.z, ray.neg_org_rdir.z);
+-#elif defined(__AVX2__)
++#elif defined(__AVX2__) || defined(EMBREE_PPC64LE_VSX)
+       const vfloat<K> lclipMinX = msub(vlower_x, ray.rdir.x, ray.org_rdir.x);
+       const vfloat<K> lclipMinY = msub(vlower_y, ray.rdir.y, ray.org_rdir.y);
+       const vfloat<K> lclipMinZ = msub(vlower_z, ray.rdir.z, ray.org_rdir.z);
+@@ -496,7 +496,7 @@
+       const vfloat<K> lclipMaxX = madd(upper_x[i], ray.rdir.x, ray.neg_org_rdir.x);
+       const vfloat<K> lclipMaxY = madd(upper_y[i], ray.rdir.y, ray.neg_org_rdir.y);
+       const vfloat<K> lclipMaxZ = madd(upper_z[i], ray.rdir.z, ray.neg_org_rdir.z);
+-  #elif defined(__AVX2__)
++  #elif defined(__AVX2__) || defined(EMBREE_PPC64LE_VSX)
+       const vfloat<K> lclipMinX = msub(lower_x[i], ray.rdir.x, ray.org_rdir.x);
+       const vfloat<K> lclipMinY = msub(lower_y[i], ray.rdir.y, ray.org_rdir.y);
+       const vfloat<K> lclipMinZ = msub(lower_z[i], ray.rdir.z, ray.org_rdir.z);
+@@ -588,7 +588,7 @@
+         const vfloat<K> lclipMaxX = madd(upper_x, ray.rdir.x, ray.neg_org_rdir.x);
+         const vfloat<K> lclipMaxY = madd(upper_y, ray.rdir.y, ray.neg_org_rdir.y);
+         const vfloat<K> lclipMaxZ = madd(upper_z, ray.rdir.z, ray.neg_org_rdir.z);
+-#elif defined(__AVX2__)
++#elif defined(__AVX2__) || defined(EMBREE_PPC64LE_VSX)
+         const vfloat<K> lclipMinX = msub(lower_x, ray.rdir.x, ray.org_rdir.x);
+         const vfloat<K> lclipMinY = msub(lower_y, ray.rdir.y, ray.org_rdir.y);
+         const vfloat<K> lclipMinZ = msub(lower_z, ray.rdir.z, ray.org_rdir.z);

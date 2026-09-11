@@ -158,6 +158,46 @@ Verified on POWER9 with GCC 16: builds both SSE2 and SSE4.2 tiers,
 
 Send to: <https://github.com/RenderKit/embree>.
 
+### 5b. embree -- a native VSX backend for the 4-wide SIMD layer
+
+`packages/embree/embree-ppc64le-vsx.patch` (applies on top of 5)
+
+The compat-header port in 5 runs SSE code through `<xmmintrin.h>`: every
+`_mm_shuffle_ps` is a control-vector permute (`vpermr`), every blend an
+`xxsel`, every lane insert an `xxinsertw`. This patch writes the four
+4-wide types (`vfloat4`, `vint4`, `vuint4`, `vboolf4`) and the SSE-backed
+math types (`Vec3fa`/`Vec3fx`, `Vec3ia`, `Vec3ba`, `Vec2fa`, `Color`) on
+`__vector float`/`int` storage, GCC vector extensions and altivec builtins,
+as `common/simd/*_vsx.h` and `common/math/*_vsx.h`, selected by a new CMake
+option `EMBREE_PPC64LE_NATIVE_VSX` (default ON; OFF is the port in 5). No
+x86 SIMD intrinsic exists in that build, so any leftover `_mm_*` is a
+compile error; the only x86 spellings kept are the non-SIMD platform hints
+Embree's system layer calls by name (`_mm_pause`, `_mm_mfence`,
+`_mm_prefetch`, `_mm_malloc`, MXCSR). It mirrors what upstream did for
+AArch64 with the `#if defined(__aarch64__)` branches, but as separate files
+in the shape of the `*_sycl.h` split, which is why it is 3,466 lines and
+touches 13 existing files by one `#elif` each.
+
+Design points upstream would want to review: `movemask` is one `vbpermq`;
+`all/any/none` are record-form compares; `madd/msub/nmadd/nmsub` are fused
+(as on AVX2/NEON), and `node_intersector{1,_packet}.h` take the fused
+traversal shape; float `min/max` keep SSE `minps/maxps` NaN semantics via
+compare+select because `xvminsp/xvmaxsp` return the non-NaN operand and
+`OBBNode::clear()` marks empty children with NaN transforms
+(`embree_verify`'s `regression_static` crashes otherwise -- a portability
+trap any minNum-semantics ISA will hit).
+
+Verified on POWER9 with GCC 16: `embree_verify` 2126 passed / 0 failed / 16
+failed-and-ignored, identical to the compat build; an operation-level
+differential probe (`powerpc64le-handbook/probes/embree_vsx_probe.cpp`)
+against the compat build: 29,470 of 32,067 records bit-identical, 661 within
+the fused/estimate tolerances, 0 mismatches; Blender BMW27 renders at parity
+(`packages/embree/README.md`); a `-mcpu=power8` build contains no ISA 3.0
+instruction. Packaged library: 1,896,754 -> 1,735,670 instructions,
+control-vector permutes 22,472 -> 2,750, fused FMAs 54,200 -> 58,651.
+
+Send to: <https://github.com/RenderKit/embree>, together with 5.
+
 ### 6. openvkl -- add a VSX ISA
 
 `packages/openvkl/openvkl-ppc64le.patch`
