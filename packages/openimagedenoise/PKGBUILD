@@ -1,0 +1,53 @@
+# Maintainer: Filipe Laíns (FFY00) <lains@archlinux.org>
+# Maintainer: Sven-Hendrik Haase <svenstaro@archlinux.org>
+# ppc64le: Omarchy ppc64le -- see README.md
+
+pkgname=openimagedenoise
+pkgver=2.4.1
+pkgrel=2
+pkgdesc='Intel(R) Open Image Denoise library'
+arch=('x86_64' 'powerpc64le')
+url='https://openimagedenoise.github.io'
+license=('Apache-2.0')
+depends=('intel-tbb' 'glibc' 'libgcc' 'libstdc++')
+makedepends=('cmake' 'ninja' 'ispc' 'python' 'compiler-rt')  # compiler-rt: float16 helpers, see README
+source=("https://github.com/OpenImageDenoise/oidn/releases/download/v${pkgver}/oidn-${pkgver}.src.tar.gz"
+        oidn-ppc64le.patch)
+sha512sums=('ef7f39975808f2812da147461d2f8ad310d58846bd62be801280ba2dbf7dc3ceecb73aafe9d1fb9d49cc4fec4429623b7a0f16e798e6f13aad83db4f6d862c9a'
+            'SKIP')
+
+prepare() {
+  cd oidn-$pkgver
+  # ppc64le: CPU device on VSX via ispc --arch=ppc64le
+  patch -Np1 -i "$srcdir"/oidn-ppc64le.patch
+}
+
+build() {
+  cd oidn-$pkgver
+
+  cmake \
+    -B build \
+    -G Ninja \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DOIDN_DEVICE_CUDA=OFF \
+    -DOIDN_DEVICE_HIP=OFF \
+    -DCMAKE_BUILD_TYPE=Release
+  ninja -C build
+}
+
+check() {
+  cd oidn-$pkgver
+  # Upstream's Catch2 suite: runs every filter on the CPU device, which on
+  # ppc64le means the VSX ispc kernels.  Devices are loaded from the build
+  # tree via rpath.
+  ./build/oidnTest
+}
+
+package() {
+  cd oidn-$pkgver
+  DESTDIR="$pkgdir" ninja -C build install
+
+  # Arch removes a stray $pkgdir/build; it is not produced here (no GPU
+  # backends), so do not fail if it is absent.
+  rm -rf "${pkgdir}"/build
+}

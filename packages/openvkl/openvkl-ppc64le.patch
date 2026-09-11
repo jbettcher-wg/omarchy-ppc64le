@@ -1,0 +1,113 @@
+Open VKL 2.0.2 on powerpc64le.
+
+Open VKL's CMake only knows x86 (SSE4/AVX/AVX2/AVX-512) and AArch64 (NEON)
+ISAs and passes --arch=x86-64 or aarch64 to ispc.  Add a VSX ISA for
+ppc64le: one 4-wide CPU device built from ispc's vsx-i32x4 target
+(ispc >= 1.31 with PPC64_ENABLED), no -msse4.2 width flag, no dummy second
+target (same reasoning as the NEON path: a single width, so no mangling
+conflicts), --arch=ppc64le, and OPENVKL_ISA_VSX exported from
+openvklConfig.cmake so OSPRay can key on it.  Also a VKL_ISPC_TARGET_VSX
+enum value and name, so the device reports "ISA: VSX" instead of UNKNOWN.
+
+Portability fix, worth sending upstream (github.com/RenderKit/openvkl).
+diff -ruN a/cmake/openvklConfig.cmake.in b/cmake/openvklConfig.cmake.in
+--- a/cmake/openvklConfig.cmake.in	2026-09-10 17:05:47.811264756 -0600
++++ b/cmake/openvklConfig.cmake.in	2026-09-10 18:26:56.489694208 -0600
+@@ -18,6 +18,7 @@
+ set(OPENVKL_ISA_AVX512SKX @OPENVKL_ISA_AVX512SKX@)
+ set(OPENVKL_ISA_NEON @OPENVKL_ISA_NEON@)
+ set(OPENVKL_ISA_NEON2X @OPENVKL_ISA_NEON2X@)
++set(OPENVKL_ISA_VSX @OPENVKL_ISA_VSX@)
+ 
+ ## Standard signal that the package was found ##
+ 
+diff -ruN a/cmake/openvkl_ispc.cmake b/cmake/openvkl_ispc.cmake
+--- a/cmake/openvkl_ispc.cmake	2026-09-10 17:05:47.811264756 -0600
++++ b/cmake/openvkl_ispc.cmake	2026-09-10 18:26:56.488769581 -0600
+@@ -51,7 +51,10 @@
+ 
+ macro(openvkl_configure_ispc_isa)
+   # support only individual specification of ISAs
+-  if (NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64")
++  if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "ppc64le|powerpc64le")
++    # ispc >= 1.31 vsx-* targets; POWER8+ always has VSX, one 4-wide device
++    option(OPENVKL_ISA_VSX "Enables VSX ISA (4-wide)." ON)
++  elseif (NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64")
+     option(OPENVKL_ISA_SSE4 "Enables SSE4 ISA." ON)
+     option(OPENVKL_ISA_AVX "Enables AVX ISA." ON)
+     option(OPENVKL_ISA_AVX2 "Enables AVX2 ISA." ON)
+@@ -86,6 +89,12 @@
+     message(STATUS "OpenVKL SSE4 ISA target enabled.")
+   endif()
+ 
++  if (OPENVKL_ISA_VSX)
++    set(OPENVKL_ISPC_TARGET_LIST ${OPENVKL_ISPC_TARGET_LIST} vsx-i32x4)
++    set(OPENVKL_ISPC_TARGET_LIST_4 ${OPENVKL_ISPC_TARGET_LIST_4} vsx-i32x4)
++    message(STATUS "OpenVKL VSX ISA target enabled.")
++  endif()
++
+   if (OPENVKL_ISA_NEON)
+     set(OPENVKL_ISPC_TARGET_LIST ${OPENVKL_ISPC_TARGET_LIST} neon-i32x4)
+     set(OPENVKL_ISPC_TARGET_LIST_4 ${OPENVKL_ISPC_TARGET_LIST_4} neon-i32x4)
+@@ -137,7 +146,7 @@
+     if (DEFINED ${TARGET_LIST})
+       list(LENGTH ${TARGET_LIST} NUM_TARGETS)
+ 
+-      if (NUM_TARGETS EQUAL 1 AND NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64")
++      if (NUM_TARGETS EQUAL 1 AND NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64|ppc64le|powerpc64le")
+         list(APPEND ${TARGET_LIST} sse2)
+       endif()
+     endif()
+@@ -158,6 +167,8 @@
+   if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+     if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64")
+       set(ISPC_ARCHITECTURE "aarch64")
++    elseif (${CMAKE_SYSTEM_PROCESSOR} MATCHES "ppc64le|powerpc64le")
++      set(ISPC_ARCHITECTURE "ppc64le")
+     else()
+       set(ISPC_ARCHITECTURE "x86-64")
+     endif()
+diff -ruN a/cmake/openvkl_macros.cmake b/cmake/openvkl_macros.cmake
+--- a/cmake/openvkl_macros.cmake	2026-09-10 17:05:47.811264756 -0600
++++ b/cmake/openvkl_macros.cmake	2026-09-10 18:26:56.489203681 -0600
+@@ -128,7 +128,7 @@
+ 
+     message(STATUS "detected Clang or GNU compiler")
+ 
+-    if(NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64")
++    if(NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64|ppc64le|powerpc64le")
+       if(WIDTH EQUAL 4)
+         set(LOCAL_FLAGS "-msse4.2")
+       elseif(WIDTH EQUAL 8)
+diff -ruN a/openvkl/devices/cpu/api/CPUDevice.ispc b/openvkl/devices/cpu/api/CPUDevice.ispc
+--- a/openvkl/devices/cpu/api/CPUDevice.ispc	2026-09-10 17:05:47.841281497 -0600
++++ b/openvkl/devices/cpu/api/CPUDevice.ispc	2026-09-10 18:26:56.489567166 -0600
+@@ -27,6 +27,8 @@
+   return VKL_ISPC_TARGET_AVX512KNL;
+ #elif defined(ISPC_TARGET_AVX512SKX)
+   return VKL_ISPC_TARGET_AVX512SKX;
++#elif defined(ISPC_TARGET_VSX)
++  return VKL_ISPC_TARGET_VSX;
+ #else
+   return VKL_ISPC_TARGET_UNKNOWN;
+ #endif
+diff -ruN a/openvkl/devices/cpu/common/ispc_isa.h b/openvkl/devices/cpu/common/ispc_isa.h
+--- a/openvkl/devices/cpu/common/ispc_isa.h	2026-09-10 17:05:47.841597818 -0600
++++ b/openvkl/devices/cpu/common/ispc_isa.h	2026-09-10 18:26:56.489434392 -0600
+@@ -23,6 +23,7 @@
+   VKL_ISPC_TARGET_AVX2,
+   VKL_ISPC_TARGET_AVX512KNL,
+   VKL_ISPC_TARGET_AVX512SKX,
++  VKL_ISPC_TARGET_VSX,
+ 
+   // Guard value.
+   VKL_ISPC_TARGET_UNKNOWN = 9999999
+@@ -46,6 +47,8 @@
+     return "AVX512KNL";
+   case VKL_ISPC_TARGET_AVX512SKX:
+     return "AVX512SKX";
++  case VKL_ISPC_TARGET_VSX:
++    return "VSX";
+   case VKL_ISPC_TARGET_UNKNOWN:
+   default:
+     return "UNKNOWN";

@@ -1,0 +1,215 @@
+Open Image Denoise 2.4.1 on powerpc64le.
+
+OIDN's CPU device is ISPC kernels plus a small amount of C++; the only
+architecture knowledge is the OIDN_ARCH selector (X64 / ARM64) that picks
+ispc targets, the --arch value, and the per-ISA kernel blocking constants.
+Add PPC64LE alongside ARM64 using ispc's VSX targets (>= 1.31,
+PPC64_ENABLED): vsx-i32x8 for the f32 kernels, vsx-i32x8 / vsx-i16x16 for
+the f16 ones (the same widths as NEON, so the same 32-byte channel block),
+the NEON convolution blocking constants, a CPUArch::VSX value so the device
+enumerates instead of reporting "Unknown" and registering nothing, and
+--arch=ppc64le.  The x86-only pieces (cpuid, AMX, DNNL) are already gated
+behind OIDN_ARCH_X64 and are untouched.
+
+One link-time consequence: ispc lowers float16 on the VSX targets through
+LLVM's soft-float helpers (__extendhfsf2, __truncsfhf2, ...), which libgcc
+does not provide on POWER (GCC has no _Float16 there).  The device module
+then links fine but fails dlopen(RTLD_NOW) and OIDN enumerates no CPU
+device at all.  The PPC64LE branch links compiler-rt's builtins archive
+into the module (override with -DOIDN_PPC64LE_RT_BUILTINS=<path>).  The f16
+kernels are only selected on the AMX path, so on VSX they are dead code
+that merely has to resolve.
+
+Portability fix, worth sending upstream (github.com/RenderKit/oidn).
+diff -ruN a/cmake/oidn_ispc.cmake b/cmake/oidn_ispc.cmake
+--- a/cmake/oidn_ispc.cmake	2026-09-10 17:05:49.558552796 -0600
++++ b/cmake/oidn_ispc.cmake	2026-09-10 18:26:56.490290081 -0600
+@@ -92,6 +92,8 @@
+ 
+   if(OIDN_ARCH STREQUAL "X64")
+     set(ISPC_ARCHITECTURE "x86-64")
++  elseif(OIDN_ARCH STREQUAL "PPC64LE")
++    set(ISPC_ARCHITECTURE "ppc64le")
+   elseif(OIDN_ARCH STREQUAL "ARM64")
+     set(ISPC_ARCHITECTURE "aarch64")
+     if(APPLE AND ISPC_VERSION VERSION_LESS "1.16.0")
+diff -ruN a/cmake/oidn_platform.cmake b/cmake/oidn_platform.cmake
+--- a/cmake/oidn_platform.cmake	2026-09-10 17:05:49.558552796 -0600
++++ b/cmake/oidn_platform.cmake	2026-09-10 18:26:56.489947188 -0600
+@@ -9,6 +9,8 @@
+ endif()
+ if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64|ARM64" OR IOS)
+   set(OIDN_ARCH "ARM64")
++elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "ppc64le|powerpc64le")
++  set(OIDN_ARCH "PPC64LE")
+ else()
+   set(OIDN_ARCH "X64")
+ endif()
+diff -ruN a/common/platform.cpp b/common/platform.cpp
+--- a/common/platform.cpp	2026-09-10 17:05:49.559034573 -0600
++++ b/common/platform.cpp	2026-09-10 18:26:56.492224852 -0600
+@@ -85,6 +85,8 @@
+     name += " (x86-64)";
+   #elif defined(OIDN_ARCH_ARM64)
+     name += " (ARM64)";
++  #elif defined(OIDN_ARCH_PPC64LE)
++    name += " (ppc64le)";
+   #endif
+ 
+     return name;
+diff -ruN a/common/platform.h b/common/platform.h
+--- a/common/platform.h	2026-09-10 17:05:49.559034573 -0600
++++ b/common/platform.h	2026-09-10 18:26:56.492032475 -0600
+@@ -13,6 +13,8 @@
+   #define OIDN_ARCH_X64
+ #elif defined(__aarch64__) || defined(_M_ARM64)
+   #define OIDN_ARCH_ARM64
++#elif defined(__powerpc64__)
++  #define OIDN_ARCH_PPC64LE
+ #endif
+ 
+ #if defined(SYCL_LANGUAGE_VERSION)
+diff -ruN a/devices/cpu/CMakeLists.txt b/devices/cpu/CMakeLists.txt
+--- a/devices/cpu/CMakeLists.txt	2026-09-10 17:05:49.562154719 -0600
++++ b/devices/cpu/CMakeLists.txt	2026-09-10 18:26:56.490600955 -0600
+@@ -35,6 +35,9 @@
+   endif()
+ elseif(OIDN_ARCH STREQUAL "ARM64")
+   set(OIDN_ISPC_TARGET_LIST neon-i32x8)
++elseif(OIDN_ARCH STREQUAL "PPC64LE")
++  # ispc >= 1.31 VSX targets, same 8-wide layout as NEON
++  set(OIDN_ISPC_TARGET_LIST vsx-i32x8)
+ endif()
+ set(ISPC_ADDRESSING 64)
+ include(oidn_ispc)
+@@ -172,6 +175,40 @@
+     cpu_upsample_f16.ispc
+     TARGET_LIST neon-i16x16
+   )
++elseif(OIDN_ARCH STREQUAL "PPC64LE")
++  ispc_target_add_sources(OpenImageDenoise_device_cpu
++    cpu_input_process_f16.ispc
++    cpu_output_process_f16.ispc
++    TARGET_LIST vsx-i32x8
++  )
++
++  ispc_target_add_sources(OpenImageDenoise_device_cpu
++    cpu_pool_f16.ispc
++    cpu_upsample_f16.ispc
++    TARGET_LIST vsx-i16x16
++  )
++
++  # ispc lowers float16 on the VSX targets through LLVM's soft-float helpers
++  # (__extendhfsf2, __truncsfhf2, ...).  libgcc does not provide them on
++  # POWER (GCC has no _Float16 there), so without them the device module
++  # links but fails to dlopen and OIDN sees no CPU device.  Take them from
++  # compiler-rt's builtins archive.
++  if(NOT OIDN_PPC64LE_RT_BUILTINS)
++    file(GLOB _oidn_rt_builtins
++      /usr/lib/clang/*/lib/linux/libclang_rt.builtins-powerpc64le.a
++      /usr/lib/clang/*/lib/powerpc64le-unknown-linux-gnu/libclang_rt.builtins.a)
++    list(SORT _oidn_rt_builtins)
++    if(_oidn_rt_builtins)
++      list(GET _oidn_rt_builtins -1 _oidn_rt_builtins)
++    endif()
++    set(OIDN_PPC64LE_RT_BUILTINS "${_oidn_rt_builtins}" CACHE FILEPATH
++        "compiler-rt builtins archive providing the float16 helpers on ppc64le")
++  endif()
++  if(NOT OIDN_PPC64LE_RT_BUILTINS)
++    message(FATAL_ERROR "ppc64le: compiler-rt builtins archive not found; set OIDN_PPC64LE_RT_BUILTINS")
++  endif()
++  message(STATUS "ppc64le: float16 helpers from ${OIDN_PPC64LE_RT_BUILTINS}")
++  target_link_libraries(OpenImageDenoise_device_cpu PRIVATE ${OIDN_PPC64LE_RT_BUILTINS})
+ else()
+   ispc_target_add_sources(OpenImageDenoise_device_cpu
+     cpu_input_process_f16.ispc
+diff -ruN a/devices/cpu/cpu_conv.ispc b/devices/cpu/cpu_conv.ispc
+--- a/devices/cpu/cpu_conv.ispc	2026-09-10 17:05:49.562250393 -0600
++++ b/devices/cpu/cpu_conv.ispc	2026-09-10 18:26:56.491243130 -0600
+@@ -182,7 +182,7 @@
+   #define blockOW2 5
+   #define blockOW3 3
+   #define blockOW4 3
+-#elif defined(OIDN_ARCH_NEON)
++#elif defined(OIDN_ARCH_NEON) || defined(OIDN_ARCH_VSX)
+   #define maxBlockOCB 3
+   #define blockOW1 9
+   #define blockOW2 5
+diff -ruN a/devices/cpu/cpu_device.cpp b/devices/cpu/cpu_device.cpp
+--- a/devices/cpu/cpu_device.cpp	2026-09-10 17:05:49.562250393 -0600
++++ b/devices/cpu/cpu_device.cpp	2026-09-10 18:26:56.491754980 -0600
+@@ -103,6 +103,7 @@
+     case ispc::CPUArch_AVX512:         return CPUArch::AVX512;
+     case ispc::CPUArch_AVX512_AMXFP16: return CPUArch::AVX512_AMXFP16;
+     case ispc::CPUArch_NEON:           return CPUArch::NEON;
++    case ispc::CPUArch_VSX:            return CPUArch::VSX;
+     default:                           return CPUArch::Unknown;
+     }
+   }
+@@ -209,6 +210,7 @@
+       case CPUArch::AVX512:         std::cout << "AVX-512";          break;
+       case CPUArch::AVX512_AMXFP16: std::cout << "AVX-512 AMX-FP16"; break;
+       case CPUArch::NEON:           std::cout << "NEON";             break;
++      case CPUArch::VSX:            std::cout << "VSX";              break;
+       default:                      std::cout << "Unknown";          break;
+       }
+       std::cout << std::endl;
+diff -ruN a/devices/cpu/cpu_device.h b/devices/cpu/cpu_device.h
+--- a/devices/cpu/cpu_device.h	2026-09-10 17:05:49.562250393 -0600
++++ b/devices/cpu/cpu_device.h	2026-09-10 18:26:56.491533745 -0600
+@@ -19,7 +19,8 @@
+     AVX2,
+     AVX512,
+     AVX512_AMXFP16,
+-    NEON
++    NEON,
++    VSX
+   };
+ 
+   class CPUPhysicalDevice final : public PhysicalDevice
+diff -ruN a/devices/cpu/platform.ispc b/devices/cpu/platform.ispc
+--- a/devices/cpu/platform.ispc	2026-09-10 17:05:49.562250393 -0600
++++ b/devices/cpu/platform.ispc	2026-09-10 18:26:56.491410356 -0600
+@@ -15,7 +15,8 @@
+   CPUArch_AVX2,
+   CPUArch_AVX512,
+   CPUArch_AVX512_AMXFP16,
+-  CPUArch_NEON
++  CPUArch_NEON,
++  CPUArch_VSX
+ };
+ 
+ export uniform CPUArch getCPUArch()
+@@ -32,6 +33,8 @@
+   return CPUArch_SSE2;
+ #elif defined(OIDN_ARCH_NEON)
+   return CPUArch_NEON;
++#elif defined(OIDN_ARCH_VSX)
++  return CPUArch_VSX;
+ #else
+   #error "Unsupported architecture"
+ #endif
+diff -ruN a/devices/cpu/platform.isph b/devices/cpu/platform.isph
+--- a/devices/cpu/platform.isph	2026-09-10 17:05:49.562250393 -0600
++++ b/devices/cpu/platform.isph	2026-09-10 18:26:56.490781815 -0600
+@@ -20,6 +20,8 @@
+   #define OIDN_ARCH_SSE2
+ #elif defined(ISPC_TARGET_NEON)
+   #define OIDN_ARCH_NEON
++#elif defined(ISPC_TARGET_VSX)
++  #define OIDN_ARCH_VSX
+ #else
+   #error "Unsupported ISPC target"
+ #endif
+diff -ruN a/devices/cpu/tensor_accessor.isph b/devices/cpu/tensor_accessor.isph
+--- a/devices/cpu/tensor_accessor.isph	2026-09-10 17:05:49.562982899 -0600
++++ b/devices/cpu/tensor_accessor.isph	2026-09-10 18:26:56.490997431 -0600
+@@ -8,7 +8,7 @@
+ // Compute the channel block size in bytes
+ #if defined(OIDN_ARCH_AVX512)
+   #define BLOCKC_BYTESIZE 64
+-#elif defined(OIDN_ARCH_AVX2) || defined(OIDN_ARCH_SSE4) || defined(OIDN_ARCH_NEON)
++#elif defined(OIDN_ARCH_AVX2) || defined(OIDN_ARCH_SSE4) || defined(OIDN_ARCH_NEON) || defined(OIDN_ARCH_VSX)
+   #define BLOCKC_BYTESIZE 32
+ #else
+   #error "Unsupported architecture"

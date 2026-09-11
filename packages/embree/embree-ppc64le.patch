@@ -1,0 +1,321 @@
+Port Embree 4.4.1 to powerpc64le.
+
+Embree's kernels are written against SSE intrinsics and selected by the
+__SSE*__ macros.  GCC (>= 8) and clang ship <xmmintrin.h> .. <nmmintrin.h>
+for powerpc64le that implement SSE through SSE4.2 on VSX (POWER8+), gated
+behind -DNO_WARN_X86_INTRINSICS.  This is the same shape as Embree's own
+AArch64 port (sse2neon), with a far smaller shim:
+
+- CMakeLists.txt / common/cmake/{gnu,clang}.cmake: detect ppc64le
+  (EMBREE_PPC64LE), give the SSE2/SSE4.2 ISA flag sets the -D__SSE*__
+  defines plus -DNO_WARN_X86_INTRINSICS -mvsx, make the AVX probes fail so
+  AVX+ stay off, add -fsigned-char/-flax-vector-conversions as on ARM
+  (char is unsigned on POWER too), and map the ISPC target to vsx-i32x4.
+- common/simd/ppc/emulation.h (new): the intrinsics the compat headers lack:
+  _mm_getcsr/_mm_setcsr and the MXCSR FTZ/DAZ/exception-mask macros (no-ops,
+  POWER has no MXCSR and no denormal penalty), _mm_dp_ps, _mm_insert_ps,
+  _mm_popcnt_u32/u64, _mm_stream_load_si128.
+- common/sys/platform.h: __64BIT__ on __powerpc64__.
+- common/sys/intrinsics.h, thread.cpp: include the shim instead of
+  <immintrin.h>/<xmmintrin.h>.
+- common/sys/sysinfo.cpp: report vendor "IBM" and a fixed SSE..SSE4.2+POPCNT
+  feature set (every POWER8+ has VSX; there is nothing to dispatch on).
+
+Verified on POWER9: builds with GCC 16, rtcIntersect1/rtcIntersect4 return
+correct hits/misses, embree selects sse42::BVH4Triangle4Intersector4Hybrid.
+
+Portability fix, worth sending upstream (github.com/RenderKit/embree).
+Local choice, not part of the patch: the PKGBUILD builds only the SSE4.2
+ISA (EMBREE_ISA_SSE2=OFF) since POWER8+ always has it.
+
+diff -ruN -x rtcore_config.h -x config.h -x hash.h embree-4.4.1.orig/CMakeLists.txt embree-4.4.1/CMakeLists.txt
+--- embree-4.4.1.orig/CMakeLists.txt	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/CMakeLists.txt	2026-09-10 17:18:01.611669580 -0600
+@@ -224,6 +224,9 @@
+ ELSEIF(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64")
+   MESSAGE(STATUS "Building for AArch64")
+   SET(EMBREE_ARM ON)
++ELSEIF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64le|powerpc64le)$")
++  MESSAGE(STATUS "Building for ppc64le (SSE kernels on VSX via the compiler's compatibility headers)")
++  SET(EMBREE_PPC64LE ON)
+ ENDIF()
+ 
+ SET(EMBREE_TASKING_SYSTEM "TBB" CACHE STRING "Selects tasking system")
+@@ -541,6 +544,9 @@
+   ELSEIF (EMBREE_ISA_NEON)
+     LIST(APPEND ISPC_TARGETS "neon-i32x4")
+   ENDIF()
++ELSEIF (EMBREE_PPC64LE)
++  # ispc >= 1.31 built with PPC64_ENABLED; one VSX target covers both SSE ISAs
++  LIST(APPEND ISPC_TARGETS "vsx-i32x4")
+ ENDIF()
+ 
+ IF (EMBREE_ISA_NEON)
+@@ -556,7 +562,7 @@
+ 
+ IF (EMBREE_ISA_SSE2)
+   ADD_DEFINITIONS(-DEMBREE_TARGET_SSE2)
+-  IF (NOT EMBREE_ARM)
++  IF (NOT EMBREE_ARM AND NOT EMBREE_PPC64LE)
+     LIST(APPEND ISPC_TARGETS "sse2")
+   ENDIF()
+   IF(NOT FLAGS_LOWEST)
+@@ -567,7 +573,7 @@
+ 
+ IF (EMBREE_ISA_SSE42)
+   ADD_DEFINITIONS(-DEMBREE_TARGET_SSE42)
+-  IF (NOT EMBREE_ARM)
++  IF (NOT EMBREE_ARM AND NOT EMBREE_PPC64LE)
+     LIST(APPEND ISPC_TARGETS "sse4")
+   ENDIF()
+   IF(NOT FLAGS_LOWEST)
+diff -ruN -x rtcore_config.h -x config.h -x hash.h embree-4.4.1.orig/common/cmake/clang.cmake embree-4.4.1/common/cmake/clang.cmake
+--- embree-4.4.1.orig/common/cmake/clang.cmake	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/cmake/clang.cmake	2026-09-10 17:18:01.612213601 -0600
+@@ -21,6 +21,16 @@
+     SET(FLAGS_AVX "-D__AVX__ -D__SSE4_2__  -D__SSE4_1__  -D__BMI__ -D__BMI2__ -D__LZCNT__")
+     SET(FLAGS_AVX2 "-D__AVX2__ -D__AVX__ -D__SSE4_2__  -D__SSE4_1__  -D__BMI__ -D__BMI2__ -D__LZCNT__")
+   ENDIF ()
++ELSEIF (EMBREE_PPC64LE)
++  # The compiler's SSE-on-VSX headers implement SSE..SSE4.2; they refuse to
++  # compile unless NO_WARN_X86_INTRINSICS acknowledges the port.  Embree keys
++  # its ISA selection on the __SSE*__ macros, which nothing defines on POWER.
++  SET(FLAGS_SSE2  "-D__SSE__ -D__SSE2__ -DNO_WARN_X86_INTRINSICS -mvsx")
++  SET(FLAGS_SSE42 "-D__SSE__ -D__SSE2__ -D__SSE3__ -D__SSSE3__ -D__SSE4_1__ -D__SSE4_2__ -DNO_WARN_X86_INTRINSICS -mvsx")
++  # invalid on POWER on purpose: the TRY_COMPILE probes fail and AVX+ stays off
++  SET(FLAGS_AVX    "-mavx")
++  SET(FLAGS_AVX2   "-mavx2")
++  SET(FLAGS_AVX512 "-mavx512f")
+ ELSE ()
+   # for `thread` keyword
+   _SET_IF_EMPTY(FLAGS_SSE2  "-msse -msse2 -mno-sse4.2")
+diff -ruN -x rtcore_config.h -x config.h -x hash.h embree-4.4.1.orig/common/cmake/gnu.cmake embree-4.4.1/common/cmake/gnu.cmake
+--- embree-4.4.1.orig/common/cmake/gnu.cmake	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/cmake/gnu.cmake	2026-09-10 17:18:01.612033136 -0600
+@@ -12,6 +12,16 @@
+   SET(FLAGS_SSE42 "-D__SSE4_2__  -D__SSE4_1__")
+   SET(FLAGS_AVX "-D__AVX__ -D__SSE4_2__  -D__SSE4_1__  -D__BMI__ -D__BMI2__ -D__LZCNT__")
+   SET(FLAGS_AVX2 "-D__AVX2__ -D__AVX__ -D__SSE4_2__  -D__SSE4_1__  -D__BMI__ -D__BMI2__ -D__LZCNT__")
++ELSEIF (EMBREE_PPC64LE)
++  # The compiler's SSE-on-VSX headers implement SSE..SSE4.2; they refuse to
++  # compile unless NO_WARN_X86_INTRINSICS acknowledges the port.  Embree keys
++  # its ISA selection on the __SSE*__ macros, which nothing defines on POWER.
++  SET(FLAGS_SSE2  "-D__SSE__ -D__SSE2__ -DNO_WARN_X86_INTRINSICS -mvsx")
++  SET(FLAGS_SSE42 "-D__SSE__ -D__SSE2__ -D__SSE3__ -D__SSSE3__ -D__SSE4_1__ -D__SSE4_2__ -DNO_WARN_X86_INTRINSICS -mvsx")
++  # invalid on POWER on purpose: the TRY_COMPILE probes fail and AVX+ stays off
++  SET(FLAGS_AVX    "-mavx")
++  SET(FLAGS_AVX2   "-mavx2")
++  SET(FLAGS_AVX512 "-mavx512f")
+ ELSE ()
+   _SET_IF_EMPTY(FLAGS_SSE2  "-msse2")
+   _SET_IF_EMPTY(FLAGS_SSE42 "-msse4.2")
+@@ -27,10 +37,10 @@
+ 
+ SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+ 
+-IF (EMBREE_ARM)
++IF (EMBREE_ARM OR EMBREE_PPC64LE)
+   SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsigned-char")             # treat 'char' as 'signed char'
+   SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flax-vector-conversions")  # allow lax vector type conversions
+-ENDIF (EMBREE_ARM)
++ENDIF ()
+ 
+ SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")                       # enables most warnings
+ SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wformat -Wformat-security")  # enables string format vulnerability warnings
+@@ -66,25 +76,25 @@
+ ENDMACRO()
+ 
+ SET(CMAKE_CXX_FLAGS_DEBUG "")
+-IF (EMBREE_ARM)
++IF (EMBREE_ARM OR EMBREE_PPC64LE)
+   SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsigned-char")             # treat 'char' as 'signed char'
+-ENDIF (EMBREE_ARM)
++ENDIF ()
+ SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")              # generate debug information
+ SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG")         # enable assertions
+ SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DTBB_USE_DEBUG") # configure TBB in debug mode
+ SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O3")             # enable full optimizations
+ 
+ SET(CMAKE_CXX_FLAGS_RELEASE "")
+-IF (EMBREE_ARM)
++IF (EMBREE_ARM OR EMBREE_PPC64LE)
+   SET(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fsigned-char")             # treat 'char' as 'signed char'
+-ENDIF (EMBREE_ARM)
++ENDIF ()
+ SET(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DNDEBUG")     # disable assertions
+ SET(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")          # enable full optimizations
+ 
+ SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO "")
+-IF (EMBREE_ARM)
++IF (EMBREE_ARM OR EMBREE_PPC64LE)
+   SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -fsigned-char")             # treat 'char' as 'signed char'
+-ENDIF (EMBREE_ARM)
++ENDIF ()
+ SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -g")              # generate debug information
+ SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -DNDEBUG")        # disable assertions
+ SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3")             # enable full optimizations
+diff -ruN -x rtcore_config.h -x config.h -x hash.h embree-4.4.1.orig/common/simd/ppc/emulation.h embree-4.4.1/common/simd/ppc/emulation.h
+--- embree-4.4.1.orig/common/simd/ppc/emulation.h	1969-12-31 17:00:00.000000000 -0700
++++ embree-4.4.1/common/simd/ppc/emulation.h	2026-09-10 17:33:25.739879937 -0600
+@@ -0,0 +1,97 @@
++// Copyright 2009-2021 Intel Corporation
++// SPDX-License-Identifier: Apache-2.0
++
++// powerpc64le: SSE on VSX.
++//
++// GCC (since 8) and clang ship <xmmintrin.h>, <emmintrin.h>, <pmmintrin.h>,
++// <tmmintrin.h>, <smmintrin.h> and <nmmintrin.h> for powerpc64le that
++// implement the SSE..SSE4.2 intrinsics on top of VSX (POWER8 and later).
++// Embree's SSE2 and SSE4.2 kernels build on those headers unchanged; this
++// file adds the few intrinsics they do not provide, mirroring arm/emulation.h.
++
++#pragma once
++
++#include "../../sys/platform.h"
++
++#ifndef NO_WARN_X86_INTRINSICS
++#define NO_WARN_X86_INTRINSICS 1
++#endif
++
++#include <mmintrin.h>
++#include <xmmintrin.h>
++#include <emmintrin.h>
++#include <pmmintrin.h>
++#include <tmmintrin.h>
++#include <smmintrin.h>
++#include <nmmintrin.h>
++#include <mm_malloc.h>
++
++/* MXCSR does not exist on POWER.  Embree only touches it to enable FTZ/DAZ,
++ * an x86 performance hint; POWER9 handles denormals in hardware at full
++ * speed.  Report both as always on and accept writes as no-ops, so the
++ * FTZ/DAZ warning in Device::print() stays quiet and Scene::commit()'s
++ * save/restore is harmless. */
++#ifndef _MM_FLUSH_ZERO_MASK
++#define _MM_FLUSH_ZERO_MASK 0x8000
++#define _MM_FLUSH_ZERO_ON   0x8000
++#define _MM_FLUSH_ZERO_OFF  0x0000
++#endif
++#ifndef _MM_DENORMALS_ZERO_MASK
++#define _MM_DENORMALS_ZERO_MASK 0x0040
++#define _MM_DENORMALS_ZERO_ON   0x0040
++#define _MM_DENORMALS_ZERO_OFF  0x0000
++#endif
++
++#ifndef _MM_MASK_MASK
++#define _MM_EXCEPT_MASK     0x003f
++#define _MM_MASK_MASK       0x1f80
++#define _MM_MASK_INVALID    0x0080
++#define _MM_MASK_DENORM     0x0100
++#define _MM_MASK_DIV_ZERO   0x0200
++#define _MM_MASK_OVERFLOW   0x0400
++#define _MM_MASK_UNDERFLOW  0x0800
++#define _MM_MASK_INEXACT    0x1000
++#endif
++
++__forceinline unsigned int _mm_getcsr(void) { return _MM_MASK_MASK | _MM_FLUSH_ZERO_ON | _MM_DENORMALS_ZERO_ON; }
++__forceinline void _mm_setcsr(unsigned int) {}
++
++#ifndef _MM_SET_EXCEPTION_MASK
++#define _MM_SET_EXCEPTION_MASK(x) _mm_setcsr((_mm_getcsr() & ~_MM_MASK_MASK) | (x))
++#define _MM_GET_EXCEPTION_MASK()  (_mm_getcsr() & _MM_MASK_MASK)
++#endif
++
++#ifndef _MM_SET_FLUSH_ZERO_MODE
++#define _MM_SET_FLUSH_ZERO_MODE(x) _mm_setcsr((_mm_getcsr() & ~_MM_FLUSH_ZERO_MASK) | (x))
++#define _MM_GET_FLUSH_ZERO_MODE()  (_mm_getcsr() & _MM_FLUSH_ZERO_MASK)
++#endif
++#ifndef _MM_SET_DENORMALS_ZERO_MODE
++#define _MM_SET_DENORMALS_ZERO_MODE(x) _mm_setcsr((_mm_getcsr() & ~_MM_DENORMALS_ZERO_MASK) | (x))
++#define _MM_GET_DENORMALS_ZERO_MODE()  (_mm_getcsr() & _MM_DENORMALS_ZERO_MASK)
++#endif
++
++/* SSE4.1 / SSE4.2 intrinsics the compatibility headers leave out. */
++__forceinline __m128 _mm_dp_ps(__m128 a, __m128 b, const int imm8)
++{
++  float av[4], bv[4], r[4];
++  _mm_storeu_ps(av, a);
++  _mm_storeu_ps(bv, b);
++  float s = 0.0f;
++  for (int i = 0; i < 4; i++) if (imm8 & (0x10 << i)) s += av[i] * bv[i];
++  for (int i = 0; i < 4; i++) r[i] = (imm8 & (1 << i)) ? s : 0.0f;
++  return _mm_loadu_ps(r);
++}
++
++__forceinline __m128 _mm_insert_ps(__m128 a, __m128 b, const int imm8)
++{
++  float av[4], bv[4];
++  _mm_storeu_ps(av, a);
++  _mm_storeu_ps(bv, b);
++  av[(imm8 >> 4) & 3] = bv[(imm8 >> 6) & 3];
++  for (int i = 0; i < 4; i++) if (imm8 & (1 << i)) av[i] = 0.0f;
++  return _mm_loadu_ps(av);
++}
++
++__forceinline int       _mm_popcnt_u32(unsigned int v)       { return __builtin_popcount(v); }
++__forceinline long long _mm_popcnt_u64(unsigned long long v) { return __builtin_popcountll(v); }
++__forceinline __m128i   _mm_stream_load_si128(__m128i* p)    { return _mm_load_si128(p); }
+diff -ruN -x rtcore_config.h -x config.h -x hash.h embree-4.4.1.orig/common/sys/intrinsics.h embree-4.4.1/common/sys/intrinsics.h
+--- embree-4.4.1.orig/common/sys/intrinsics.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/sys/intrinsics.h	2026-09-10 17:18:01.612616378 -0600
+@@ -11,6 +11,8 @@
+ 
+ #if defined(__ARM_NEON)
+ #include "../simd/arm/emulation.h"
++#elif defined(__powerpc64__)
++#include "../simd/ppc/emulation.h"
+ #else
+ #include <immintrin.h>
+ #if defined(__EMSCRIPTEN__)
+diff -ruN -x rtcore_config.h -x config.h -x hash.h embree-4.4.1.orig/common/sys/platform.h embree-4.4.1/common/sys/platform.h
+--- embree-4.4.1.orig/common/sys/platform.h	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/sys/platform.h	2026-09-10 17:18:01.612414817 -0600
+@@ -58,7 +58,7 @@
+ #endif
+ 
+ /* detect 64 bit platform */
+-#if defined(__X86_64__) || defined(__aarch64__)
++#if defined(__X86_64__) || defined(__aarch64__) || defined(__powerpc64__)
+ #define __64BIT__
+ #endif
+ 
+diff -ruN -x rtcore_config.h -x config.h -x hash.h embree-4.4.1.orig/common/sys/sysinfo.cpp embree-4.4.1/common/sys/sysinfo.cpp
+--- embree-4.4.1.orig/common/sys/sysinfo.cpp	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/sys/sysinfo.cpp	2026-09-10 17:18:01.613161516 -0600
+@@ -100,6 +100,8 @@
+     return (char*)name;
+ #elif defined(__ARM_NEON)
+     return "ARM";
++#elif defined(__powerpc64__)
++    return "IBM";
+ #else
+     return "Unknown";
+ #endif
+@@ -376,6 +378,15 @@
+     cpu_features |= CPU_FEATURE_NEON_2X;
+     return cpu_features;
+ 
++#elif defined(__powerpc64__)
++
++    /* SSE2 and SSE4.2 kernels run on VSX through the compiler's
++       compatibility headers (POWER8 and later). */
++    int cpu_features = CPU_FEATURE_SSE|CPU_FEATURE_SSE2|CPU_FEATURE_SSE3|CPU_FEATURE_SSSE3;
++    cpu_features |= CPU_FEATURE_SSE41|CPU_FEATURE_SSE42|CPU_FEATURE_POPCNT;
++    cpu_features |= CPU_FEATURE_XMM_ENABLED;
++    return cpu_features;
++
+ #else
+     /* Unknown CPU. */
+     return 0;
+diff -ruN -x rtcore_config.h -x config.h -x hash.h embree-4.4.1.orig/common/sys/thread.cpp embree-4.4.1/common/sys/thread.cpp
+--- embree-4.4.1.orig/common/sys/thread.cpp	2026-03-17 01:41:53.000000000 -0600
++++ embree-4.4.1/common/sys/thread.cpp	2026-09-10 17:18:01.612808432 -0600
+@@ -8,6 +8,8 @@
+ #include <iostream>
+ #if defined(__ARM_NEON)
+ #include "../simd/arm/emulation.h"
++#elif defined(__powerpc64__)
++#include "../simd/ppc/emulation.h"
+ #else
+ #include <xmmintrin.h>
+ #if defined(__EMSCRIPTEN__)

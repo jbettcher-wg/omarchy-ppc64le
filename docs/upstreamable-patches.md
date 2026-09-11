@@ -100,6 +100,115 @@ architecture bug at all, but a latent defect every distro ships and none notices
 because on an ordinary builder the wrong answer and the right answer are the same
 string. It took an unprivileged sysroot build to pull them apart.
 
+### 4. ispc -- the ispcrt CMake helper does not know about the new ppc64le backend
+
+`packages/ispc/ispcrt-cmake-ppc64le.patch`
+
+ispc 1.31.0 added an experimental ppc64le backend (`PPC64_ENABLED`,
+`--arch=ppc64le`, `vsx-*` targets) but did not teach `ispcrt/cmake/ispc.cmake`
+about it. That file is installed as `/usr/lib/cmake/ispcrt-*/ispc.cmake` and is
+what OSPRay uses to drive the compiler: it hard-codes `--arch=x86-64` for every
+non-ARM host and only defines ISA options for x86. On a ppc64le host every
+consumer therefore runs `ispc --arch=x86-64 --target=sse4`, which a
+ppc64le-only ispc rejects.
+
+The patch detects `ppc64le` in `ispc --help`'s architecture list, adds an
+`ISPC_TARGET_VSX` option (default `vsx-i32x4`) and passes `--arch=ppc64le`.
+
+Send to: <https://github.com/ispc/ispc>.
+
+### 4b. rkcommon -- three x86 leftovers behind `#else`
+
+`packages/rkcommon/rkcommon-ppc64le.patch`
+
+rkcommon is portable C++ except for three spots guarded by `#else` rather than
+an architecture test, so any target that is neither x86 nor NEON falls into
+them and dies in GCC's `xmmintrin.h` `#error`: `math/rkmath.h` (`rcp`/`rsqrt`
+on `_mm_rcp_ss`/`_mm_rsqrt_ss`), `memory/malloc.cpp` (`_mm_malloc`), and
+`tasking/detail/tasking_system_init.cpp` (MXCSR FTZ/DAZ per worker thread).
+The patch uses the compiler's SSE-on-VSX headers for the first (public header,
+so `NO_WARN_X86_INTRINSICS` is defined there), the existing `posix_memalign`
+path for the second, and no-ops for the third (no MXCSR on POWER).
+
+**Not ppc64le-specific**: riscv64 and s390x fall into the same branches.
+
+Send to: <https://github.com/RenderKit/rkcommon>.
+
+### 5. embree -- ppc64le port on the compiler's SSE-to-VSX headers
+
+`packages/embree/embree-ppc64le.patch`
+
+Embree's kernels are SSE intrinsics selected by the `__SSE*__` macros. GCC
+(>= 8) and clang ship `<xmmintrin.h>` .. `<nmmintrin.h>` for powerpc64le that
+implement SSE through SSE4.2 on VSX, gated behind `-DNO_WARN_X86_INTRINSICS`.
+Embree already has exactly this shape for AArch64 (`sse2neon.h`): an
+`EMBREE_ARM` CMake switch, per-ISA flag sets that *define* `__SSE4_2__` rather
+than pass `-msse4.2`, and an emulation header. The patch adds the POWER
+equivalent: `EMBREE_PPC64LE`, flag sets, `__64BIT__` on `__powerpc64__`, a
+fixed SSE4.2+POPCNT feature report in `sysinfo.cpp`, and a 90-line
+`common/simd/ppc/emulation.h` covering what the compat headers lack
+(`_mm_getcsr`/`_mm_setcsr` and the MXCSR macros as no-ops, `_mm_dp_ps`,
+`_mm_insert_ps`, `_mm_popcnt_u32/u64`, `_mm_stream_load_si128`).
+
+Verified on POWER9 with GCC 16: builds both SSE2 and SSE4.2 tiers,
+`rtcIntersect1` and `rtcIntersect4` return correct hits, misses and `tfar`.
+
+**Nobody ships this today**: Fedora `ExclusiveArch: x86_64 aarch64`, Void
+`archs="aarch64* x86_64*"`, Godot disables its bundled Embree on PPC.
+
+Send to: <https://github.com/RenderKit/embree>.
+
+### 6. openvkl -- add a VSX ISA
+
+`packages/openvkl/openvkl-ppc64le.patch`
+
+CMake only. Open VKL's ISA selection knows x86 and NEON and passes
+`--arch=x86-64` or `aarch64`. The patch adds `OPENVKL_ISA_VSX` (one 4-wide
+device from `vsx-i32x4`, no `-msse4.2` width flag, `--arch=ppc64le`) and
+exports it from `openvklConfig.cmake` for OSPRay, plus a `VKL_ISPC_TARGET_VSX`
+enum value so the device reports `ISA: VSX` (it said `UNKNOWN`). Requires
+ispc >= 1.31 built with `PPC64_ENABLED`. Verified: `vklTestsCPU` passes all 47
+cases (310,680,004 assertions) on POWER9.
+
+Send to: <https://github.com/RenderKit/openvkl>.
+
+### 7. openimagedenoise -- `OIDN_ARCH=PPC64LE`
+
+`packages/openimagedenoise/oidn-ppc64le.patch`
+
+OIDN's CPU device is ISPC kernels; the x86-only parts (cpuid, AMX, DNNL) are
+already gated behind `OIDN_ARCH_X64` and AArch64 takes the generic ISPC path.
+The patch adds `PPC64LE` beside `ARM64`: `vsx-i32x8` / `vsx-i16x16` targets
+(same widths as NEON, so the same channel-block size and conv blocking
+constants), `--arch=ppc64le`, and a `CPUArch::VSX` value on both the ISPC and
+C++ side -- without it `getCPUArch()` is `#error`, and a stub would make the
+device enumerate as `Unknown` and register nothing.
+
+One link-time wrinkle worth upstream's attention: ispc lowers `float16` on the
+VSX targets through LLVM's soft-float helpers (`__extendhfsf2`,
+`__truncsfhf2`, ...), which libgcc does not provide on POWER (GCC has no
+`_Float16` there). The device module then links but fails `dlopen(RTLD_NOW)`
+with `undefined symbol: __extendhfsf2` and OIDN sees no CPU device. The patch
+links compiler-rt's builtins archive into the module on PPC64LE
+(`OIDN_PPC64LE_RT_BUILTINS`, auto-detected). Verified: `oidnTest` passes all
+16 cases on POWER9.
+
+Send to: <https://github.com/RenderKit/oidn>.
+
+### 8. ospray -- add a VSX ISA
+
+`packages/ospray/ospray-ppc64le.patch`
+
+OSPRay derives its ISPC target list from the ISAs Embree and Open VKL report
+and only knows the x86 and NEON names. The patch adds `VSX` (Embree SSE4.2 +
+`OPENVKL_ISA_VSX` -> `vsx-i32x4`), exempts it from the dummy-second-target
+rule like NEON, names it in the ISA report, and teaches OSPRay's private copy
+of ispcrt's helper (`cmake/compiler/ispc.cmake`, same defect as #4) to pass
+`--arch=ppc64le`. Verified: upstream's `ospTutorial.c` renders through the
+whole stack on POWER9.
+
+Send to: <https://github.com/RenderKit/ospray>.
+
 ## Reports that belong to Arch POWER, not upstream
 
 ### `libheif` is built against a newer `libde265` than the repo ships

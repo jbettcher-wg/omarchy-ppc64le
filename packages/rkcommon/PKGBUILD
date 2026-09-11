@@ -1,0 +1,45 @@
+# Maintainer: Daniel Bermond <dbermond@archlinux.org>
+# Maintainer: Bruno Pagani <archange@archlinux.org>
+# ppc64le: Omarchy ppc64le -- see README.md
+
+pkgname=rkcommon
+pkgver=1.15.3
+pkgrel=1
+pkgdesc='Intel RenderKit common C++/CMake infrastructure'
+arch=('x86_64' 'powerpc64le')
+url='https://github.com/ospray/rkcommon/'
+license=('Apache-2.0')
+depends=(
+    'glibc'
+    'libgcc'
+    'libstdc++'
+    'onetbb')
+makedepends=(
+    'cmake')
+source=("https://github.com/ospray/rkcommon/archive/v${pkgver}/${pkgname}-${pkgver}.tar.gz"
+        rkcommon-ppc64le.patch)
+sha256sums=('31925481d189dcdddadf651dd37021108e5acaa8d39bd639de8c098157ad07b7'
+            'SKIP')
+
+prepare() {
+    cd "${pkgname}-${pkgver}"
+    # ppc64le: SSE headers via the compiler's VSX compat layer, no MXCSR
+    patch -Np1 -i "$srcdir"/rkcommon-ppc64le.patch
+}
+
+build() {
+    cmake -B build -S "${pkgname}-${pkgver}" \
+        -G 'Unix Makefiles' \
+        -DCMAKE_BUILD_TYPE:STRING='None' \
+        -DCMAKE_INSTALL_PREFIX:PATH='/usr' \
+        -Wno-author
+    cmake --build build
+}
+
+check() {
+    ctest --test-dir build --output-on-failure
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install build
+}

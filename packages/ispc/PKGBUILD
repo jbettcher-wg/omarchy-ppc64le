@@ -1,0 +1,99 @@
+# Maintainer: Lukas Jirkovsky <l.jirkovsky@gmail.com>
+# Maintainer: Bruno Pagani <archange@archlinux.org>
+# Maintainer: Torsten Keßler <tpkessler@archlinux.org>
+# ppc64le: Omarchy ppc64le -- see README.md
+
+pkgname=ispc
+pkgver=1.31.0
+pkgrel=1
+pkgdesc="Compiler for high-performance SIMD programming on the CPU (ppc64le/VSX build)"
+arch=(powerpc64le)
+url="https://ispc.github.io/"
+license=(BSD-3-Clause)
+depends=(
+  clang
+  libgcc
+  libstdc++
+  glibc
+  llvm-libs
+  onetbb
+)
+makedepends=(cmake git llvm python)
+# NOTE: libispcrt_static.a is required by ospray during build time
+options=(staticlibs)
+source=(
+  git+https://github.com/$pkgname/$pkgname#tag=v$pkgver
+  ispcrt-cmake-ppc64le.patch
+)
+sha256sums=('d4d0f309f4951e18f3296e8df496aed81a4a41f1652091a6addf247b192a8f88'
+            'SKIP')
+
+prepare() {
+  cd $pkgname
+  # ppc64le: let the installed ispcrt CMake helper drive the new backend
+  patch -Np1 -i "$srcdir"/ispcrt-cmake-ppc64le.patch
+}
+
+build() {
+  local cmake_options=(
+    -B build
+    -D CMAKE_BUILD_TYPE=Release  # None not allowed :(
+    -D CMAKE_INSTALL_PREFIX=/usr
+    -D ISPC_INCLUDE_EXAMPLES=OFF
+    -D ISPC_INCLUDE_TESTS=OFF
+    -D ISPC_INCLUDE_BENCHMARKS=OFF
+    -D ISPC_STATIC_LINK=OFF
+    # ppc64le: only the host architecture.  Upstream's default enables x86
+    # on x86 hosts and ARM wherever LLVM has the backend; the PowerPC target
+    # is opt-in and experimental (ispc 1.31.0 release notes).
+    -D X86_ENABLED=OFF
+    -D ARM_ENABLED=OFF
+    -D PPC64_ENABLED=ON
+    -D XE_ENABLED=OFF
+    -S $pkgname
+    -W no-dev
+  )
+
+  cmake "${cmake_options[@]}"
+  cmake --build build --verbose
+}
+
+check() {
+  # Upstream's test suite is x86/ARM-oriented; instead prove the compiler
+  # actually works for its one target: compile an ispc kernel for VSX, link
+  # it against a C++ driver, run it, and check the result.
+  local t="$srcdir/vsx-smoke"
+  mkdir -p "$t"
+  cat > "$t/k.ispc" <<'ISPC'
+export void saxpy(uniform int n, uniform float a,
+                  uniform float x[], uniform float y[]) {
+  foreach (i = 0 ... n) y[i] = a * x[i] + y[i];
+}
+ISPC
+  cat > "$t/main.cpp" <<'CXX'
+#include "k.h"
+#include <cstdio>
+int main() {
+  float x[1000], y[1000];
+  for (int i = 0; i < 1000; i++) { x[i] = i; y[i] = 1; }
+  ispc::saxpy(1000, 2.0f, x, y);
+  double s = 0; for (int i = 0; i < 1000; i++) s += y[i];
+  printf("%.0f\n", s);          /* 2*sum(0..999) + 1000 = 1000000 */
+  return s == 1000000.0 ? 0 : 1;
+}
+CXX
+  for target in vsx-i32x4 vsx-i32x8 vsx-i16x8; do
+    build/bin/ispc --arch=ppc64le --target=$target -O2 \
+      "$t/k.ispc" -o "$t/k.o" -h "$t/k.h"
+    g++ -O2 -o "$t/smoke" "$t/main.cpp" "$t/k.o"
+    "$t/smoke"
+  done
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+  install -Dm644 $pkgname/LICENSE.txt -t "${pkgdir}"/usr/share/licenses/${pkgname}
+  install -Dm644 $pkgname/contrib/ispc.vim -t "${pkgdir}"/usr/share/vim/vimfiles/syntax
+  mkdir -p "${pkgdir}"/usr/share/vim/vimfiles/ftdetect
+  echo "au BufRead,BufNewFile *.isph,*.ispc set filetype=ispc" > "${pkgdir}"/usr/share/vim/vimfiles/ftdetect/ispc.vim
+}
