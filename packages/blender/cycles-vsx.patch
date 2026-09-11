@@ -1,0 +1,206 @@
+Cycles: build the SSE4.2 CPU kernel on powerpc64le through the compiler's
+SSE-on-VSX compatibility headers.
+
+Cycles has an SSE kernel (selected by __KERNEL_SSE__..__KERNEL_SSE42__ in
+util/optimization.h) and compiles it on ARM through sse2neon.  On POWER
+nothing set those macros, so every kernel fell back to scalar code.  GCC
+(>= 8) and clang ship <xmmintrin.h> .. <nmmintrin.h> for powerpc64le that
+implement SSE through SSE4.2 on VSX (POWER8 and later), gated behind
+-DNO_WARN_X86_INTRINSICS.  This is the same shape as the sse2neon path and
+the same technique Embree was ported with (packages/embree).
+
+- intern/cycles/CMakeLists.txt: probe the headers (SUPPORTS_SSE2VSX_BUILD),
+  then take a POWER branch beside the NEON one: no SSE/AVX compiler flags,
+  -DWITH_SSE2VSX -DNO_WARN_X86_INTRINSICS.
+- util/optimization.h: __KERNEL_VSX__ + the four SSE macros under
+  __powerpc64__ && __VSX__ && WITH_SSE2VSX.
+- util/simd.h: include the compatibility headers instead of <x86intrin.h> /
+  <sse2neon.h>; provide _mm_dp_ps, the one intrinsic Cycles uses that the
+  headers lack; bit scans through __builtin_ctz/clz on any GCC/clang target
+  instead of the 32/64-iteration loops (the loop fallback also has a
+  `1 << bit` int shift in bitscan(uint64_t)).
+- device/cpu/device.cpp: report "VSX" in `_cycles.system_info()` so the
+  active kernel is visible at runtime.
+
+Verified on POWER9 (see packages/blender/README.md): kernel.cpp compiles
+with GCC 16 with no other changes (no -flax-vector-conversions needed);
+the object goes from 43k to 111k VSX/VMX instructions with xvmulsp/xvaddsp
+vector forms replacing the scalar xsmulsp/xsaddsp; renders match the scalar
+build.
+
+Portability fix, worth sending upstream (projects.blender.org/blender/blender).
+
+diff -ruN -x obj a/intern/cycles/CMakeLists.txt b/intern/cycles/CMakeLists.txt
+--- a/intern/cycles/CMakeLists.txt	2026-02-09 09:34:40.000000000 -0700
++++ b/intern/cycles/CMakeLists.txt	2026-09-10 21:54:11.229522256 -0600
+@@ -30,6 +30,21 @@
+ # TODO: this code could be refactored a bit to avoid duplication.
+ # NOTE: CXX_HAS_SSE42 is needed in case passing SSE flags fails altogether (`gcc-arm`).
+ 
++# powerpc64le: does the compiler ship the SSE-on-VSX compatibility headers?
++# (GCC >= 8 and clang do; they refuse to compile unless NO_WARN_X86_INTRINSICS
++# acknowledges the port.)
++if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64le|powerpc64le)$" AND NOT DEFINED SUPPORTS_SSE2VSX_BUILD)
++  include(CheckCXXSourceCompiles)
++  check_cxx_source_compiles(
++    "#define NO_WARN_X86_INTRINSICS 1
++     #include <nmmintrin.h>
++     int main() {
++       __m128 a = _mm_set1_ps(1.0f);
++       return _mm_movemask_ps(_mm_cmpeq_ps(a, a)) == 0xf ? 0 : 1;
++     }"
++    SUPPORTS_SSE2VSX_BUILD)
++endif()
++
+ # Determine vectorization support and required build flags
+ if(WITH_CYCLES_NATIVE_ONLY)
+   set(CXX_HAS_SSE42 FALSE)
+@@ -73,6 +88,15 @@
+   set(CXX_HAS_SSE42 FALSE)
+   set(CXX_HAS_AVX2 FALSE)
+   set(CXX_HAS_F16C FALSE)
++elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64le|powerpc64le)$" AND SUPPORTS_SSE2VSX_BUILD)
++  # On POWER the compiler's SSE-on-VSX compatibility headers (xmmintrin.h ..
++  # nmmintrin.h) compile the cycles SSE kernels into native VSX instructions,
++  # the same way SSE2NEON does on ARM.  There are no SSE or AVX compiler
++  # flags here; util/optimization.h selects the kernel on WITH_SSE2VSX.
++  set(CXX_HAS_SSE42 FALSE)
++  set(CXX_HAS_AVX2 FALSE)
++  set(CXX_HAS_F16C FALSE)
++  add_definitions(-DWITH_SSE2VSX -DNO_WARN_X86_INTRINSICS)
+ elseif(WIN32 AND MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+   set(CXX_HAS_SSE42 TRUE)
+   set(CXX_HAS_AVX2 TRUE)
+diff -ruN -x obj a/intern/cycles/device/cpu/device.cpp b/intern/cycles/device/cpu/device.cpp
+--- a/intern/cycles/device/cpu/device.cpp	2026-02-08 22:15:57.000000000 -0700
++++ b/intern/cycles/device/cpu/device.cpp	2026-09-10 21:54:11.230532045 -0600
+@@ -48,7 +48,12 @@
+ 
+ string device_cpu_capabilities()
+ {
++#ifdef __KERNEL_VSX__
++  /* One kernel, compiled through the SSE-on-VSX headers; nothing to detect. */
++  return "VSX";
++#else
+   return system_cpu_support_avx2() ? "AVX2" : "";
++#endif
+ }
+ 
+ CCL_NAMESPACE_END
+diff -ruN -x obj a/intern/cycles/util/optimization.h b/intern/cycles/util/optimization.h
+--- a/intern/cycles/util/optimization.h	2026-02-09 18:22:40.000000000 -0700
++++ b/intern/cycles/util/optimization.h	2026-09-10 21:54:11.229911480 -0600
+@@ -42,6 +42,20 @@
+ #    define __KERNEL_SSE3__
+ #    define __KERNEL_SSE42__
+ 
++/* PowerPC64 VSX
++ *
++ * Compile a SSE4.2 kernel through the compiler's SSE-on-VSX compatibility
++ * headers (GCC >= 8, clang). All the SSE code is shared; __KERNEL_VSX__
++ * marks the few places that differ. */
++
++#  elif defined(__powerpc64__) && defined(__VSX__) && defined(WITH_SSE2VSX)
++
++#    define __KERNEL_VSX__
++#    define __KERNEL_SSE__
++#    define __KERNEL_SSE2__
++#    define __KERNEL_SSE3__
++#    define __KERNEL_SSE42__
++
+ #  endif
+ 
+ #endif
+diff -ruN -x obj a/intern/cycles/util/simd.h b/intern/cycles/util/simd.h
+--- a/intern/cycles/util/simd.h	2026-02-08 22:15:57.000000000 -0700
++++ b/intern/cycles/util/simd.h	2026-09-10 21:54:11.230245225 -0600
+@@ -25,6 +25,38 @@
+ #elif defined(__KERNEL_NEON__)
+ #  define SSE2NEON_PRECISE_MINMAX 1
+ #  include <sse2neon.h>
++#elif defined(__KERNEL_VSX__)
++/* GCC and clang implement SSE..SSE4.2 on VSX in these headers. They refuse to
++ * compile unless the port is acknowledged with NO_WARN_X86_INTRINSICS. */
++#  ifndef NO_WARN_X86_INTRINSICS
++#    define NO_WARN_X86_INTRINSICS 1
++#  endif
++#  include <mmintrin.h>
++#  include <xmmintrin.h>
++#  include <emmintrin.h>
++#  include <pmmintrin.h>
++#  include <tmmintrin.h>
++#  include <smmintrin.h>
++#  include <nmmintrin.h>
++
++/* The one SSE4.1 intrinsic Cycles uses that the compatibility headers do not
++ * provide. imm8 is a constant at every call site, so the masks fold. */
++static inline __m128 __attribute__((always_inline))
++_mm_dp_ps(const __m128 a, const __m128 b, const int imm8)
++{
++  const __m128 in_mask = _mm_castsi128_ps(_mm_set_epi32((imm8 & 0x80) ? -1 : 0,
++                                                        (imm8 & 0x40) ? -1 : 0,
++                                                        (imm8 & 0x20) ? -1 : 0,
++                                                        (imm8 & 0x10) ? -1 : 0));
++  const __m128 out_mask = _mm_castsi128_ps(_mm_set_epi32((imm8 & 0x08) ? -1 : 0,
++                                                         (imm8 & 0x04) ? -1 : 0,
++                                                         (imm8 & 0x02) ? -1 : 0,
++                                                         (imm8 & 0x01) ? -1 : 0));
++  __m128 m = _mm_and_ps(_mm_mul_ps(a, b), in_mask);
++  m = _mm_hadd_ps(m, m);
++  m = _mm_hadd_ps(m, m);
++  return _mm_and_ps(m, out_mask);
++}
+ #endif
+ 
+ /* Floating Point Control, for Embree. */
+@@ -392,6 +424,50 @@
+ }
+ #  endif
+ 
++#elif defined(__GNUC__) || defined(__clang__)
++/* Intrinsic functions from compiler builtins (POWER, ARM, ...). Same results
++ * as the x86 assembly above, including __btc complementing the bit. */
++
++__forceinline uint32_t __bsf(const uint32_t v)
++{
++  return __builtin_ctz(v);
++}
++
++__forceinline uint32_t __bsr(const uint32_t v)
++{
++  return 31 - __builtin_clz(v);
++}
++
++__forceinline uint32_t __btc(const uint32_t v, const uint32_t i)
++{
++  return v ^ (1U << i);
++}
++
++__forceinline uint64_t __bsf(const uint64_t v)
++{
++  return __builtin_ctzll(v);
++}
++
++__forceinline uint64_t __bsr(const uint64_t v)
++{
++  return 63 - __builtin_clzll(v);
++}
++
++__forceinline uint64_t __btc(const uint64_t v, const uint64_t i)
++{
++  return v ^ (1ULL << i);
++}
++
++__forceinline uint32_t bitscan(const uint32_t v)
++{
++  return __builtin_ctz(v);
++}
++
++__forceinline uint64_t bitscan(const uint64_t v)
++{
++  return __builtin_ctzll(v);
++}
++
+ #else
+ /* Intrinsic functions fallback for arbitrary processor. */
+ __forceinline uint32_t __bsf(const uint32_t x)

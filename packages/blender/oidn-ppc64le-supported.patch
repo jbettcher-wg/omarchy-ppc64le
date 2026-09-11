@@ -1,0 +1,39 @@
+Let OpenImageDenoise be used on powerpc64le.
+
+Blender decides at runtime whether OIDN may be offered -- Cycles'
+openimagedenoise_supported() and the compositor Denoise node's
+is_oidn_supported() -- and both fall through to an x86 cpuid check for
+SSE4.2 on every platform except Apple and ARM64.  On POWER that check is
+always false, so a Blender linked against libOpenImageDenoise still hides
+the denoiser: with_openimagedenoise is False and the node draws
+"Unsupported CPU".  Add a ppc64le branch beside the ARM64 one; the OIDN CPU
+device runs there on ISPC VSX kernels (packages/openimagedenoise).
+
+Portability fix; upstreamable only together with the OIDN ppc64le port
+(docs/upstreamable-patches.md section 7), since upstream OIDN has no POWER
+CPU device yet.
+
+--- a/intern/cycles/util/openimagedenoise.h	2026-02-08 22:15:57.000000000 -0700
++++ b/intern/cycles/util/openimagedenoise.h	2026-09-10 22:03:04.715437841 -0600
+@@ -21,6 +21,9 @@
+ #  elif defined(__aarch64__) || defined(_M_ARM64)
+   /* OIDN 2.2 and up supports ARM64 on Windows and Linux. */
+   return true;
++#  elif defined(__powerpc64__) && defined(__VSX__)
++  /* OIDN's CPU device on ppc64le (ISPC VSX kernels). */
++  return true;
+ #  else
+   return system_cpu_support_sse42();
+ #  endif
+--- a/source/blender/nodes/composite/nodes/node_composite_denoise.cc	2026-02-08 22:15:59.000000000 -0700
++++ b/source/blender/nodes/composite/nodes/node_composite_denoise.cc	2026-09-10 22:03:04.726653335 -0600
+@@ -114,6 +114,9 @@
+ #  elif defined(__aarch64__) || defined(_M_ARM64)
+   /* OIDN 2.2 and up supports ARM64 on Windows and Linux. */
+   return true;
++#  elif defined(__powerpc64__) && defined(__VSX__)
++  /* OIDN's CPU device on ppc64le (ISPC VSX kernels). */
++  return true;
+ #  else
+   return BLI_cpu_support_sse42();
+ #  endif
