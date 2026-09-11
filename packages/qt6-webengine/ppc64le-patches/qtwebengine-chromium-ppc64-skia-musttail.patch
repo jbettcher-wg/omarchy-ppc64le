@@ -1,0 +1,13 @@
+diff --git a/src/3rdparty/chromium/third_party/skia/modules/skcms/src/skcms_internals.h b/src/3rdparty/chromium/third_party/skia/modules/skcms/src/skcms_internals.h
+index c869cd95a4..8c65b5c6c5 100644
+--- a/src/3rdparty/chromium/third_party/skia/modules/skcms/src/skcms_internals.h
++++ b/src/3rdparty/chromium/third_party/skia/modules/skcms/src/skcms_internals.h
+@@ -57,7 +57,7 @@ extern "C" {
+             #define SKCMS_HAS_MUSTTAIL 1
+         #endif
+     #elif !defined(__clang__) && !defined(SKCMS_HAS_MUSTTAIL)
+-        #if __has_cpp_attribute(clang::musttail)
++        #if __has_cpp_attribute(clang::musttail) && !defined(__powerpc64__)
+             #define SKCMS_HAS_MUSTTAIL 1
+         #else
+             #define SKCMS_HAS_MUSTTAIL 0

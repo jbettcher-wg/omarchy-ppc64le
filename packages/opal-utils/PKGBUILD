@@ -1,0 +1,57 @@
+# Maintainer: Your Name <you@example.com>
+
+pkgname=opal-utils
+pkgver=7.1
+pkgrel=1
+pkgdesc='OPAL/PowerNV firmware userspace tools from skiboot: pflash, opal-gard, opal-prd, xscom utils, ffspart'
+arch=('powerpc64le' 'powerpc64')
+url='https://github.com/open-power/skiboot'
+license=('Apache-2.0')
+depends=('glibc')
+makedepends=('linux-api-headers')
+provides=('pflash' 'opal-prd' 'opal-gard')
+# external/* partial-links its arch objects with `ld -r`, which LTO dislikes.
+options=('!lto')
+source=("skiboot-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('3e68565653acab7a2caaec9791bbf132e83fb43973234826660cbcd13efc80ae')
+
+_tools=(gard pflash xscom-utils ffspart opal-prd)
+
+# Built from a tarball, so make_version.sh has no git to ask; feed the version
+# in explicitly or version.c ends up as an #error.
+_ver=(
+  GARD_VERSION="v$pkgver"
+  PFLASH_VERSION="v$pkgver"
+  XSCOM_VERSION="v$pkgver"
+  FFSPART_VERSION="v$pkgver"
+  OPAL_PRD_VERSION="v$pkgver"
+)
+
+build() {
+  cd "skiboot-$pkgver"
+
+  local _t
+  for _t in "${_tools[@]}"; do
+    make -C "external/$_t" "${_ver[@]}"
+  done
+}
+
+package() {
+  cd "skiboot-$pkgver"
+
+  # sbindir must be /usr/bin: $pkgdir/usr/sbin as a real directory collides
+  # with the usr-merge symlink at install time.
+  local _t
+  for _t in "${_tools[@]}"; do
+    make -C "external/$_t" install \
+      DESTDIR="$pkgdir" prefix=/usr sbindir=/usr/bin "${_ver[@]}"
+  done
+
+  # Upstream's install target skips the unit file.
+  install -Dm644 external/opal-prd/opal-prd.service \
+    "$pkgdir/usr/lib/systemd/system/opal-prd.service"
+  sed -i 's|/usr/sbin/opal-prd|/usr/bin/opal-prd|' \
+    "$pkgdir/usr/lib/systemd/system/opal-prd.service"
+
+  install -Dm644 LICENCE "$pkgdir/usr/share/licenses/$pkgname/LICENCE"
+}

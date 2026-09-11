@@ -75,7 +75,6 @@
     "docker-buildx",
     "docker-compose",
     "dosfstools",
-    "dotnet-core",
     "double-conversion",
     "dua-cli",
     "duktape",
@@ -787,7 +786,9 @@
     "ruby",
     "ocl-icd",
     "rubygems",
-    "tobi-try"
+    "tobi-try",
+    "opal-utils",
+    "omarchy-theme-power9"
   ],
   "cycles": [
     [
@@ -876,7 +877,6 @@
     "docker-buildx": "gitlab",
     "docker-compose": "gitlab",
     "dosfstools": "archpower",
-    "dotnet-core": "gitlab",
     "double-conversion": "archpower",
     "dua-cli": "local",
     "duktape": "archpower",
@@ -1371,7 +1371,7 @@
     "psmisc": "archpower",
     "pugixml": "archpower",
     "purpose": "gitlab",
-    "python": "gitlab",
+    "python": "local",
     "python-aaf2": "gitlab",
     "opentimelineio": "archpower",
     "kdenlive": "gitlab",
@@ -1400,7 +1400,7 @@
     "qqc2-desktop-style": "gitlab",
     "qrencode": "archpower",
     "qt6-5compat": "gitlab",
-    "qt6-base": "gitlab",
+    "qt6-base": "local",
     "qt6-declarative": "gitlab",
     "qt6-imageformats": "gitlab",
     "qt6-networkauth": "gitlab",
@@ -1588,7 +1588,10 @@
     "ruby": "gitlab",
     "ocl-icd": "archpower",
     "rubygems": "gitlab",
-    "tobi-try": "local"
+    "tobi-try": "local",
+    "opal-utils": "local",
+    "lsp-plugins": "local",
+    "omarchy-theme-power9": "local"
   },
   "generated": "2026-09-05T22:01:26"
 }

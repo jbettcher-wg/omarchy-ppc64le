@@ -133,6 +133,7 @@ story all need rethinking rather than porting.
 | `gpu-screen-recorder` | NVENC/VAAPI paths | **built**, `arch()` only. Runtime capture on POWER still untested. |
 | `quickshell` | Qt6/QML, large | **built**, `arch()` only |
 | `plymouth` | early-boot graphics | **built**; still interacts with petitboot rather than GRUB/limine, which is a boot-integration question, not a build one |
+| `kdenlive` | wants `purpose` -> `kaccounts-integration` -> `signon-ui` -> `qt6-webengine`. Nothing else in the manifest needs that chain, and qt6-webengine is Chromium's engine — a build on the scale of chromium itself, never done on ppc64le as far as we can tell | deferred, not dropped: video editing is wanted, and `obs-studio 32.2.2` already builds and runs, so the media stack is otherwise there. Revisit once qt6-webengine exists |
 
 ## Build progress
 

@@ -30,3 +30,8 @@ installer/test/work/
 # bq state backups and Python bytecode.
 .bq-state.json.*
 __pycache__/
+
+# makepkg VCS mirrors, cloned next to the recipe when SRCDEST is unset.
+packages/luajit/luajit-ppc64le/
+packages/neovim/neovim/
+packages/omarchy-theme-power9/power9.bak.*

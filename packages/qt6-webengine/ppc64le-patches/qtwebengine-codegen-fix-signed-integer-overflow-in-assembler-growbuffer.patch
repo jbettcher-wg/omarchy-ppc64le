@@ -1,0 +1,105 @@
+From 9197b407b59db8c36cc4ded4a0b8e330cadd78bd Mon Sep 17 00:00:00 2001
+From: Milad Fa <mfarazma@ibm.com>
+Date: Tue, 28 Apr 2026 13:05:23 +0000
+Subject: [PATCH] PPC/s390: [codegen] Fix signed integer overflow in
+ Assembler::GrowBuffer
+
+Port 19b8e4cb5e838e786d3883b531765b3b07514dfb
+
+Original Commit Message:
+
+    Compiling extremely large functions could cause `Assembler::GrowBuffer`
+    to calculate a negative buffer size due to a signed integer overflow
+    when doubling the size. This bypassed the out-of-memory guard and
+    resulted in a massive heap-based buffer overflow.
+
+    This CL fixes the issue by:
+    1. Moving `kMaximalBufferSize` to `AssemblerBase` as a common constant.
+    2. Adding a non-static helper method `ComputeNewBufferSize` to
+       `AssemblerBase` that takes a `BufferGrowthStrategy` enum flag.
+    3. Adding a `DCHECK` to ensure the new size fits within `int` boundaries.
+    4. Updating `GrowBuffer` in arm, arm64, ia32, and x64 to use this helper.
+    5. Adding a check against `kMaximalBufferSize` in
+       `BaselineCompiler::AllocateBuffer` to prevent huge initial
+       allocations.
+
+R=victorgomes@chromium.org, junyan1@ibm.com
+BUG=
+LOG=N
+
+Change-Id: I12a42713627049add7c4b7e7b7ccb1b124d8e843
+Reviewed-on: https://chromium-review.googlesource.com/c/v8/v8/+/7796624
+Reviewed-by: Victor Gomes <victorgomes@chromium.org>
+Commit-Queue: Milad Farazmand <mfarazma@ibm.com>
+Cr-Commit-Position: refs/heads/main@{#106891}
+---
+ src/codegen/ppc/assembler-ppc.cc   | 5 +----
+ src/codegen/ppc/assembler-ppc.h    | 3 ---
+ src/codegen/s390/assembler-s390.cc | 5 +----
+ src/codegen/s390/assembler-s390.h  | 3 ---
+ 4 files changed, 2 insertions(+), 14 deletions(-)
+
+diff --git a/src/3rdparty/chromium/v8/src/codegen//ppc/assembler-ppc.cc b/src/3rdparty/chromium/v8/src/codegen//ppc/assembler-ppc.cc
+index d605e20715d5..4cdbf60a578d 100644
+--- a/src/3rdparty/chromium/v8/src/codegen//ppc/assembler-ppc.cc
++++ b/src/3rdparty/chromium/v8/src/codegen//ppc/assembler-ppc.cc
+@@ -2068,12 +2068,9 @@ void Assembler::GrowBuffer(int needed) {
+ 
+   // Compute new buffer size.
+   int old_size = buffer_->size();
+-  int new_size = std::min(2 * old_size, old_size + 1 * MB);
++  int new_size = ComputeNewBufferSize(BufferGrowthStrategy::kDoubleCapped1MB);
+   int space = buffer_space() + (new_size - old_size);
+   new_size += (space < needed) ? needed - space : 0;
+-
+-  // Some internal data structures overflow for very large buffers,
+-  // they must ensure that kMaximalBufferSize is not too large.
+   if (new_size > kMaximalBufferSize) {
+     V8::FatalProcessOutOfMemory(nullptr, "Assembler::GrowBuffer");
+   }
+diff --git a/src/3rdparty/chromium/v8/src/codegen//ppc/assembler-ppc.h b/src/3rdparty/chromium/v8/src/codegen//ppc/assembler-ppc.h
+index 2295c8a2c584..5d4178c1ab36 100644
+--- a/src/3rdparty/chromium/v8/src/codegen//ppc/assembler-ppc.h
++++ b/src/3rdparty/chromium/v8/src/codegen//ppc/assembler-ppc.h
+@@ -1443,9 +1443,6 @@ class Assembler : public AssemblerBase {
+   RelocInfoWriter reloc_info_writer;
+ 
+  private:
+-  // Avoid overflows for displacements etc.
+-  static const int kMaximalBufferSize = 512 * MB;
+-
+   // Repeated checking whether the trampoline pool should be emitted is rather
+   // expensive. By default we only check again once a number of instructions
+   // has been generated.
+diff --git a/src/3rdparty/chromium/v8/src/codegen//s390/assembler-s390.cc b/src/3rdparty/chromium/v8/src/codegen//s390/assembler-s390.cc
+index db51cd96c5f2..75d6fdefa442 100644
+--- a/src/3rdparty/chromium/v8/src/codegen//s390/assembler-s390.cc
++++ b/src/3rdparty/chromium/v8/src/codegen//s390/assembler-s390.cc
+@@ -773,12 +773,9 @@ void Assembler::GrowBuffer(int needed) {
+ 
+   // Compute new buffer size.
+   int old_size = buffer_->size();
+-  int new_size = std::min(2 * old_size, old_size + 1 * MB);
++  int new_size = ComputeNewBufferSize(BufferGrowthStrategy::kDoubleCapped1MB);
+   int space = buffer_space() + (new_size - old_size);
+   new_size += (space < needed) ? needed - space : 0;
+-
+-  // Some internal data structures overflow for very large buffers,
+-  // they must ensure that kMaximalBufferSize is not too large.
+   if (new_size > kMaximalBufferSize) {
+     V8::FatalProcessOutOfMemory(nullptr, "Assembler::GrowBuffer");
+   }
+diff --git a/src/3rdparty/chromium/v8/src/codegen//s390/assembler-s390.h b/src/3rdparty/chromium/v8/src/codegen//s390/assembler-s390.h
+index 5f4aca67ea5d..8cef29e287ee 100644
+--- a/src/3rdparty/chromium/v8/src/codegen//s390/assembler-s390.h
++++ b/src/3rdparty/chromium/v8/src/codegen//s390/assembler-s390.h
+@@ -1383,9 +1383,6 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
+   void RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data = 0);
+ 
+  private:
+-  // Avoid overflows for displacements etc.
+-  static const int kMaximalBufferSize = 512 * MB;
+-
+   // Relocation info generation
+   // Each relocation is encoded as a variable size value
+   static constexpr int kMaxRelocSize = RelocInfoWriter::kMaxSize;
