@@ -1,0 +1,4 @@
+[ngspice]
+source = "regex"
+url = "https://sourceforge.net/projects/ngspice/rss?path=/ng-spice-rework"
+regex = "ng-spice-rework\\/([\\d\\.]*)\\/"
