@@ -6,13 +6,36 @@
 # libdir=/usr/lib and includedir=/usr/include, and those silently resolve to the
 # *system* paths -- the dependency is "found", and then the compiler cannot find
 # the header. So rewrite every absolute directory variable, not just prefix.
+#
+# ...except when bq builds under the bwrap overlay, where the sysroot IS /usr.
+# There a .pc saying prefix=/usr already resolves to the staged files, and
+# pkg-config drops the resulting -I/usr/include by itself. Rewriting to the raw
+# sysroot path there does active harm: every pkg-config query answers with
+# -I<sysroot>/usr/include, which lands in generated Makefiles, gets baked into
+# the .pc and *-config scripts the package installs, and -- because a plain -I
+# is not a system directory -- promotes warnings inside glibc's own headers to
+# errors for anything built -pedantic -Werror. xmlsec died exactly there.
+#
+# PC_PREFIX=sysroot forces the rewrite, PC_PREFIX=usr undoes it; the default
+# follows whether bwrap actually works, which is the same test bq makes. Both
+# directions are idempotent, so flipping an already-staged sysroot is fine.
 set -uo pipefail
 SYSROOT=${1:-/home/jbettcher/omarchy-work/sysroot}
 
+if [ -z "${PC_PREFIX:-}" ]; then
+  if bwrap --dev-bind / / true >/dev/null 2>&1; then PC_PREFIX=usr
+  else PC_PREFIX=sysroot; fi
+fi
+
+_vars='prefix|exec_prefix|libdir|includedir|datarootdir|datadir|sharedstatedir|sysconfdir'
 for d in "$SYSROOT/usr/lib/pkgconfig" "$SYSROOT/usr/share/pkgconfig" "$SYSROOT/usr/lib/cmake"; do
   [ -d "$d" ] || continue
   find "$d" -name '*.pc' | while read -r pc; do
-    sed -i -E "s#^(prefix|exec_prefix|libdir|includedir|datarootdir|datadir|sharedstatedir|sysconfdir)=/usr(/|\$)#\1=$SYSROOT/usr\2#" "$pc"
+    if [ "$PC_PREFIX" = usr ]; then
+      sed -i -E "s#^($_vars)=$SYSROOT/usr(/|\$)#\1=/usr\2#" "$pc"
+    else
+      sed -i -E "s#^($_vars)=/usr(/|\$)#\1=$SYSROOT/usr\2#" "$pc"
+    fi
   done
 done
 

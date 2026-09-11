@@ -60,7 +60,11 @@ REPO = os.path.join(OMARCHY, "repo")
 # chromium/llvm/gcc -- pass --buildroot to put those on the NVMe instead.
 # Never $HOME: an earlier run left 25 GiB there.
 BUILDROOT = os.environ.get("BQ_BUILDROOT", "/tmp/omarchy-bq")
-STATE = os.path.join(OMARCHY, ".bq-state.json")
+# Concurrent bq runs (a side build alongside a long queue) otherwise share one
+# state file AND one temp path; the second os.replace() then fails with
+# FileNotFoundError because the first already renamed the temp away, killing
+# the run. BQ_STATE lets a side run isolate itself entirely.
+STATE = os.environ.get("BQ_STATE", os.path.join(OMARCHY, ".bq-state.json"))
 CARCH = "powerpc64le"
 
 sys.path.insert(0, TOOLS)
@@ -550,6 +554,12 @@ CLASSES = [
      "Shipped ELF records a build-tree path. Fix the recipe's rpath handling; "
      "do not ship it."),
 
+    ("pkg-pathguard",
+     r"pkg-pathguard: .* installs outside the standard roots",
+     "Package installs to an absolute sysroot path instead of $pkgdir -- a "
+     "build system took a directory from a .pc whose prefix still pointed at "
+     "the sysroot. Fix the recipe's DESTDIR/prefix handling; do not ship it."),
+
     ("test-failure",
      r"(FAILED tests|Tests failed|check\(\) failed|[0-9]+ of [0-9]+ tests failed)",
      "check() failed. Triage separately -- often endianness in a test fixture, "
@@ -587,7 +597,9 @@ def load_state():
 
 
 def save_state(st):
-    tmp = STATE + ".tmp"
+    # Per-pid temp: a shared ".tmp" makes concurrent runs race, and the loser
+    # dies on os.replace() of a file the winner already renamed.
+    tmp = "%s.tmp.%d" % (STATE, os.getpid())
     json.dump(st, open(tmp, "w"), indent=2, sort_keys=True)
     os.replace(tmp, STATE)
 
@@ -615,7 +627,9 @@ def write_makepkg_conf(path, pkgdest, srcdest, logdest):
             'LOGDEST="%s"\n'
             "# Drop debug packages for the mass rebuild: 1.75x the size of the\n"
             "# real packages, for symbols nobody is going to read.\n"
-            "OPTIONS=(${OPTIONS[@]/debug/!debug})\n"
+            "# makepkg takes the last occurrence, so appending is enough. Do not\n"
+            "# rewrite the array: ${OPTIONS[@]/debug/!debug} turns an existing\n"
+            "# !debug into !!debug and makepkg errors on every single build.\n"
             "OPTIONS+=(!debug)\n"
             % (pkgdest, srcdest, logdest))
 
@@ -636,10 +650,23 @@ def bwrap_prefix(sysroot):
     """
     if not shutil.which("bwrap") or not os.path.isdir(os.path.join(sysroot, "usr")):
         return []
-    return ["bwrap", "--dev-bind", "/", "/",
-            "--overlay-src", "/usr",
-            "--overlay-src", os.path.join(sysroot, "usr"),
-            "--ro-overlay", "/usr"]
+    cmd = ["bwrap", "--dev-bind", "/", "/",
+           "--overlay-src", "/usr",
+           "--overlay-src", os.path.join(sysroot, "usr"),
+           "--ro-overlay", "/usr"]
+    # The whole ROCm stack installs under /opt/rocm, not /usr, and every
+    # package in it finds the previous one by that absolute path (hsa-rocr
+    # runs /opt/rocm/lib/llvm/bin/clang, rocminfo and hip-runtime do
+    # find_package against /opt/rocm/lib/cmake).  sysroot-add extracts the
+    # staged opt/ tree just fine; without this second overlay it was simply
+    # never visible, and rocminfo would have linked the host's 6.2.4 hsa-rocr
+    # instead of the 7.2.4 built two queue entries earlier.  Same layering
+    # rule as /usr: live /opt below, staged /opt on top.
+    if os.path.isdir(os.path.join(sysroot, "opt")):
+        cmd += ["--overlay-src", "/opt",
+                "--overlay-src", os.path.join(sysroot, "opt"),
+                "--ro-overlay", "/opt"]
+    return cmd
 
 
 def build_env(sysroot, bwrapped):
@@ -648,20 +675,58 @@ def build_env(sysroot, bwrapped):
     su = os.path.join(sysroot, "usr")
     def pre(var, val):
         e[var] = val + (":" + e[var] if e.get(var) else "")
-    pre("PKG_CONFIG_PATH", "%s/lib/pkgconfig:%s/share/pkgconfig" % (su, su))
+    # Same split as CMAKE_PREFIX_PATH below. Under the overlay the staged .pc
+    # files are already at /usr/lib/pkgconfig, and pointing at the raw sysroot
+    # instead makes pkg-config answer every query with -I<sysroot>/usr/include
+    # and -L<sysroot>/usr/lib. Those land in the generated Makefiles, get baked
+    # into the .pc and *-config scripts a package installs, and -- because a
+    # plain -I is not a system directory -- turn warnings inside glibc's own
+    # headers into errors for anything built -pedantic -Werror (xmlsec).
+    pre("PKG_CONFIG_PATH",
+        "/usr/lib/pkgconfig:/usr/share/pkgconfig" if bwrapped
+        else "%s/lib/pkgconfig:%s/share/pkgconfig" % (su, su))
     # Under the overlay the sysroot is already visible at /usr, so listing /usr
     # first makes CMake return paths that are still correct after install.
     # Without the overlay we have no choice but to point at the sysroot, and
     # elf-pathguard is what catches it if one of those paths gets baked in.
     pre("CMAKE_PREFIX_PATH", "/usr:" + su if bwrapped else su)
-    pre("CPPFLAGS", "-I%s/include" % su)
-    pre("LDFLAGS", "-L%s/lib -Wl,-rpath-link,%s/lib" % (su, su))
-    pre("LIBRARY_PATH", "%s/lib" % su)
-    pre("C_INCLUDE_PATH", "%s/include" % su)
-    pre("CPLUS_INCLUDE_PATH", "%s/include" % su)
-    pre("LD_LIBRARY_PATH", "%s/lib" % su)
-    e["XDG_DATA_DIRS"] = "%s/share:/usr/share" % su
-    e["PATH"] = "%s/bin:%s" % (su, e["PATH"])
+    # Same reasoning as CMAKE_PREFIX_PATH above: under the overlay the sysroot
+    # IS /usr, so these are redundant -- and worse, they get baked into what
+    # gets shipped. perl records -Wl,-rpath-link,<sysroot>/lib as a RUNPATH on
+    # its DBM modules (elf-pathguard rejects the package), and configure-style
+    # scripts persist the -I: curl-config --configure and bash's
+    # /usr/lib/bash/Makefile.inc both echo CPPFLAGS=-I<sysroot>/include at
+    # runtime. Only set them when there is no overlay to make the sysroot
+    # visible.
+    if not bwrapped:
+        # -isystem, not -I: with -I the staged headers are ordinary user
+        # headers, so warnings inside them are reported and any package built
+        # -pedantic -Werror dies on glibc's own #include_next (xmlsec did).
+        # C_INCLUDE_PATH below is already -isystem semantics; this just stops
+        # the -I from overriding that.
+        pre("CPPFLAGS", "-isystem %s/include" % su)
+        # A .pc with a bare "Cflags: -I${includedir}" (libxslt has one) expands
+        # to -I<sysroot>/usr/include, and that plain -I outranks the -isystem
+        # above -- the staged headers go back to being user headers and any
+        # package built -pedantic -Werror dies inside glibc. These two vars are
+        # pkg-config's own mechanism for "this is a system dir, drop the flag";
+        # they default to /usr/include and /usr/lib, so name those too.
+        pre("PKG_CONFIG_SYSTEM_INCLUDE_PATH", "%s/include:/usr/include" % su)
+        pre("PKG_CONFIG_SYSTEM_LIBRARY_PATH", "%s/lib:/usr/lib" % su)
+        pre("LDFLAGS", "-L%s/lib -Wl,-rpath-link,%s/lib" % (su, su))
+        pre("LIBRARY_PATH", "%s/lib" % su)
+        pre("C_INCLUDE_PATH", "%s/include" % su)
+        pre("CPLUS_INCLUDE_PATH", "%s/include" % su)
+        pre("LD_LIBRARY_PATH", "%s/lib" % su)
+    # Under the overlay the sysroot IS /usr, and pointing at its raw path takes
+    # you back OUT of the merge. A "#!/usr/bin/env python3" script then resolves
+    # to <sysroot>/usr/bin/python3, whose sys.prefix is the sysroot, so its
+    # site-packages holds only staged packages -- no host setuptools, hence
+    # "No module named distutils" in g-ir-scanner and "No module named build"
+    # in yt-dlp, while the very same interpreter works fine as /usr/bin/python3.
+    if not bwrapped:
+        e["XDG_DATA_DIRS"] = "%s/share:/usr/share" % su
+        e["PATH"] = "%s/bin:%s" % (su, e["PATH"])
     e["ELF_PATHGUARD"] = os.path.join(TOOLS, "elf-pathguard.sh")
     # Inside bwrap's user namespace the real chown(uid 0) returns EINVAL
     # because the id is not mapped, and fakeroot propagates that instead of
@@ -874,6 +939,16 @@ def build_one(pkgbase, recipe_src, args, st):
     # though all three are packaged in Arch POWER.
     unstaged = stage_deps(pkgbase, work, sysroot, log)
 
+    # Recompute AFTER staging. bwrap_prefix() returns [] when <sysroot>/usr does
+    # not exist, and on a fresh buildroot stage_deps() is what creates it -- so
+    # the values computed above are from before the sysroot existed, and the
+    # FIRST package of every fresh buildroot would build with no overlay and the
+    # -I/-L fallback instead. That is why perl leaked a sysroot RUNPATH as a lone
+    # [1/1] and yt-dlp could not see its staged python modules as [1/2] while
+    # zbar got further as [2/2].
+    pre = bwrap_prefix(sysroot)
+    env = build_env(sysroot, bool(pre))
+
     cmd = pre + ["makepkg", "--config", conf, "-d", "--noconfirm",
                  "--needed", "--nocheck", "--log", "--skippgpcheck"]
     if args.force:
@@ -897,7 +972,17 @@ def build_one(pkgbase, recipe_src, args, st):
     # the package() snippet.  Enforced here it runs after makepkg has already
     # written the archive, so a rejection has to quarantine rather than merely
     # report.
-    guard = os.path.join(TOOLS, "elf-pathguard.sh")
+    # Two guards, same hook. elf-pathguard reads what is *inside* the files --
+    # ELF RUNPATHs, shebangs, the text of *-config scripts. pkg-pathguard reads
+    # *where the files are*, which is a different failure and was invisible for
+    # months: ten packages installed to an absolute sysroot path taken from a .pc
+    # file instead of $pkgdir. grim shipped /home/<user>/... , which makes
+    # pacstrap create the home directory, which makes the installer's later
+    # `useradd -m` decline to copy /etc/skel, which leaves a new account with no
+    # shell or desktop config and nothing anywhere reporting an error.
+    guards = [os.path.join(TOOLS, "elf-pathguard.sh"),
+              os.path.join(TOOLS, "pkg-pathguard.sh")]
+    guard = guards[0]
     pkgdirs = []
     pkgroot = os.path.join(work, "pkg")
     if os.path.isdir(pkgroot):
@@ -908,13 +993,30 @@ def build_one(pkgbase, recipe_src, args, st):
         except OSError as e:
             with open(log, "a") as fh:
                 fh.write("\nbq: cannot scan %s: %s\n" % (pkgroot, e))
-    if rc == 0 and os.access(guard, os.X_OK) and pkgdirs:
-        g = subprocess.run([guard] + pkgdirs, capture_output=True, text=True,
-                           timeout=1800)
-        with open(log, "a") as fh:
-            fh.write("\n--- elf-pathguard ---\n" + g.stdout + g.stderr)
-        if g.returncode != 0:
+    failed_guard = None
+    if rc == 0 and pkgdirs:
+        for _g in guards:
+            if not os.access(_g, os.X_OK):
+                continue
+            # SYSROOT is load-bearing for elf-pathguard: without it the guard
+            # cannot know which absolute path is the staging tree, so its
+            # content check silently does nothing. xorg-xwayland shipped
+            # "<sysroot>/usr/bin" as XKB_BIN_DIRECTORY and passed clean, and
+            # Xwayland aborted at startup on the installed system because that
+            # xkbcomp does not exist there.
+            g = subprocess.run([_g] + pkgdirs, capture_output=True, text=True,
+                               timeout=1800,
+                               env={**os.environ, "SYSROOT": sysroot,
+                                    "BUILDROOT": BUILDROOT})
+            with open(log, "a") as fh:
+                fh.write("\n--- %s ---\n" % os.path.basename(_g)
+                         + g.stdout + g.stderr)
+            if g.returncode != 0:
+                failed_guard = os.path.basename(_g)
+                break
+        if failed_guard:
             rc = 90
+            result["guard"] = failed_guard.replace(".sh", "")
             quarantine = os.path.join(BUILDROOT, "rejected")
             os.makedirs(quarantine, exist_ok=True)
             pl = subprocess.run(["makepkg", "--config", conf, "--packagelist"],
@@ -979,7 +1081,11 @@ def build_one(pkgbase, recipe_src, args, st):
             cls = "missing-dep"
             line = "not in Arch POWER and not yet built: " + " ".join(unstaged)
         if rc == 90:
-            cls, fix = "elf-pathguard", dict((c[0], c[2]) for c in CLASSES)["elf-pathguard"]
+            # Which guard rejected it is recorded on the result by build_one;
+            # falling back to elf-pathguard keeps older state files readable.
+            _g = result.get("guard", "elf-pathguard")
+            cls, fix = _g, dict((c[0], c[2]) for c in CLASSES).get(
+                _g, "A post-build guard rejected this package.")
         if rc == 124:
             cls, fix = "timeout", "Exceeded --timeout; re-run with a longer one."
         result.update(status="failed", rc=rc, **{"class": cls},
@@ -1248,8 +1354,10 @@ def main():
                         "rather than letting the build discover it")
     p.add_argument("--pkgdest", default=None,
                    help="where built packages go (default the Omarchy repo). "
-                        "/etc/makepkg.conf points PKGDEST at the Omarchy repo, "
-                        "so anything not part of that closure must set this.")
+                        "bq writes PKGDEST into its own generated makepkg.conf, "
+                        "so this does not depend on the system one -- and the "
+                        "system one should stay unset, or every hand-run makepkg "
+                        "and every yay AUR build lands in the repo too.")
     p.add_argument("--full-bootstrap", action="store_true")
     p.add_argument("--repo-db", default="omarchy-ppc64le.db.tar.zst",
                    help="repo database to add into; empty to skip repo-add")

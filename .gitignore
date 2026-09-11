@@ -26,3 +26,7 @@ installer/test/images/
 installer/test/logs/
 installer/test/run/
 installer/test/work/
+
+# bq state backups and Python bytecode.
+.bq-state.json.*
+__pycache__/

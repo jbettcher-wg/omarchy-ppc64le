@@ -19,8 +19,18 @@ mkdir -p "$SYSROOT" "$CACHE"
 
 rc=0
 for name in "$@"; do
-  urls=$(pacman -Sp --print-format '%l' "$name" 2>/dev/null) || {
-    echo "sysroot-fetch: cannot resolve $name"; rc=1; continue; }
+  # Keep pacman's reason. `-Sp` does a full dependency resolution, so this fails
+  # not only when a package is absent but when anything in its closure is
+  # unsatisfiable -- and the bare "cannot resolve" hides which. adios2 failed
+  # here for a whole vtk build because Arch POWER's mgard wants
+  # libprotobuf.so=34.1.0 while our repo ships protobuf 35; nothing in the log
+  # said so until pacman's stderr was read by hand.
+  _err=$(mktemp)
+  urls=$(pacman -Sp --print-format '%l' "$name" 2>"$_err") || {
+    echo "sysroot-fetch: cannot resolve $name"
+    sed 's/^/  /' "$_err" | grep -vE '^\s*$' | head -5
+    rm -f "$_err"; rc=1; continue; }
+  rm -f "$_err"
   for u in $urls; do
     f="$CACHE/$(basename "$u")"
     if [ ! -s "$f" ]; then

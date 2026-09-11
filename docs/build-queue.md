@@ -115,6 +115,77 @@ guard exists because `neovim` 0.12.5-1 shipped
 `DT_NEEDED [$SYSROOT/usr/lib/lua/5.1/lpeg.so]` and ran fine until someone would
 have deleted the sysroot.
 
+### The host half of the overlay is a dependency
+
+`/usr` is the *lower* layer, which means every build also sees whatever is
+installed on the build machine. That is deliberate — it is how the queue avoids
+staging a full toolchain — but it makes the host an undeclared build dependency,
+and the failure mode is delayed: a package builds on the machine that has the
+tool and fails on the one that does not, with an error that names neither.
+
+Rebuilding six packages on a fresh install produced six failures, all of them
+missing host tools and none of them a code problem:
+
+| missing on the host | what broke, and how it read |
+|---|---|
+| `qemu-system-ppc` | `systemd` — `qemu-system-ppc64 -device help` failed with status 127, from a probe in `test/integration-tests/meson.build` that the recipe's `-Dinstall-tests=true` pulls in |
+| `docbook-xsl`, `docbook-xml` | `libsecret`, `p11-kit`, `tinysparql` — `xsltproc` exit 5, or "Docbook stylesheet for manpages is missing" |
+| `python-setuptools` | `libgsf` — `g-ir-scanner` dies with `ModuleNotFoundError: No module named 'distutils'`. `giscanner/utils.py` imports `distutils.cygwinccompiler` unguarded at module level; python 3.12 removed `distutils`, and setuptools' `distutils-precedence.pth` is what makes the import resolve. **Without it every package that generates a `.gir` fails**, not just this one. |
+
+So install these before a mass rebuild:
+
+```sh
+sudo pacman -S --needed qemu-system-ppc docbook-xsl docbook-xml python-setuptools
+```
+
+`qemu-system-ppc` earns its place twice: `installer/test/run-guest.sh` needs it
+to boot the ISO under `-machine powernv9`.
+
+Two of these are worth reading as a warning about triage rather than a list to
+memorise. bq classified the `systemd` failure as `missing-dep` on the line
+`Program python3 found: NO (disabled by: bootloader)` and `p11-kit` on
+`Program castxml found: NO` — both are meson reporting a *disabled optional*
+lookup, several hundred lines above the actual error. The class was right by
+accident and the named dependency was wrong in both cases.
+
+### Version-locked component sets
+
+Some upstreams release several packages as one versioned set, and mixing
+versions within a set breaks in ways nothing checks for. The sonames match, so
+`tools/soname-gaps.py` sees nothing; the ABI is fine; the *semantics* diverge.
+
+The case that cost an evening: our repo carried
+
+    glslang        1:1.4.357.0     <- moved ahead
+    spirv-tools    1:1.4.350.0
+    spirv-headers  1:1.4.350.0
+
+`1.4.350.0` and `1.4.357.0` are **Vulkan SDK release tags**, and glslang,
+SPIRV-Tools and SPIRV-Headers ship together against them. glslang 357 emitted
+SPIR-V that SPIRV-Tools 350's `AggressiveDCEPass` walked with stale assumptions,
+and every Vulkan application that compiles shaders through shaderc segfaulted:
+
+    libSPIRV-Tools-opt.so
+      spvtools::opt::AggressiveDCEPass::AddOperandsToWorkList
+      <- Optimizer::Run <- libshaderc_shared.so.1 <- blender
+
+It presented as "Blender's Vulkan backend is broken on ppc64le". It was neither
+Blender nor ppc64le. Rebuilding all four in lockstep fixed it.
+
+Sets known to need this treatment here:
+
+| set | keep together |
+|---|---|
+| Vulkan SDK | `glslang`, `spirv-tools`, `spirv-headers`, `shaderc` |
+| Qt 6 | every `qt6-*` module at one version -- see `packages/qt6-base` |
+| Qt for Python | `pyside6` and `shiboken6` at the **same version as Qt**, generated from its headers |
+| ROCm | `rocm-llvm`, `comgr`, `rocm-device-libs`, `hsa-rocr`, `hip-runtime`, `rocminfo` -- they version-check each other at runtime |
+| VTK third-party | bundled `ioss` expects the bundled `fmt`; see `packages/vtk` |
+
+Before bumping one member of a set, bump them all in the same queue. Before
+concluding an application is broken on this platform, check whether we have
+split a set.
+
 ## Never in a checkout
 
 Recipes are **copied out** of their source tree into `$BUILDROOT/build/<pkgbase>`
@@ -202,3 +273,18 @@ bq build  [targets…] [-n N] [--force] [--retry-failed] [--fix-arch]
 bq status [-v]
 bq triage [-o out.md]
 ```
+
+### Rebuilding something already published
+
+Three flags, three different jobs: `--rebuild` re-queues a package bq has
+recorded as done, `--force` makes makepkg overwrite an existing archive, and
+`--retry-failed` re-queues one bq recorded as failed. A rebuild without
+`--rebuild` queues nothing ("0/N to build").
+
+And **bump pkgrel first.** pacman compares versions, not contents, so a
+package rebuilt at the same version replaces its file in `repo/`, but
+`pacman -Syu` never delivers it to a system that already has that version.
+`tools/repo-publish.sh --commit` refuses to publish a file that is newer than
+the db, has the same version as its db entry and a different sha256
+(`ALLOW_SAME_VERSION=1` overrides that, for a package nothing has installed
+yet).

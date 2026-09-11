@@ -51,6 +51,84 @@ for d in "${deps[@]}"; do
   else absent+=("$d"); fi
 done
 
+# Close over our own repo before staging.
+#
+# The list above is one level deep: it is whatever the PKGBUILD declares. That
+# is fine for anything the host already has at a compatible version, and wrong
+# for everything we rebuilt. hyprland declares re2; re2 declares abseil-cpp;
+# only re2 got staged, so libre2.so (built here against abseil lts_20260526)
+# was linked against the host's installed abseil 20260107 and every absl symbol
+# came up undefined.
+#
+# Only OUR packages need the walk. Arch POWER's packages are internally
+# consistent with each other and with the host, so their transitive deps can
+# keep resolving to the system copies; ours are the ones that can be newer than
+# what is installed.
+declare -A _staged=()
+for d in "${ours[@]}"; do _staged[$d]=1; done
+_frontier=("${ours[@]}")
+while [ ${#_frontier[@]} -gt 0 ]; do
+  _next=()
+  for d in "${_frontier[@]}"; do
+    pkgfile=$(ls -t "$REPOROOT/repo"/${d}-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
+    [ -n "$pkgfile" ] || continue
+    while read -r sub; do
+      sub=${sub%%[<>=]*}
+      [ -n "$sub" ] || continue
+      [ -n "${_staged[$sub]:-}" ] && continue
+      # Only follow it if we built it too; otherwise the system copy is right.
+      ls "$REPOROOT/repo"/${sub}-[0-9]*.pkg.tar.zst >/dev/null 2>&1 || continue
+      _staged[$sub]=1
+      ours+=("$sub")
+      _next+=("$sub")
+    done < <(bsdtar -xOf "$pkgfile" .PKGINFO 2>/dev/null |
+             sed -n 's/^depend = //p')
+  done
+  _frontier=("${_next[@]:-}")
+  [ -z "${_frontier[0]:-}" ] && break
+done
+
+# Close over the FETCHED packages too.
+#
+# The walk above deliberately skips Arch POWER packages, on the grounds that they
+# are consistent with each other and with the host. That is true only when the
+# host actually has them. A package we *fetch* is by definition not installed, so
+# its own dependencies are not guaranteed to be installed either, and nothing
+# stages them:
+#
+#   qt6-tools declares litehtml. litehtml is not installed, so it was fetched.
+#   litehtml needs gumbo-parser, which is not installed and was never fetched, so
+#   qt6-tools died at 560/708 with "cannot find -lgumbo".
+#
+# Walk what we fetch, and fetch anything it needs that the host does not already
+# provide. Installed packages still short-circuit, so this pulls in the handful
+# of genuinely absent libraries and not the whole base system.
+declare -A _fetched=()
+for d in "${want[@]}"; do _fetched[$d]=1; done
+_frontier=("${want[@]:-}")
+while [ -n "${_frontier[0]:-}" ]; do
+  _next=()
+  for d in "${_frontier[@]}"; do
+    while read -r sub; do
+      sub=${sub%%[<>=]*}
+      [ -n "$sub" ] && [ "$sub" != None ] || continue
+      [ -n "${_fetched[$sub]:-}" ] && continue
+      [ -n "${_staged[$sub]:-}" ] && continue
+      # ours wins, host is fine, otherwise fetch it
+      if ls "$REPOROOT/repo"/${sub}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; then
+        _staged[$sub]=1; ours+=("$sub"); continue
+      fi
+      pacman -Qq "$sub" >/dev/null 2>&1 && continue
+      pacman -Si "$sub" >/dev/null 2>&1 || continue
+      _fetched[$sub]=1
+      want+=("$sub")
+      _next+=("$sub")
+    done < <(pacman -Si "$d" 2>/dev/null |
+             sed -n 's/^Depends On *: //p' | tr ' ' '\n')
+  done
+  _frontier=("${_next[@]:-}")
+done
+
 # Ours last: a package we built deliberately (libde265 1.1.2) must land on top
 # of, not under, the Arch POWER copy of the same name.
 [ ${#want[@]} -gt 0 ] && "$here/sysroot-fetch.sh" "${want[@]}" | sed 's/^/  /'
