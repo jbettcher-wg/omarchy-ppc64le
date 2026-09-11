@@ -29,7 +29,7 @@
 pkgname=omarchy
 pkgver=4.0.2
 # pkgrel 2 marks this as locally modified: upstream's own build is 4.0.2-1.
-pkgrel=2
+pkgrel=3
 pkgdesc='Beautiful, modern, and opinionated Arch Linux by DHH (ppc64le: limine and update-guard removed)'
 arch=(any)
 url='https://github.com/basecamp/omarchy'
@@ -60,6 +60,12 @@ depends=(
   hyprland
   quickshell
   uwsm
+  # Every app binding goes through omarchy-launch-*, and 11 of those scripts
+  # exec `uwsm-app -- xdg-terminal-exec ...`. Upstream never declares it, so a
+  # system without it gets a Hyprland session where SUPER+RETURN and every other
+  # launch binding fail silently -- the compositor is fine, nothing starts, and
+  # there is no error anywhere the user will look.
+  xdg-terminal-exec
   sddm
   xdg-desktop-portal-hyprland
   wireplumber
@@ -153,4 +159,35 @@ package() {
   # ships no ELF at all, so the guard should report zero files -- which is
   # itself the assertion worth keeping, and costs nothing.
   "${ELF_PATHGUARD:-$startdir/../../tools/elf-pathguard.sh}" "$pkgdir"
+
+  # ppc64le: pin Claude Code to the last version that can run here.
+  #
+  # omarchy-default-agent installs coding agents through mise, and for claude it
+  # asks mise for the bare `claude` tool -- currently 2.1.263. Everything from
+  # 2.1.113 onward ships a prebuilt native binary per platform
+  # (@anthropic-ai/claude-code-{darwin,linux,win32}-{arm64,x64}[-musl], eight of
+  # them, none for ppc64le) and the npm package is just a wrapper that execs it.
+  # Installing one here gets:
+  #
+  #   Error: claude native binary not installed.
+  #
+  # 2.1.112 is the last pure-JavaScript release -- verified against the registry:
+  # 510 published versions, 2.1.113 is the first with those optionalDependencies.
+  # It runs on any Node, so it runs here.
+  #
+  # mise takes npm: specs, which is how upstream already handles grok and
+  # oh-my-pi, so this is their own extension point rather than a new mechanism.
+  sed -i \
+    's#^claude | claude-code) agent="claude"; name="Claude Code" ;;#claude | claude-code) agent="claude"; name="Claude Code"; agent_package="npm:@anthropic-ai/claude-code@2.1.112" ;;#' \
+    "${pkgdir}/usr/bin/omarchy-default-agent"
+  grep -q 'claude-code@2.1.112' "${pkgdir}/usr/bin/omarchy-default-agent" ||
+    { echo "omarchy: failed to pin claude-code; upstream changed the case line" >&2; return 1; }
+
+  # And give it a ripgrep it can find. The package vendors rg for
+  # {arm64,x64}-{linux,darwin} only and looks it up by process.arch, which is
+  # "ppc64" on little-endian POWER. The system ripgrep is a real one; point at it.
+  sed -i \
+    's#^mkdir -p "\$(dirname "\$agent_file")"#if [[ $agent == claude ]]; then\n  _cc=$(mise where "$agent_package" 2>/dev/null) \&\& [[ -d $_cc/vendor/ripgrep ]] \&\&\n    mkdir -p "$_cc/vendor/ripgrep/ppc64-linux" \&\&\n    ln -sf "$(command -v rg)" "$_cc/vendor/ripgrep/ppc64-linux/rg"\nfi\nmkdir -p "$(dirname "$agent_file")"#' \
+    "${pkgdir}/usr/bin/omarchy-default-agent"
+
 }
