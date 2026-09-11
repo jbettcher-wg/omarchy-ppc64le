@@ -16,8 +16,11 @@ while Arch POWER now ships ffmpeg 9 (`libavcodec.so.63`), so it does not
 start on a current Arch POWER system either.
 
 Recipe base: Arch POWER's PKGBUILD (which is Arch's plus the arch gate), then
-the deviations below. Patches: `ffmpeg-9.patch` (Arch's), `cycles-vsx.patch`
-and `oidn-ppc64le-supported.patch` (ours; headers explain each hunk).
+the deviations below. Patches: `ffmpeg-9.patch` (Arch's), `cycles-vsx.patch`,
+`oidn-ppc64le-supported.patch` and `cycles-power-cpu-name.patch` (ours;
+headers explain each hunk). The last one is cosmetic: Cycles read the CPU
+name from cpuinfo's `model name`, which POWER lacks, and listed "Unknown CPU";
+the Cycles device list now shows `IBM POWER9 (VSX)` `[MEASURED]`.
 
 ## What is and is not accelerated
 
@@ -207,7 +210,17 @@ denoiser='OPENIMAGEDENOISE'` logs `Loading denoising kernels`, no error, and
 the denoised frame is 10.7 dB closer to the 1225-sample reference than the
 noisy 32-sample frame (PSNR 39.3 dB vs 28.6 dB).
 
-**Timing: not measured.** Every render above ran while two other package
+**Timing, shipped package, idle box** `[MEASURED]` 2026-09-11: the installed
+`blender 17:5.1.0-4` (native VSX kernel, `CPU device capabilities: VSX`),
+`bmw27_cpu.blend` unchanged, `-- --cycles-device CPU`, threads auto (176),
+first run started at load 0.37, three back-to-back runs:
+
+    Time: 01:13.30   01:13.10   01:13.63      (wall 74.3 / 74.1 / 74.6 s)
+
+That is the headline number. The A/B/C/N comparison below is still open; it
+would say how much of the 73 s the kernel choice is worth.
+
+**Timing during the parity runs: discarded.** Every render above ran while two other package
 queues (rocm-llvm, thunderbird) held the machine at load 84-490 on 176
 threads; the wall-clock and per-kernel CPU times that came out were
 discarded, not averaged. Cycles' own profile did show where the time goes

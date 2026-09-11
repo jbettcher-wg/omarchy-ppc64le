@@ -1,0 +1,59 @@
+Cycles: name POWER CPUs instead of "Unknown CPU", with the kernel's SIMD
+
+system_cpu_brand_string() reads "model name" from /proc/cpuinfo, which POWER
+does not have -- the processor is the "cpu" field ("POWER9, altivec
+supported") -- so Preferences > System > Cycles Render Devices listed the CPU
+as "Unknown CPU".  Read that field on powerpc and keep the part before the
+comma ("IBM POWER9").
+
+On powerpc64 the Cycles kernel is a build-time choice (cycles-vsx.patch:
+native VSX, SSE4.2 through the compat headers, or scalar), and
+device_cpu_capabilities() already names it, so append it: "IBM POWER9 (VSX)".
+Upstreamable in part: the cpuinfo fallback is a plain portability fix; the
+suffix only makes sense with cycles-vsx.patch.
+
+diff -ruN a/intern/cycles/device/cpu/device.cpp b/intern/cycles/device/cpu/device.cpp
+--- a/intern/cycles/device/cpu/device.cpp	2026-09-11 10:26:39.845452507 -0600
++++ b/intern/cycles/device/cpu/device.cpp	2026-09-11 10:26:39.864202141 -0600
+@@ -28,6 +28,14 @@
+ 
+   info.type = DEVICE_CPU;
+   info.description = system_cpu_brand_string();
++#if defined(__powerpc64__)
++  /* The kernel's SIMD width is a build-time choice here (native VSX, SSE4.2
++   * through the compat headers, or scalar), so name it with the CPU:
++   * "IBM POWER9 (VSX)". */
++  if (!device_cpu_capabilities().empty()) {
++    info.description += " (" + device_cpu_capabilities() + ")";
++  }
++#endif
+   info.id = "CPU";
+   info.num = 0;
+   info.has_osl = true;
+diff -ruN a/intern/cycles/util/system.cpp b/intern/cycles/util/system.cpp
+--- a/intern/cycles/util/system.cpp	2026-09-11 10:26:39.843452588 -0600
++++ b/intern/cycles/util/system.cpp	2026-09-11 10:26:39.863929469 -0600
+@@ -123,6 +123,23 @@
+         }
+       }
+     }
++#  if defined(__powerpc__) || defined(__powerpc64__)
++    /* POWER has no "model name"; the processor is the "cpu" field, e.g.
++     * "cpu\t\t: POWER9, altivec supported" (a KVM guest adds " (architected)").
++     * Keep the part before the comma. */
++    char *cpu = strstr(cpuinfo_buf, "\ncpu");
++    if (cpu != nullptr) {
++      cpu = strchr(cpu, ':');
++      if (cpu != nullptr) {
++        cpu += 2;
++        const size_t len = strcspn(cpu, ",\n");
++        if (len > 0) {
++          const string name(cpu, len);
++          return (name.compare(0, 5, "POWER") == 0) ? "IBM " + name : name;
++        }
++      }
++    }
++#  endif
+   }
+ #endif
+   return "Unknown CPU";
