@@ -3,11 +3,14 @@
 `power9-toggle.patch` applies to the chromium PKGBUILD that Arch POWER ships
 (`~/Development/repo/archpower/chromium/PKGBUILD`, jbettcher's own work) and
 adds a single `_power8_compat` switch, so one recipe produces both artifacts
-instead of two divergent forks:
+instead of two divergent forks. **The default in this tree is `0` (POWER9)** --
+this tree only targets POWER9 hardware, and the POWER8-legal build is already
+carried upstream, so defaulting to the compat build only risks shipping it by
+forgetting a flag. An upstream submission must pass `_power8_compat=1`:
 
 ```sh
-makepkg -e                       # POWER8-legal (default) -- what goes upstream
-_power8_compat=0 makepkg -e      # POWER9 / ISA 3.0 -- what runs on the AC922
+makepkg -e                       # POWER9 / ISA 3.0 (default here) -- runs on the AC922
+_power8_compat=1 makepkg -e      # POWER8-legal -- what goes upstream
 ```
 
 The policy it implements: **source stays POWER8-compliant either way.** No
@@ -62,7 +65,7 @@ attribute anywhere.
 
 **Do `baseline-isa-3-0` and `Force-baseline-POWER8` conflict?** Not in
 practice -- `baseline-isa-3-0` is commented out of the series and never
-applied, so the POWER8 forcing wins by default. They touch overlapping files
+applied, so the POWER8 forcing is what the series alone would give you. They touch overlapping files
 (`v8/BUILD.gn`, `third_party/libvpx/BUILD.gn`), so the toggle applies exactly
 one of them, never both.
 

@@ -1,10 +1,15 @@
 # Adds a _power8_compat toggle to the ppc64le chromium PKGBUILD so one recipe
-# builds both artifacts: the POWER8-legal package submitted to Arch POWER's
-# multi-architecture repo (_power8_compat=1, the default) and a POWER9 / ISA 3.0
-# package for POWER9 hardware (_power8_compat=0).
+# builds both artifacts: a POWER9 / ISA 3.0 package for POWER9 hardware
+# (_power8_compat=0, the default here) and the POWER8-legal package for Arch
+# POWER's multi-architecture repo (_power8_compat=1).
+#
+# The default is 0 because this tree targets POWER9 hardware only and the
+# POWER8-legal build is already carried upstream -- defaulting to 1 here just
+# means silently shipping the compat build by forgetting a flag.
 #
 # LOCAL BUILD-CONFIGURATION CHANGE, not upstreamable as-is: Arch POWER's repo
-# wants the POWER8-legal default, which the default preserves. The parts that
+# wants the POWER8-legal default, so an upstream submission must flip this back
+# to 1 (or pass it explicitly). The parts that
 # ARE worth sending upstream are the two bugs it fixes, both of which make the
 # shipped "POWER8-legal" recipe emit ISA 3.0 in practice:
 #
@@ -19,30 +24,31 @@
 # written into any source file.
 #
 # Apply with: patch -p0 -i power9-toggle.patch PKGBUILD
---- PKGBUILD	2026-09-05 22:25:27.002049628 -0600
-+++ PKGBUILD.new	2026-09-05 22:25:27.026853588 -0600
-@@ -11,6 +11,20 @@
+--- PKGBUILD
++++ PKGBUILD.new
+@@ -11,6 +11,21 @@
  _launcher_ver=8
  _manual_clone=0
  _system_clang=1
 +
 +# ppc64le ISA level.
++#   0 = POWER9 (ISA 3.0). THE DEFAULT IN THIS TREE. Drops the POWER8 forcing
++#       patch so third-party code takes its POWER9 paths, and lets
++#       -mcpu=power9 stand.
 +#   1 = POWER8-legal (ISA 2.07). The floor Arch POWER's multi-architecture
-+#       repo needs; this is what gets submitted upstream.
-+#   0 = POWER9 (ISA 3.0). Drops the POWER8 forcing patch so third-party code
-+#       takes its POWER9 paths, and lets -mcpu=power9 stand.
++#       repo needs; pass this explicitly when building for upstream.
 +#
 +# Source stays POWER8-compliant either way: no POWER9-only instruction is
 +# written into any source file. The difference is compiler flags and which
 +# build-system feature gates get set -- the LuaJIT model, POWER8 ISA floor
 +# with ISA 3.0 paths selected at build/runtime rather than hardcoded.
 +#
-+# Override per build:  _power8_compat=0 makepkg -e
-+_power8_compat=${_power8_compat:-1}
++# Override per build:  _power8_compat=1 makepkg -e   (POWER8-legal artifact)
++_power8_compat=${_power8_compat:-0}
  pkgdesc="A web browser built for speed, simplicity, and security"
  arch=('x86_64' 'powerpc64le')
  url="https://www.chromium.org/Home"
-@@ -285,9 +299,35 @@
+@@ -285,9 +300,35 @@
      while IFS= read -r _p; do
        [[ -z $_p || $_p == \#* ]] && continue
        [[ $_p == ppc64le/* ]] || continue
@@ -78,7 +84,7 @@
    fi
  
    # Link to system tools required by the build. Go lives under a CIPD-arch
-@@ -455,6 +495,25 @@
+@@ -455,6 +496,25 @@
      CXXFLAGS="${CXXFLAGS/-march=*([^ ]) }"
    fi
  

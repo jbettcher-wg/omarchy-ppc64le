@@ -16,20 +16,20 @@
 -- This file is architecture-neutral: on x86_64 it only means the system
 -- packages win over mason's copies, which is the behaviour a distribution
 -- package should have anyway.
+-- Emptying ensure_installed is NOT enough, which is what this file used to do.
+-- It stops mason's own bootstrap list, but LazyVim and mason-lspconfig still ask
+-- mason to install a server the moment one is configured and mason cannot see it
+-- locally -- so opening a Lua file produces:
+--
+--   Installation failed for Package(name=lua-language-server)
+--   error="The current platform is unsupported."
+--
+-- and it repeats on every buffer. There is no configuration of mason that makes
+-- it work here, because the registry has no ppc64le assets to serve; the only
+-- correct state is off. LazyVim guards its mason integration behind
+-- pcall(require, "mason-lspconfig"), so disabling both is supported and lspconfig
+-- falls through to servers already on $PATH -- which is where ours live.
 return {
-  {
-    "mason-org/mason.nvim",
-    optional = true,
-    opts = function(_, opts)
-      opts.ensure_installed = {}
-    end,
-  },
-  {
-    "mason-org/mason-lspconfig.nvim",
-    optional = true,
-    opts = function(_, opts)
-      opts.ensure_installed = {}
-      opts.automatic_installation = false
-    end,
-  },
+  { "mason-org/mason.nvim", optional = true, enabled = false },
+  { "mason-org/mason-lspconfig.nvim", optional = true, enabled = false },
 }

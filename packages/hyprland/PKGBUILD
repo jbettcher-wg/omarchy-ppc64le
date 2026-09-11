@@ -12,7 +12,14 @@ pkgdesc='a highly customizable dynamic tiling Wayland compositor'
 arch=(x86_64 aarch64 powerpc64le)
 url="https://github.com/hyprwm/${pkgname^}"
 license=(BSD-3-Clause)
-depends=(cairo # libcairo.so
+# numactl/libnuma is NOT in upstream's depends. It is a real link-time
+# dependency here: something in the chain detects libnuma when it is present in
+# the build root and links it, and it is present because it is a dependency of
+# other things we build. Undeclared, it takes the whole desktop down -- sddm
+# runs Hyprland as the greeter's compositor, so "cannot open libnuma.so.1"
+# means no greeter, no login, and an sddm restart loop with no obvious cause.
+depends=(numactl libnuma.so
+         cairo # libcairo.so
          aquamarine libaquamarine.so
          libgcc # libgcc_s.so
          'libstdc++' # libstdc++.so

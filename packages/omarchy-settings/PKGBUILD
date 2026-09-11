@@ -127,8 +127,15 @@ package() {
   # /etc/mkinitcpio.conf alone.
   #
   # Local workaround, not upstreamable: the drop-in is correct for x86 Omarchy.
-  rm -f "${pkgdir}/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
-  rmdir --ignore-fail-on-non-empty "${pkgdir}/etc/mkinitcpio.conf.d" 2>/dev/null || true
+  # Take the whole directory, not just omarchy_hooks.conf. Upstream also ships
+  # thunderbolt_module.conf, which is MODULES=(thunderbolt) -- there is no
+  # Thunderbolt on POWER9 and no such module in our kernel, so mkinitcpio exits
+  # non-zero, p9-install treats that as fatal, and the install aborts before it
+  # writes a boot entry. That cost a full install run to find. Removing only the
+  # drop-in we happened to know about is what let the second one through, so
+  # remove the directory and let the installer's own omarchy-p9-hooks.conf be
+  # the only thing in it.
+  rm -rf "${pkgdir}/etc/mkinitcpio.conf.d"
 
   # Remove the limine boot-entry configuration.
   #

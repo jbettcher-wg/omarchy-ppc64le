@@ -21,7 +21,7 @@
 
 pkgname=omarchy-nvim
 pkgver=2026.8.13
-pkgrel=2
+pkgrel=3
 pkgdesc='Pre-built LazyVim configuration with cached plugins (native tools, no mason downloads)'
 arch=(any)
 url='https://github.com/LazyVim/LazyVim'

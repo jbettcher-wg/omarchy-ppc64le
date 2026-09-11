@@ -1,5 +1,17 @@
-# ppc64le: unchanged from Arch upstream. arch=any JavaScript; needs only a
-# working node, which Arch POWER has.
+# ppc64le: arch=any JavaScript; needs only a working node, which Arch POWER
+# has, plus the pnpm this repo now builds. One change from Arch upstream: the
+# node_modules prune in package() is gone. It was not an architecture problem --
+#
+#   npm error Cannot read properties of null (reading 'edgesOut')
+#   at #loadPeerSet (.../arborist/lib/arborist/build-ideal-tree.js:1300:38)
+#
+# npm 11.4.1's arborist crashes building the peer-dependency graph for this
+# project's devDependencies, and it does so before --omit=dev can spare it the
+# work. The step was dead weight regardless: this package.json declares no
+# runtime `dependencies` at all -- rollup bundles everything into lib/cli.mjs,
+# whose only imports are node builtins -- and package() copies just lib and
+# package.json, never node_modules. So the prune reinstalled nothing into a
+# directory that was never shipped.
 #
 # Maintainer: Daniel M. Capella <polyzen@archlinux.org>
 
@@ -17,7 +29,6 @@ depends=(typescript)
 makedepends=(
   git
   jq
-  npm
   pnpm
 )
 source=("git+$url.git#tag=v$pkgver")
@@ -45,12 +56,6 @@ package() {
   ln -s $mod_dir/lib/cli.mjs "$pkgdir"/usr/bin/$pkgname
 
   cd $pkgname
-  # Prune unnecessary packages
-  cp package.json{,.bak}
-  rm -r node_modules
-  npm install --omit=dev --ignore-scripts
-  mv package.json{.bak,}
-
   cp -r lib package.json "$pkgdir"/$mod_dir
   chmod +x "$pkgdir"/$mod_dir/lib/cli.mjs
   install -Dm644 -t "$pkgdir"/usr/share/doc/$pkgname {CHANGELOG,README}.md

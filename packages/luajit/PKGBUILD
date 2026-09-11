@@ -21,7 +21,7 @@
 pkgname=luajit
 _srcdir=luajit-ppc64le
 _branch=ppc64le-modern
-pkgver=2.1.1788628050
+pkgver=2.1.1788641781
 pkgrel=1
 pkgdesc='Just-in-time compiler and drop-in replacement for Lua 5.1 (ppc64le JIT backend)'
 arch=(powerpc64le)
@@ -38,18 +38,9 @@ provides=(libluajit-5.1.so)
 # file) the build silently emits a binary that references
 # luaJIT_version_2_1_ROLLING and dies at startup with an undefined symbol.
 source=("${_srcdir}::git+file:///home/jbettcher/Development/luajit-ppc64le#branch=${_branch}"
-        0001-PPC64-save-CR-in-callers-save-word.patch
         nvcr-probe.c)
 sha256sums=('SKIP'
-            'SKIP'
             'SKIP')
-
-prepare() {
-  cd "${_srcdir}"
-  # ELFv2 CR save-slot fix; see the patch header.  Drop this once it is
-  # committed on ${_branch}.
-  patch -p1 -i "${srcdir}/0001-PPC64-save-CR-in-callers-save-word.patch"
-}
 
 pkgver() {
   cd "${_srcdir}"
@@ -125,7 +116,7 @@ check() {
   # caches `flags & DOCMD_EXCRESET` in CR3 across thousands of instructions.
   # A Lua-only test suite cannot see a CR clobber, so this probe calls into
   # the VM from C and checks the fields afterwards.  It is the regression
-  # test for 0001-PPC64-save-CR-in-callers-save-word.patch.
+  # test for the ELFv2 CR save-slot fix (committed as 17567257).
   gcc $CFLAGS -o "$srcdir/nvcr-probe" "$srcdir/nvcr-probe.c" \
     -I. -L. -lluajit-5.1 -lm
   LD_LIBRARY_PATH="$srcdir/ljcheck" "$srcdir/nvcr-probe"
