@@ -42,6 +42,22 @@ what `p9-petitboot-entry` writes boot entries for.
 **`PACMAN_EXTRAPACKAGES`** drops the default `debug` split — vmlinux with full
 symbols, large and not wanted on an install medium.
 
+## Config changes that are not obvious from the AC922
+
+- **`CONFIG_HSA_AMD=y`** (build 17+): `/dev/kfd`, which ROCm needs for GPU
+  compute and btop needs for GPU stats. After editing `.config` by hand,
+  run `make olddefconfig` (or `touch .config && make syncconfig`). A stale
+  `include/config/auto.conf` otherwise silently builds the old option set,
+  which is how builds 14 and 16 shipped without HSA despite the edit.
+- **VM guest drivers, as modules** (build 18): `DRM_VIRTIO_GPU`, `DRM_BOCHS`
+  (QEMU's standard VGA), `DRM_OFDRM` (the SLOF framebuffer on pseries),
+  `VIRTIO_INPUT`, `HW_RANDOM_VIRTIO`. The config already had pseries,
+  `HVC_CONSOLE` and virtio block/net/SCSI, so a pseries KVM guest booted but
+  had no display device at all: serial only, and Hyprland could not start.
+  These are for running this distro as a guest on the second AC922, and they
+  do nothing on bare metal. `.config.pre-vmdrm-*` in the tree is the config
+  before this change.
+
 ## Note on `btrfs`
 
 This config has `CONFIG_BTRFS_FS=y`, so there is no `btrfs.ko` in the package and
