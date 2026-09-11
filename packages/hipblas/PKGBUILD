@@ -1,0 +1,55 @@
+# Maintainer: Torsten Keßler <tpkessler at archlinux dot org>
+# Maintainer: Christian Heusel <gromit@archlinux.org>
+# Contributor: Markus Näther <naether.markus@gmail.com>
+
+pkgname=hipblas
+pkgver=7.2.4
+pkgrel=1
+pkgdesc='ROCm BLAS marshalling library'
+arch=('x86_64' 'powerpc64le')  # ppc64le: see README.md
+url='https://rocm.docs.amd.com/projects/hipBLAS/en/latest/index.html'
+license=('MIT')
+# ppc64le: no rocsolver (BUILD_WITH_SOLVER=OFF below), see README.md.
+depends=(
+    'glibc'
+    'hip-runtime-amd'
+    'hipblas-common'
+    'libgcc'
+    'rocblas'
+    'rocm-core'
+)
+makedepends=('rocm-cmake' 'git' 'cmake' 'gcc-fortran')
+_git='https://github.com/ROCm/rocm-libraries'
+source=("rocm-libraries::git+$_git.git#tag=rocm-$pkgver")
+sha256sums=('b476acbcd0f4017c800e4b05533e6dfb875bde32242729c8df557d4624379623')
+_dirname="rocm-libraries/projects/$pkgname"
+
+build() {
+  # What an installed rocm-core exports from /etc/profile.d/rocm.sh.  Without
+  # it hipcc's clang deduces the ROCm root as /opt/rocm/lib and cannot find
+  # hip/hip_runtime.h (see ../rocm-llvm/README.md); bq runs in a non-login
+  # environment, so set it here.
+  export ROCM_PATH=/opt/rocm
+  # -fcf-protection is not supported by HIP, see
+  # https://rocm.docs.amd.com/projects/llvm-project/en/latest/reference/rocmcc.html#support-status-of-other-clang-options
+  local cmake_args=(
+    -Wno-dev
+    -S "$_dirname"
+    -B build
+    -D CMAKE_BUILD_TYPE=None
+    -D CMAKE_CXX_COMPILER=/opt/rocm/bin/hipcc
+    -D CMAKE_CXX_FLAGS="${CXXFLAGS} -fcf-protection=none"
+    # ppc64le: hipBLAS's LAPACK-style entry points (getrf, getrs, ...)
+    # marshal to rocSOLVER, which needs rocSPARSE; neither exists for
+    # ppc64le and llama.cpp uses only the BLAS half.  README.md.
+    -D BUILD_WITH_SOLVER=OFF
+  )
+  cmake "${cmake_args[@]}"
+  cmake --build build
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+
+  install -Dm644 "$_dirname/LICENSE.md" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

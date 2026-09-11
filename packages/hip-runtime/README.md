@@ -15,9 +15,38 @@ The HIP host runtime (`libamdhip64.so`, built from CLR = rocclr + hipamd),
   `hip-runtime-hipcc::`. makepkg keys its SRCDEST mirror on that name, and
   Arch's name would clone the 4.5 GiB ROCm llvm-project a second time; this
   reuses the mirror `rocm-llvm` already made. Same URL, same tag.
-- `prepare()` applies `0001-clr-ppc64le-arch-fences-and-spin-hint.patch`.
+- `prepare()` applies `0001-clr-ppc64le-arch-fences-and-spin-hint.patch`
+  and `0002-clr-char-vectors-signed-on-unsigned-char-hosts.patch`.
 
-## The patch
+## Patch 0002: `char4` is unsigned on a POWER host
+
+CUDA's `vector_types.h` declares `char1`..`char4` with `signed char`
+members; HIP builds them from plain `char`
+(`__MAKE_VECTOR_TYPE__(char, char)` in `amd_hip_vector_types.h`). Plain
+char is unsigned on ppc64le, and the device pass inherits the host's
+signedness (`-fno-signed-char` on the `-triple amdgcn -aux-triple
+powerpc64le` cc1 line), so `char4` was four unsigned bytes on the GPU too.
+CUDA-ported code that stores a negative value into a member gets a
+float->unsigned conversion, which AMDGPU clamps to 0.
+
+Found through llama.cpp: `quantize_mmq_q8_1` does `char4 q; q.x =
+roundf(...)`, so every quantized matmul with more than 8 columns (the MMQ
+path; MMVQ uses `int8_t` and was fine) lost all negative activations.
+Qwen3-8B generated at full speed on the GPU and produced garbage;
+`test-backend-ops -o MUL_MAT` failed 178 of 1,021 cases, every one a
+quantized type with n >= 16. With the patched headers (tested as an overlay
+before rebuilding this package) it fails 13, all `iq1_s` -- a separate
+issue that `-fsigned-char` does not fix either.
+
+The patch is conditional on `__CHAR_UNSIGNED__`, so x86 keeps `char4`'s
+type identity and mangling byte-for-byte. `math_fwd.h`'s `__ockl_sdot4`
+declaration takes `char4`'s native vector and follows it; it is `extern
+"C"` and ockl takes `<4 x i8>`, so nothing changes below the declaration.
+
+Anything compiled against the 7.2.4-1 headers that uses `char1`..`char4`
+keeps the old behaviour until rebuilt; llama.cpp-hip is the one known user.
+
+## Patch 0001
 
 `rocclr/include/top.hpp` classifies the host as `ATI_ARCH_ARM` or
 `ATI_ARCH_X86` and defines nothing otherwise. Mostly that is silent --

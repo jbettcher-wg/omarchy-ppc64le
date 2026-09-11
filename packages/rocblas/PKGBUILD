@@ -1,0 +1,127 @@
+# Maintainer: Torsten Keßler <tpkessler at archlinux dot org>
+# Maintainer: Christian Heusel <christian@heusel.eu>
+# Contributor: Markus Näther <naether.markus@gmail.com>
+# Contributor: Lubosz Sarnecki <lubosz@gmail.com>
+
+pkgname=rocblas
+pkgver=7.2.4
+pkgrel=3
+pkgdesc='Next generation BLAS implementation for ROCm platform'
+arch=('x86_64' 'powerpc64le')  # ppc64le: see README.md
+url='https://rocm.docs.amd.com/projects/rocBLAS/en/latest/index.html'
+license=('MIT')
+# ppc64le: no cblas/roctracer -- both are for the clients (rocblas-bench,
+# rocblas-test), which are not built here.  See README.md.
+depends=(
+  'glibc'
+  'hip-runtime-amd'
+  'libgcc'
+  'openmp'
+  'rocm-core'
+)
+# ppc64le: python-tensile, rocm-toolchain, rocm-smi-lib and gtest dropped --
+# Tensile comes from the in-tree shared/tensile via BUILD_WITH_PIP=OFF,
+# rocm-supported-gfx is replaced by an explicit GPU_TARGETS, and the last
+# two are client-only.  python-pyyaml, not python-pyaml: Tensile imports
+# `yaml` (PyYAML); pyaml is a different project.
+makedepends=(
+  'cmake'
+  'ninja'
+  'gcc-fortran'
+  'git'
+  'msgpack-cxx'
+  'perl-file-which'
+  'python'
+  'python-joblib'
+  'python-msgpack'
+  'python-pyyaml'
+  'python-virtualenv'
+  'python-wheel'
+  'python-setuptools'
+  'rocm-cmake'
+  'rocm-llvm'
+)
+source=("rocm-libraries::git+https://github.com/ROCm/rocm-libraries#tag=rocm-$pkgver")
+sha256sums=('b476acbcd0f4017c800e4b05533e6dfb875bde32242729c8df557d4624379623')
+options=(!strip)
+_dirname="rocm-libraries/projects/$pkgname"
+_tensile_dir="rocm-libraries/shared/tensile"
+
+prepare() {
+  cd ${_dirname}
+  # Add support for gfx103X
+  git cherry-pick -n 43a79e3aee2319377f2e69fe943b52a0c29215e8
+
+  # Add support for gfx115X
+  git cherry-pick -n 7bc1152aeaeaf9b6c0c7d3450be3d8afc571503b
+}
+
+build() {
+  # What an installed rocm-core exports from /etc/profile.d/rocm.sh.  Without
+  # it hipcc's clang deduces the ROCm root as /opt/rocm/lib and cannot find
+  # hip/hip_runtime.h (see ../rocm-llvm/README.md); bq runs in a non-login
+  # environment, so set it here.
+  export ROCM_PATH=/opt/rocm
+
+  export PYTHONPATH="$srcdir/$_tensile_dir${PYTHONPATH:+:$PYTHONPATH}"
+
+  # Compile source code for supported GPU archs in parallel
+  export HIPCC_COMPILE_FLAGS_APPEND="-parallel-jobs=$(nproc)"
+  export HIPCC_LINK_FLAGS_APPEND="-parallel-jobs=$(nproc)"
+
+  # Reduce massive spam in log files
+  CXXFLAGS+=" -Wno-unused"
+
+  # -fcf-protection is not supported by HIP, see
+  # https://rocm.docs.amd.com/projects/llvm-project/en/latest/reference/rocmcc.html#support-status-of-other-clang-options
+  local cmake_args=(
+    -Wno-dev
+    -S "$_dirname"
+    -B build
+    -G Ninja
+    -D CMAKE_BUILD_TYPE=RelWithDebInfo
+    -D CMAKE_C_COMPILER=/opt/rocm/lib/llvm/bin/amdclang
+    -D CMAKE_CXX_COMPILER=/opt/rocm/lib/llvm/bin/amdclang++
+    -D CMAKE_TOOLCHAIN_FILE=toolchain-linux.cmake
+    -D CMAKE_CXX_FLAGS="${CXXFLAGS} -fcf-protection=none"
+    -D CMAKE_INSTALL_PREFIX=/opt/rocm
+    -D CMAKE_PREFIX_PATH=/opt/rocm/llvm/lib/cmake/llvm
+    -D amd_comgr_DIR=/opt/rocm/lib/cmake/amd_comgr
+    # ppc64le: no clients.  rocblas-bench / rocblas-gemm-tune pull in
+    # roctracer, gtest, cblas and rocm-smi-lib, none of which anything on the
+    # HIP path needs, and roctracer does not exist for ppc64le yet.
+    -D BUILD_CLIENTS_BENCHMARKS=OFF
+    -D BUILD_CLIENTS_TESTS=OFF
+    -D BUILD_CLIENTS_SAMPLES=OFF
+    -D HIP_PLATFORM=amd
+    -D BLAS_LIBRARY=cblas
+    -D BUILD_WITH_TENSILE=ON
+    -D Tensile_LIBRARY_FORMAT=msgpack
+    # ppc64le: Arch's BUILD_WITH_PIP=OFF means "Tensile is already
+    # installed" (their python-tensile package, absent here), and
+    # Tensile_TEST_LOCAL_PATH is only read on the pip path.  Point
+    # TensileConfig.cmake at the in-tree copy instead: Tensile_ROOT is the
+    # documented hook (its header says so) and PYTHONPATH above lets
+    # bin/TensileCreateLibrary import it.  No venv, no pip, no network.
+    -D Tensile_DIR="$srcdir/$_tensile_dir/Tensile/cmake"
+    -D Tensile_ROOT="$srcdir/$_tensile_dir/Tensile"
+    -D Tensile_COMPILER=hipcc
+    -D BUILD_WITH_PIP=OFF
+    # hipblaslt doesn't support all relevant targets
+    -D BUILD_WITH_HIPBLASLT=OFF
+    # ppc64le: ONE target, deliberately.  Tensile generates and assembles a
+    # kernel library per architecture and Arch's rocm-supported-gfx list is
+    # ~20 of them; the only GPU in this machine is the RX 7900 XTX (gfx1100).
+    # If MI50s (gfx906) go into the box this becomes "gfx1100;gfx906" and
+    # the package must be rebuilt.  README.md.
+    -D GPU_TARGETS=gfx1100
+  )
+  cmake "${cmake_args[@]}"
+  cmake --build build
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+
+  install -Dm644 "$_dirname/LICENSE.md" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

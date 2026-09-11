@@ -1,0 +1,137 @@
+Subject: [clang][PowerPC] Give __bf16 a storage type and soft-promoted arithmetic; legalise bf16 in the PPC backend
+
+Portability fix worth sending upstream (llvm/llvm-project: clang/lib/Basic/Targets/PPC.h,
+llvm/lib/Target/PowerPC/PPCISelLowering.{h,cpp}).
+
+PPCTargetInfo never sets BFloat16Width/Align/Format or HasBFloat16, so on
+powerpc64le `sizeof(__bf16)` is 0 and any use is "__bf16 is not supported
+on this target".  GCC has no __bf16 on PowerPC either, so nothing native
+noticed.  HIP does: hip/amd_detail/amd_hip_bf16.h has
+`static_assert(sizeof(__bf16) == sizeof(unsigned short))` and __hip_bfloat16
+carries a `__bf16` member, both compiled in the *host* pass for the host
+target.  On a ppc64le host every HIP translation unit that includes
+<hip/hip_bf16.h> (all of llama.cpp's ggml-cuda/*.cu through vendors/hip.h)
+fails that assert, and the device pass (-triple amdgcn -aux-triple
+powerpc64le) then crashes in ParseAST handling the aux target's zero-width
+bf16 -- 142 static-assert errors and 142 clang segfaults in one build.
+
+Two halves:
+
+1. clang: PPC.h mirrors what X86 does below AVX512-BF16 -- a 16-bit storage
+   type with the BFloat format and HasBFloat16 (arithmetic soft-promoted
+   through float), no HasFullBFloat16.
+
+2. llvm: once clang emits bf16, compiler-rt builds truncsfbf2.c/truncdfbf2.c
+   for powerpc64le and the backend meets bf16 nodes it never had actions
+   for: "Cannot select: f32 = bf16_to_fp".  PPCISelLowering marks bf16
+   extending loads and truncating stores Expand, BF16_TO_FP Expand (it is a
+   shift), and FP_TO_BF16 Custom: a libcall to __truncsfbf2/__truncdfbf2.
+   Custom rather than Expand because the generic expansion truncates instead
+   of rounding and emits FCANONICALIZE, which this backend marks Legal for
+   f32 yet cannot select ("Cannot select: f32 = fcanonicalize") -- a
+   separate latent bug, not touched here.  The libcall's __bf16 result comes
+   back the way this backend passes soft-promoted bf16, as the f32 whose
+   upper half holds the bits, and the lowering takes them back out.
+
+No PowerPC ABI defines __bf16 passing; with GCC lacking the type there is no
+foreign boundary to disagree with.  Verified on POWER9: compiler-rt's two
+builtins compile, and a round-trip test (float -> __bf16 -> float for 1,
+1.5, 3.140625, -2.75, 65504, 1e-3, 0.1; __bf16 add) matches a
+round-to-nearest-even reference bit for bit.
+
+diff --git i/clang/lib/Basic/Targets/PPC.h w/clang/lib/Basic/Targets/PPC.h
+index 9f3a4cd2da71..37437a0ee8dc 100644
+--- i/clang/lib/Basic/Targets/PPC.h
++++ w/clang/lib/Basic/Targets/PPC.h
+@@ -85,6 +85,12 @@ public:
+     HasStrictFP = true;
+     HasIbm128 = true;
+     HasUnalignedAccess = true;
++    // __bf16 as a 16-bit storage type with soft-promoted arithmetic, the
++    // same model X86 uses without native bf16 (HasBFloat16, not
++    // HasFullBFloat16).  Without it sizeof(__bf16) is 0 on PowerPC.
++    BFloat16Width = BFloat16Align = 16;
++    BFloat16Format = &llvm::APFloat::BFloat();
++    HasBFloat16 = true;
+   }
+ 
+   // Set the language option for altivec based on our value.
+diff --git i/llvm/lib/Target/PowerPC/PPCISelLowering.cpp w/llvm/lib/Target/PowerPC/PPCISelLowering.cpp
+index f69218056fc4..8843df6f38c2 100644
+--- i/llvm/lib/Target/PowerPC/PPCISelLowering.cpp
++++ w/llvm/lib/Target/PowerPC/PPCISelLowering.cpp
+@@ -268,6 +268,23 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
+     setIndexedStoreAction(ISD::PRE_INC, MVT::f64, Legal);
+   }
+ 
++  // bf16 has no hardware support on any PowerPC.  clang exposes __bf16 as a
++  // soft-promoted storage type (HIP's bf16 headers need it in the host
++  // pass); extending is a shift and rounding is the __truncsfbf2/__truncdfbf2
++  // libcall, exactly the X86-without-AVX512-BF16 arrangement.
++  for (MVT VT : {MVT::f32, MVT::f64, MVT::f128}) {
++    setLoadExtAction(ISD::EXTLOAD, VT, MVT::bf16, Expand);
++    setTruncStoreAction(VT, MVT::bf16, Expand);
++    setOperationAction(ISD::BF16_TO_FP, VT, Expand);
++    setOperationAction(ISD::STRICT_BF16_TO_FP, VT, Expand);
++  }
++  // Rounding to bf16 is Custom: the generic expansion truncates and needs
++  // FCANONICALIZE, which this backend advertises for f32 but cannot select.
++  for (MVT VT : {MVT::f32, MVT::f64}) {
++    setOperationAction(ISD::FP_TO_BF16, VT, Custom);
++    setOperationAction(ISD::STRICT_FP_TO_BF16, VT, Expand);
++  }
++
+   if (Subtarget.useCRBits()) {
+     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
+ 
+@@ -12620,10 +12637,38 @@ SDValue PPCTargetLowering::LowerSSUBO(SDValue Op, SelectionDAG &DAG) const {
+ 
+ /// LowerOperation - Provide custom lowering hooks for some operations.
+ ///
++// __bf16 has no hardware and no ABI on PowerPC; it is soft-promoted, so a
++// __bf16 return value travels as the f32 whose upper half holds the bf16 bits
++// (FP_EXTEND bf16->f32 is BF16_TO_FP, expanded to a shift).  Round through
++// compiler-rt's __truncsfbf2/__truncdfbf2 for round-to-nearest-even and take
++// the bits back out of the returned f32.
++SDValue PPCTargetLowering::LowerFP_TO_BF16(SDValue Op, SelectionDAG &DAG) const {
++  SDLoc DL(Op);
++  SDValue Src = Op.getOperand(0);
++  MVT SVT = Src.getSimpleValueType();
++  if (SVT != MVT::f32 && SVT != MVT::f64) {
++    Src = DAG.getNode(ISD::FP_ROUND, DL, MVT::f64, Src,
++                      DAG.getIntPtrConstant(0, DL, /*isTarget=*/true));
++    SVT = MVT::f64;
++  }
++  RTLIB::Libcall LC = RTLIB::getFPROUND(SVT, MVT::bf16);
++  assert(LC != RTLIB::UNKNOWN_LIBCALL && "no libcall for fp -> bf16");
++  MakeLibCallOptions CallOptions;
++  SDValue Res = makeLibCall(DAG, LC, MVT::f32, Src, CallOptions, DL).first;
++  SDValue Bits = DAG.getNode(ISD::SRL, DL, MVT::i32,
++                             DAG.getBitcast(MVT::i32, Res),
++                             DAG.getShiftAmountConstant(16, MVT::i32, DL));
++  if (Op.getValueType() == MVT::bf16)
++    return DAG.getBitcast(MVT::bf16,
++                          DAG.getNode(ISD::TRUNCATE, DL, MVT::i16, Bits));
++  return DAG.getAnyExtOrTrunc(Bits, DL, Op.getValueType());
++}
++
+ SDValue PPCTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
+   switch (Op.getOpcode()) {
+   default:
+     llvm_unreachable("Wasn't expecting to be able to lower this!");
++  case ISD::FP_TO_BF16:         return LowerFP_TO_BF16(Op, DAG);
+   case ISD::FPOW:               return lowerPow(Op, DAG);
+   case ISD::FSIN:               return lowerSin(Op, DAG);
+   case ISD::FCOS:               return lowerCos(Op, DAG);
+diff --git i/llvm/lib/Target/PowerPC/PPCISelLowering.h w/llvm/lib/Target/PowerPC/PPCISelLowering.h
+index 669430550f4e..edbd95d79d95 100644
+--- i/llvm/lib/Target/PowerPC/PPCISelLowering.h
++++ w/llvm/lib/Target/PowerPC/PPCISelLowering.h
+@@ -1300,6 +1300,7 @@ namespace llvm {
+     SDValue LowerFP_TO_INT(SDValue Op, SelectionDAG &DAG,
+                            const SDLoc &dl) const;
+     SDValue LowerINT_TO_FP(SDValue Op, SelectionDAG &DAG) const;
++    SDValue LowerFP_TO_BF16(SDValue Op, SelectionDAG &DAG) const;
+     SDValue LowerGET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
+     SDValue LowerSET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
+     SDValue LowerSHL_PARTS(SDValue Op, SelectionDAG &DAG) const;

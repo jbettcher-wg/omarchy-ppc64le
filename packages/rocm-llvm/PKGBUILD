@@ -6,20 +6,25 @@ pkgbase=rocm-llvm
 pkgname=(rocm-llvm rocm-device-libs comgr)
 epoch=2
 pkgver=7.2.4
-pkgrel=2
+pkgrel=3
 arch=('x86_64' 'powerpc64le')  # ppc64le: see README.md
 url='https://rocm.docs.amd.com/en/latest/reference/rocmcc.html'
 makedepends=('git' 'cmake' 'python' 'ninja' 'rocm-core' 'rocm-cmake' 'perl'
              'gcc-libs' 'zlib' 'zstd' 'libffi' 'libedit' 'ncurses' 'libxml2' 'patchelf')
 source=("$pkgbase::git+https://github.com/ROCm/llvm-project#tag=rocm-$pkgver"
-        '0001-compiler-rt-sanitizer-Remove-linux-scc.h.patch')
+        '0001-compiler-rt-sanitizer-Remove-linux-scc.h.patch'
+        '0002-clang-PowerPC-give-__bf16-a-storage-type-and-soft-arithmetic.patch')
 sha256sums=('cda215d04dfb6ede38c542d4604711d4a4623267df0f3d678491cd9fbcc32fd9'
-            '3592a157f9c8c748a5f75d79c9e328f1c359ec6609d260a58d4b68ba97f7fe9b')
+            '3592a157f9c8c748a5f75d79c9e328f1c359ec6609d260a58d4b68ba97f7fe9b'
+            'f07416a56f3312c19c52e9e5eeff0adee00351fe95bb3c565b07139de2ed6ede')
 options=(staticlibs !lto)
 
 prepare() {
     # linux/scc.h is gone from linux-api-headers >= 7.1
     patch -Np1 -d "$pkgbase" -i "$srcdir/0001-compiler-rt-sanitizer-Remove-linux-scc.h.patch"
+    # ppc64le: clang's PowerPC target has no __bf16, and HIP's bf16 header
+    # static-asserts on it in every host pass.  Patch header has the story.
+    patch -Np1 -d "$pkgbase" -i "$srcdir/0002-clang-PowerPC-give-__bf16-a-storage-type-and-soft-arithmetic.patch"
 }
 
 build() {

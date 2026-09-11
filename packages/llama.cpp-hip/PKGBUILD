@@ -1,0 +1,88 @@
+# Maintainer (AUR llama.cpp-hip): Orion-zhen
+# ppc64le recipe: derived from the AUR llama.cpp-hip PKGBUILD, trimmed to
+# what a HIP build on this machine needs.  README.md has every deviation.
+
+pkgname=llama.cpp-hip
+_pkgname="${pkgname%-hip}"
+pkgver=b10705
+pkgrel=1
+pkgdesc="LLM inference in C/C++ (AMD ROCm/HIP backend, gfx1100)"
+arch=('x86_64' 'powerpc64le')
+url='https://github.com/ggml-org/llama.cpp'
+license=('MIT')
+depends=(
+  curl
+  gcc-libs
+  glibc
+  hip-runtime-amd
+  hipblas
+  openssl
+  python
+  rocblas
+)
+makedepends=(
+  cmake
+  ninja
+  rocm-llvm
+)
+optdepends=(
+  'python-numpy: needed for convert_hf_to_gguf.py'
+  'python-gguf: needed for convert_hf_to_gguf.py'
+)
+provides=("${_pkgname}" llama-cpp)
+conflicts=("${_pkgname}" llama-cpp)
+options=(!lto)
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/ggml-org/llama.cpp/archive/refs/tags/${pkgver}.tar.gz")
+# Measured here, 2026-09-11; the AUR recipe's value for the same tag differs
+# (GitHub regenerates archives), so verify against the file, not the AUR.
+sha256sums=('572ddeec4c6ea386c6dbbf6cc14c4bfdbbcc41049e1e6fb8b349da8512288855')
+
+build() {
+  # What an installed rocm-core exports from /etc/profile.d/rocm.sh; hipcc's
+  # clang cannot find the HIP headers without it (../rocm-llvm/README.md).
+  export ROCM_PATH=/opt/rocm
+  export HIP_PLATFORM=amd
+
+  local _cmake_options=(
+    -B build
+    -S "${_pkgname}-${pkgver}"
+    -G Ninja
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_INSTALL_PREFIX=/usr
+    -DBUILD_SHARED_LIBS=ON
+    -DCMAKE_PREFIX_PATH=/opt/rocm
+    # CMake's HIP language: the ROCm clang compiles the device code and the
+    # ppc64le host pass; gcc builds everything else.
+    -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++
+    -DCMAKE_HIP_PLATFORM=amd
+    -DGGML_HIP=ON
+    -DGGML_HIP_GRAPHS=ON
+    # One GPU target, same scope decision as ../rocblas.
+    -DGPU_TARGETS=gfx1100
+    # Deterministic POWER9 code for the CPU backend instead of the
+    # /proc/cpuinfo sniff GGML_NATIVE does (which would emit power10 code on
+    # a POWER10 build host).  The project builds -mcpu=power9 everywhere.
+    -DGGML_NATIVE=OFF
+    -DGGML_CPU_POWERPC_CPUTYPE=power9
+    -DGGML_LTO=OFF
+    -DLLAMA_BUILD_TESTS=OFF
+    -DLLAMA_BUILD_TOOLS=ON
+    -DLLAMA_BUILD_EXAMPLES=ON
+    -DLLAMA_BUILD_SERVER=ON
+    # No web UI: it needs npm at build time (LLAMA_BUILD_UI) or a download
+    # from Hugging Face at configure time (LLAMA_USE_PREBUILT_UI).
+    -DLLAMA_BUILD_UI=OFF
+    -DLLAMA_USE_PREBUILT_UI=OFF
+    -DLLAMA_USE_SYSTEM_GGML=OFF
+    -DGGML_ALL_WARNINGS=OFF
+    -DLLAMA_BUILD_NUMBER="${pkgver#b}"
+    -Wno-dev
+  )
+  cmake "${_cmake_options[@]}"
+  cmake --build build
+}
+
+package() {
+  DESTDIR="${pkgdir}" cmake --install build
+  install -Dm644 "${_pkgname}-${pkgver}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

@@ -1,0 +1,71 @@
+Subject: [clr] char1..char4 are signed char on hosts where plain char is unsigned
+
+Portability fix worth sending upstream (ROCm/rocm-systems, projects/clr).
+
+CUDA's vector_types.h declares char1..char4 with `signed char` members, and
+HIP's own make_char1..make_char4 already take `signed char`, but
+amd_hip_vector_types.h builds the types from plain `char`:
+
+    __MAKE_VECTOR_TYPE__(char, char);
+
+On x86 that is the same thing.  On ppc64le (and aarch64, s390x) plain char
+is unsigned, and a HIP device pass (-triple amdgcn -aux-triple <host>)
+inherits the host's signedness (-fno-signed-char on the cc1 line), so there
+char4 is four unsigned bytes on both sides.  Code ported from CUDA that
+does
+
+    char4 q;  q.x = roundf(v);    // v in [-127, 127]
+
+gets a float->unsigned-char conversion, undefined for negative values in
+C++, which AMDGPU lowers to a clamp to 0.  llama.cpp's quantize_mmq_q8_1
+is exactly that: on a POWER9 host with an RX 7900 XTX every quantized
+matmul with more than 8 columns (the MMQ path) zeroed all negative
+activations -- 178 of 1,021 MUL_MAT cases failed test-backend-ops, and any
+prompt longer than 8 tokens produced garbage.  With this patch all of them
+pass (the 13 remaining failures are iq1_s, a separate issue).
+
+Conditional on __CHAR_UNSIGNED__ so x86 is byte-for-byte unchanged
+(char4 keeps its type identity and C++ mangling there).  math_fwd.h's
+__ockl_sdot4 declaration takes char4's native vector and has to follow;
+it is extern "C" and ockl takes <4 x i8>, so nothing changes below the
+declaration.
+
+diff -ruN a/hipamd/include/hip/amd_detail/amd_hip_vector_types.h b/hipamd/include/hip/amd_detail/amd_hip_vector_types.h
+--- a/hipamd/include/hip/amd_detail/amd_hip_vector_types.h	2026-09-11 08:19:07.249777930 -0600
++++ b/hipamd/include/hip/amd_detail/amd_hip_vector_types.h	2026-09-11 08:19:07.268225860 -0600
+@@ -804,7 +804,17 @@
+ #endif
+ 
+ __MAKE_VECTOR_TYPE__(uchar, unsigned char);
++// CUDA's vector_types.h declares char1..char4 with signed char members, and
++// make_char1..make_char4 below already take signed char.  Plain char is
++// unsigned on ppc64le, aarch64 and s390x, and the device pass inherits the
++// host's signedness, so there char4 was an unsigned type: storing a negative
++// value into a member is a float->unsigned conversion, which AMDGPU clamps to
++// 0.  Keep x86 byte-for-byte unchanged, match CUDA everywhere else.
++#if defined(__CHAR_UNSIGNED__)
++__MAKE_VECTOR_TYPE__(char, signed char);
++#else
+ __MAKE_VECTOR_TYPE__(char, char);
++#endif
+ __MAKE_VECTOR_TYPE__(ushort, unsigned short);
+ __MAKE_VECTOR_TYPE__(short, short);
+ __MAKE_VECTOR_TYPE__(uint, unsigned int);
+diff -ruN a/hipamd/include/hip/amd_detail/math_fwd.h b/hipamd/include/hip/amd_detail/math_fwd.h
+--- a/hipamd/include/hip/amd_detail/math_fwd.h	2026-09-11 08:19:07.249777930 -0600
++++ b/hipamd/include/hip/amd_detail/math_fwd.h	2026-09-11 08:19:07.268764802 -0600
+@@ -41,8 +41,14 @@
+     HIP_vector_base<unsigned short, 2>::Native_vec_,
+     HIP_vector_base<unsigned short, 2>::Native_vec_, unsigned int, bool);
+ 
++// Element type follows char4 (amd_hip_vector_types.h); ockl takes <4 x i8>.
++#if defined(__CHAR_UNSIGNED__)
++__device__ __attribute__((const)) int __ockl_sdot4(HIP_vector_base<signed char, 4>::Native_vec_,
++                                                   HIP_vector_base<signed char, 4>::Native_vec_, int,
++#else
+ __device__ __attribute__((const)) int __ockl_sdot4(HIP_vector_base<char, 4>::Native_vec_,
+                                                    HIP_vector_base<char, 4>::Native_vec_, int,
++#endif
+                                                    bool);
+ 
+ __device__ __attribute__((const)) unsigned int __ockl_udot4(

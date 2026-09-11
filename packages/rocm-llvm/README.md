@@ -57,6 +57,31 @@ Neither is the right answer:
   family for the `_Float16` the HIP headers use (the same reason
   `openimagedenoise` in this repo needed compiler-rt).
 
+## Patch 0002: clang's PowerPC target has no `__bf16`
+
+Found by the first real workload, not by the toolchain build. llama.cpp's
+`ggml-hip` includes `<hip/hip_bf16.h>` in every translation unit, and
+`amd_hip_bf16.h` has `static_assert(sizeof(__bf16) == sizeof(unsigned
+short))` compiled in the *host* pass. On ppc64le that is `sizeof(__bf16)
+== 0`: `PPCTargetInfo` sets no `BFloat16Width/Align/Format` and no
+`HasBFloat16`, so the type is "not supported on this target" (plain C++)
+and zero-width under HIP's relaxed checking. The device pass (`-triple
+amdgcn -aux-triple powerpc64le`) then segfaults in `ParseAST` on the aux
+target's zero-width bf16 -- 142 static-assert failures and 142 clang
+crashes in one llama.cpp build. GCC has no `__bf16` on PowerPC either, so
+nothing native ever noticed.
+
+`0002-clang-PowerPC-give-__bf16-a-storage-type-and-soft-arithmetic.patch`
+does for PPC what X86 does below AVX512-BF16: 16-bit storage with the
+BFloat format and `HasBFloat16` (arithmetic soft-promoted through float),
+no `HasFullBFloat16`. The PowerPC backend legalises `bf16` exactly as it
+legalises `f16` -- soft promotion, `__truncsfbf2`/`__extendbfsf2` from
+compiler-rt -- which is the path `_Float16` in the same HIP headers has
+been taking since the first vectorAdd. ABI note: no PowerPC ABI defines
+`__bf16` passing; this only matters for code passing bare `__bf16` by
+value across a GCC/clang boundary, which cannot exist because GCC has no
+such type. Upstreamable; `docs/upstreamable-patches.md`.
+
 ## What had to change in `bq`, not in the recipe
 
 Every package in this stack installs under `/opt/rocm` and finds the

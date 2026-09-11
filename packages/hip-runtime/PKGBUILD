@@ -8,7 +8,7 @@
 pkgbase=hip-runtime
 pkgname=(hip-runtime-amd)
 pkgver=7.2.4
-pkgrel=1
+pkgrel=2
 _pkgdesc="Heterogeneous Interface for Portability"
 arch=('x86_64' 'powerpc64le')
 url='https://rocm.docs.amd.com/projects/HIP/en/latest/'
@@ -25,10 +25,12 @@ _tag="tag=rocm-$pkgver"
 _hipcc='https://github.com/ROCm/llvm-project'
 source=("rocm-$pkgver.tar.gz::https://github.com/ROCm/rocm-systems/archive/refs/tags/rocm-$pkgver.tar.gz"
         "rocm-llvm::git+$_hipcc#$_tag"
-        '0001-clr-ppc64le-arch-fences-and-spin-hint.patch')
+        '0001-clr-ppc64le-arch-fences-and-spin-hint.patch'
+        '0002-clr-char-vectors-signed-on-unsigned-char-hosts.patch')
 sha256sums=('817f9c136125b8d162757a18cdc25b18b1efeb8ef36a948c85e4a672fd149de5'
             'cda215d04dfb6ede38c542d4604711d4a4623267df0f3d678491cd9fbcc32fd9'
-            'SKIP')
+            'eb1f12a81bb4633ff5ad691806690b525c3aa4327f8b278c8837113dcb424b99'
+            'bb8dc8e154667b252e6e8ef1d68ccea8b93fab61e8a00c04905ffbe92a2f572d')
 _projectBaseDir="rocm-systems-rocm-$pkgver/projects"
 
 options=(!lto)
@@ -37,6 +39,9 @@ prepare() {
   # ppc64le: CLR has no arch branch for POWER and calls x86 fence intrinsics
   # unguarded.  Patch header says what and why.
   patch -Np1 -d "$_projectBaseDir/clr" -i "$srcdir/0001-clr-ppc64le-arch-fences-and-spin-hint.patch"
+  # ppc64le: char1..char4 are built from plain char, which is unsigned here
+  # (CUDA uses signed char).  Broke llama.cpp's quantized matmuls outright.
+  patch -Np1 -d "$_projectBaseDir/clr" -i "$srcdir/0002-clr-char-vectors-signed-on-unsigned-char-hosts.patch"
 }
 
 build() {

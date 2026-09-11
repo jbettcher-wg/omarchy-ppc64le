@@ -209,6 +209,73 @@ whole stack on POWER9.
 
 Send to: <https://github.com/RenderKit/ospray>.
 
+### 11. blender -- a native VSX Cycles CPU kernel (and the SSE kernel through the compat headers)
+
+`packages/blender/cycles-vsx.patch`
+
+Cycles compiles one 4-wide CPU kernel per ISA: SSE4.2 (the x86-64 baseline),
+AVX2, and on ARM the SSE4.2 kernel through `sse2neon`. `util/optimization.h`
+sets `__KERNEL_SSE__`..`__KERNEL_SSE42__` for x86-64 and `__ARM_NEON &&
+WITH_SSE2NEON`, and nothing else -- so on POWER every kernel was scalar. The
+patch adds `CYCLES_PPC64LE_SIMD=VSX|SSE2VSX|SCALAR`:
+
+- **VSX** (default): the vector layer written on VSX. `float4`/`float3` hold
+  a `__vector float`, `int4`/`int3` a `__vector int`, and every gated
+  operation in `util/{types,math}_{float4,float3,int4,int3}.h`, `transform.h`,
+  `math_intersect.h`, `math_fast.h` has a `__KERNEL_VSX__` implementation:
+  `__builtin_shuffle` with constant masks (single-op permutes where they
+  exist), `vec_sld` rotations for the reductions, `vec_madd`/`vec_msub` (GCC
+  fuses nothing vector under `-ffp-contract=on`), `vec_insert(0,a,3)` to
+  drop w, `vctsxs` truncating conversions like the scalar `(int)` casts,
+  an 8-op merge transpose + three FMAs for `transform_point`. No x86
+  intrinsic is used or emulated; nothing includes a compat header, so the
+  build itself proves completeness.
+- **SSE2VSX**: the x86 kernel unchanged through GCC's/clang's
+  `<xmmintrin.h>`..`<nmmintrin.h>` for powerpc64le (`__KERNEL_SSE2VSX__`),
+  the technique Embree was ported with (#5), plus the one intrinsic they
+  lack, `_mm_dp_ps`.
+- Common: `__builtin_ctz/clz` bit scans for any GCC/clang target (the
+  generic fallback loops up to 64 times and shifts `1 << bit` as an `int` in
+  `bitscan(uint64_t)`); `"VSX"` / `"SSE4.2 on VSX"` in
+  `device_cpu_capabilities()`.
+
+Verified on POWER9, GCC 16: an 8,967-operation probe against the scalar
+definitions (handbook `probes/cycles_vsx_probe.cpp`) -- 8,276 bit-identical,
+688 within rounding-order tolerance, 3 documented differences (`round`
+ties-to-even as SSE; `xvminsp/xvmaxsp` return the non-NaN operand), 0
+mismatches; BMW27 / Classroom render to PSNR 59 / 49 dB against the scalar
+kernel, the same as the SSE kernel scores. Kernel object: 895 control-vector
+permutes and 2,194 fused vector multiply-adds vs 10,675 and 6 for the compat
+build. Render time versus the scalar kernel is not yet measured on an idle
+machine; the procedure is in `packages/blender/README.md`.
+
+Two upstream-relevant side findings: the x86 SSE kernel's `make_int4(float4)`
+rounds to nearest while every other path truncates (the probe shows 184
+records differing from the scalar definition on x86 semantics alone); and
+`cross(float4)` with a fused `msub` leaves a rounding residual in w, which
+the VSX path clears explicitly.
+
+Send to: <https://projects.blender.org/blender/blender> (Cycles module).
+Nobody has a POWER kernel for Cycles.
+
+### 12. blender -- OIDN is hidden behind an x86 cpuid check
+
+`packages/blender/oidn-ppc64le-supported.patch`
+
+Cycles' `openimagedenoise_supported()` and the compositor Denoise node's
+`is_oidn_supported()` return `true` on Apple and ARM64 and otherwise fall
+through to an SSE4.2 cpuid probe (`system_cpu_support_sse42()` /
+`BLI_cpu_support_sse42()`), which is always false on POWER. A Blender linked
+against `libOpenImageDenoise` therefore still reports
+`_cycles.with_openimagedenoise == False`, the render-time denoiser sets
+"OpenImageDenoiser is not supported on this CPU: missing SSE 4.1 support",
+and the node draws "Unsupported CPU". The patch adds a `__powerpc64__ &&
+__VSX__` branch beside the ARM64 one in both places.
+
+Only meaningful together with the OIDN port (#7): upstream OIDN has no POWER
+CPU device, so upstream Blender is right to say no until that lands. Send
+both, in that order.
+
 ## Reports that belong to Arch POWER, not upstream
 
 ### `libheif` is built against a newer `libde265` than the repo ships
@@ -225,6 +292,148 @@ Not a portability bug — it reproduces on any architecture with that pair of
 packages. It is a repo-consistency bug, and the fix is for Arch POWER to build
 `libde265 1.1.2`. We carry `packages/libde265/` (Arch's PKGBUILD plus
 `powerpc64le` in `arch()`) in the meantime.
+
+### `openimageio` is built against `openjph 0.27`, and `blender` against ffmpeg 8
+
+Arch POWER ships `openimageio 3.1.11.0-3` linked to `libopenjph.so.0.27`
+(their `openjph` is `0.27.0-1`). This repo's `repo/` carries `openjph
+0.31.0-1` -- with no `packages/openjph/` recipe, which is its own problem --
+so on a system with `[omarchy-power9]` enabled pacman resolves the newer
+openjph and everything linking OpenImageIO fails to load
+(`libopenjph.so.0.27: cannot open shared object file`). Arch proper already
+rebuilt (`openimageio 3.1.12.1-5` is the 0.31 rebuild); `packages/openimageio/`
+is that recipe with the arch gate lifted.
+
+Same shape: Arch POWER's `blender 17:5.1.0-2` links `libavcodec.so.62`
+(ffmpeg 8) while their repo now ships ffmpeg 9 (`libavcodec.so.63`), so the
+package they ship does not start. `packages/blender/` carries Arch's
+`ffmpeg-9.patch` and builds against ffmpeg 9.
+
+### 9. hsa-rocr — the HSA runtime's device-visibility fences are x86 intrinsics with no other-arch definition
+
+`packages/hsa-rocr/0001-ppc64le-fences-spin-hint-and-image-support.patch`
+
+`runtime/hsa-runtime/core/util/utils.h` includes `<x86intrin.h>` only on x86,
+yet `amd_aql_queue.cpp` (the doorbell write), `amd_blit_kernel.cpp` and
+`intercept_queue.cpp` (device-memory ring headers) and `amd_gpu_agent.h`
+(`PcieWcFlush`) call `_mm_sfence()`/`_mm_mfence()` with no arch guard, and
+`locks.h` spins on `_mm_pause()`. The portable atomics layer next to them
+(`atomic_helpers.h`) is properly `#if`-gated; these sites were simply never
+compiled anywhere but x86 (and, since 7.x, loongarch64, which got an empty
+branch in `image/util.h` and nothing here — so it cannot build either).
+
+The patch adds a `__powerpc64__` branch defining the four names (the fences,
+`_mm_pause()`, and `_mm_clflush()` as `dcbf` per line -- `FlushCacheLines()`
+already strides by `sysconf(_SC_LEVEL1_DCACHE_LINESIZE)`). The non-obvious
+part is the barrier: both fences are a full `sync`, **not** the
+`lwsync` that GCC's own powerpc `<xmmintrin.h>` compat header would give for
+`_mm_sfence()`. Every call site orders cacheable stores ahead of a store to a
+KFD mapping that is caching-inhibited on POWER, and Power ISA 3.0B Book II
+4.6.1 excludes Caching Inhibited storage from `lwsync`'s ordering — the same
+reason powerpc `writel()` is `sync; stw`. A release fence would compile and
+leave the AQL packet body racing the doorbell. Two more hunks: the
+`#error "Processor not identified"` in `image/util.h` admits `__powerpc64__`,
+and `IMAGE_SUPPORT` defaults on for `ppc64le|powerpc64le` — CLR refuses an
+agent without the image extension, so OFF is not a degraded build but no HIP
+device at all.
+
+The last hunk is the one a green build never shows. Both
+`dl_iterate_phdr()` callbacks (`os_linux.cpp` `GetLoadedToolsLib()`,
+`amd_hsa_loader.cpp`) skip the vDSO by testing `dlpi_name` for
+`"vdso.so"`. The soname is `linux-vdso.so.1` on x86/aarch64 but
+`linux-vdso64.so.1` on ppc64, so the filter misses; the vDSO's `_DYNAMIC`
+is the one object whose entries ld.so does not relocate in place, so the
+walk reads the link-time `DT_STRTAB` offset (`0x2d8`) through
+`ABS_ADDR() == (ptr)` and `strcmp()`s it. Every `hsa_init()` segfaulted.
+Match `"vdso"`.
+
+**Not ppc64le-specific in shape**: any weakly-ordered host (riscv64, s390x,
+the loongarch64 port upstream has already started) needs the same
+definitions with its own barrier and spin hint, and the vDSO test is wrong
+on every architecture whose soname is not exactly `linux-vdso.so.1`.
+
+Send to: <https://github.com/ROCm/rocm-systems> (`projects/rocr-runtime`).
+
+### 10. CLR — `top.hpp` classifies hosts as ARM or x86 only; kernarg flush fences are unguarded
+
+`packages/hip-runtime/0001-clr-ppc64le-arch-fences-and-spin-hint.patch`
+
+`rocclr/include/top.hpp` defines `ATI_ARCH_ARM` or `ATI_ARCH_X86` and nothing
+for any other host. Mostly that is silent (`Os::spinPause()` becomes a no-op)
+but `device/rocm/rocvirtual.cpp` and `hipamd/src/hip_graph_internal.cpp` call
+`_mm_sfence()`/`_mm_mfence()` unguarded around the large-BAR kernarg
+write-and-read-back, so the build fails there. The patch adds
+`ATI_ARCH_PPC64`, defines the two fences as a full `sync` (same reasoning as
+above: the buffer is caching-inhibited device memory), and gives
+`spinPause()` the powerpc kernel's `cpu_relax()` (`or 1,1,1; or 2,2,2`).
+
+Send to: <https://github.com/ROCm/rocm-systems> (`projects/clr`).
+
+### 11. clang — the PowerPC target defines no `__bf16`, so HIP's bf16 header cannot be compiled on a ppc64le host
+
+`packages/rocm-llvm/0002-clang-PowerPC-give-__bf16-a-storage-type-and-soft-arithmetic.patch`
+
+`clang/lib/Basic/Targets/PPC.h` never sets `BFloat16Width/Align/Format` or
+`HasBFloat16`. On powerpc64le `__bf16` is therefore "not supported on this
+target" in C++ and, under HIP's CUDA-style relaxed type checking, a
+zero-width type. `hip/amd_detail/amd_hip_bf16.h` static-asserts
+`sizeof(__bf16) == sizeof(unsigned short)` in the host pass and gives
+`__hip_bfloat16` a `__bf16` member; every `.cu` in llama.cpp's ggml-hip
+includes it. Result on a ppc64le host: the assert fails in the host pass
+and the device pass (`-aux-triple powerpc64le`) segfaults in `ParseAST` on
+the aux target's zero-width bf16.
+
+The clang half mirrors X86 without AVX512-BF16: 16-bit storage, BFloat
+format, `HasBFloat16` (soft arithmetic), no `HasFullBFloat16`. That alone is
+not enough: once clang emits `bf16`, compiler-rt builds
+`truncsfbf2.c`/`truncdfbf2.c` for powerpc64le and the backend has no actions
+for the nodes ("Cannot select: f32 = bf16_to_fp"). The llvm half, in
+`PPCISelLowering`, sets bf16 extending loads and truncating stores to
+Expand, `BF16_TO_FP` to Expand (it is a shift), and `FP_TO_BF16` to Custom,
+a libcall to `__truncsfbf2`/`__truncdfbf2`. It's Custom rather than Expand
+because the generic expansion truncates instead of rounding and emits
+`FCANONICALIZE`, which this backend marks Legal for f32 but cannot select.
+That's a separate latent bug, not touched here. The patch header has the
+details; `packages/rocm-llvm/bf16-ppc64le-roundtrip.c` checks rounding bit
+for bit against a round-to-nearest-even reference.
+
+GCC has no `__bf16` on PowerPC, so there is no ABI boundary to break.
+**Not ppc64le-specific in shape**: any clang target that leaves the bf16
+fields unset (s390x, mips, sparc) fails HIP host compilation the same way,
+and PyTorch's ROCm build includes the same header.
+
+Send to: <https://github.com/llvm/llvm-project> (clang + PowerPC backend).
+
+### 12. CLR — `char1`..`char4` are plain `char`, so unsigned on a POWER host; CUDA's are `signed char`
+
+`packages/hip-runtime/0002-clr-char-vectors-signed-on-unsigned-char-hosts.patch`
+
+`amd_hip_vector_types.h` builds the char vectors with
+`__MAKE_VECTOR_TYPE__(char, char)`. CUDA's `vector_types.h` uses `signed
+char`, and HIP's own `make_char1..4` already take `signed char`. Plain char
+is unsigned on ppc64le, and the HIP device pass inherits the host's
+signedness (`-fno-signed-char` on the `-aux-triple powerpc64le` cc1 line),
+so on the GPU `char4` is four unsigned bytes. CUDA-ported code that stores a
+negative value into a member performs a float-to-unsigned conversion, which
+AMDGPU clamps to 0.
+
+This compiles cleanly and runs at full speed, with wrong results. llama.cpp's
+`quantize_mmq_q8_1` does `char4 q; q.x = roundf(v)` with v in [-127, 127],
+so every quantized matmul wider than 8 columns (the MMQ path) zeroed all
+negative activations. Qwen3-8B on the RX 7900 XTX generated garbage at
+100 tok/s. `test-backend-ops -o MUL_MAT` failed 178 of 1,021 cases, all
+quantized types with n >= 16; MMVQ (n <= 8, `int8_t`) passed. With the
+patch, 13 fail, all `iq1_s`, which `-fsigned-char` leaves failing too, so
+that's a separate issue. The model output then matches the CPU backend word for word.
+
+Conditional on `__CHAR_UNSIGNED__`, so x86 keeps `char4`'s type identity
+and C++ mangling. `math_fwd.h`'s `__ockl_sdot4` declaration takes `char4`'s
+native vector and follows it (extern "C", ockl takes `<4 x i8>`).
+**Affects aarch64 hosts identically.**
+
+Send to: <https://github.com/ROCm/rocm-systems> (`projects/clr`). Worth a
+note to llama.cpp as well: `int8_t` instead of `char4` in `quantize.cu`
+would not depend on the header's choice.
 
 ## Packaging substitutions — local, not upstreamable
 
@@ -388,3 +597,70 @@ is also called on the non-restart path where `regs->exit_result` is stale:
   introducing commit. A clone would be needed.
 - Worth sending alongside the `syscall_exit_restart()` patch already in review,
   since it is the same reviewer, same file, same argument.
+
+## powerpc/eeh: `pci_rescan_remove_lock` self-deadlock in `eeh_rmv_device()`
+
+Patch: `0006-powerpc-eeh-fix-pci_rescan_remove_lock-self-deadlock-in-eeh_rmv_device.patch`
+(carried in `packages/linux-power9`, applied to `~/Development/linux-7.2.2`).
+
+Since `1010b4c012b0` ("powerpc/eeh: Make EEH driver device hotplug safe"),
+`eeh_handle_normal_event()` takes `pci_rescan_remove_lock` on entry and holds it
+across `eeh_reset_device()`. A later fix, `815a8d2feb56`, removed the recursive
+acquisition in `eeh_pe_bus_get()` but left the one in `eeh_rmv_device()`, which
+still wraps `pci_stop_and_remove_bus_device()` in the same non-recursive mutex.
+Every caller already holds it, so the first PE reset involving a device whose
+driver has no EEH error handlers deadlocks `eehd` against itself. The fix drops
+the lock/unlock pair — `pci_stop_and_remove_bus_device()` asserts the caller
+holds it.
+
+`Cc: stable@vger.kernel.org # v6.17+`.
+
+### Confirmed in the field, 2026-09-10
+
+This is the strongest evidence we have for any patch here: the bug reproduced on
+this machine, on the exact device the commit message cites, and the fix held.
+
+PHB 0030 carries an AMD `1022:43f4/43f5` PCIe switch with both NVMe drives *and*
+the SATA controller behind it, so a PE freeze there takes the root disk with it.
+A freeze hit at t=2610s under heavy parallel build I/O, during `diffutils`'
+test suite — shortly after `MAKEFLAGS=-j144` was enabled, which is the first
+thing on this box to drive that many concurrent readers — and went straight down
+the path that deadlocks:
+
+```
+EEH: Reset without hotplug activity
+EEH: Removing 0030:0f:00.0 without EEH sensitive driver
+EEH: Removing 0030:10:00.0 without EEH sensitive driver
+```
+
+`0030:0f:00.0` is the same device named in the upstream commit message, and
+`0030:10:00.0` is the AMD 600-series SATA controller — `ahci`, one of the
+drivers the message calls out by name.
+
+With the patch, recovery completed in ~16 seconds:
+
+```
+EEH: Beginning: 'slot_reset'
+  0030:0d:00.0  nvme2 (root)    -> 'recovered'
+  0030:0e:00.0  nvme1 (1TB)     -> 'recovered'
+EEH: Finished:'slot_reset' with aggregate recovery state:'recovered'
+EEH: Finished:'resume'
+EEH: Recovery successful.
+```
+
+No hung-task or soft-lockup warnings, and no filesystem damage: the two
+in-flight reads that failed came back `sct 0x3 / sc 0x71` (Path Related Status /
+Transient Transport Error — the PCIe transport, not media), the block layer
+retried them after recovery, and `btrfs device stats` reports zeros across the
+board on both mounted filesystems.
+
+Without the patch this would have been a 122-second blocked `eehd`, a PE that is
+never reset, and the global rescan/remove lock held for the remaining uptime.
+
+### Status
+
+- **Applied, booted, and now exercised in production.** Unlike the
+  `interrupt_exit_user_restart()` patch above, this one is not a
+  read-the-source review — it is running in `linux-power9 7.2.2-17`.
+- Ready to send. The reproduction above is worth including in the submission:
+  it is a real EEH event on a Witherspoon AC922, not a synthetic injection.
