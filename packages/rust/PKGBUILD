@@ -1,0 +1,361 @@
+# POWER Maintainer: Alexander Baldeck <alex.bldck@gmail.com>
+# Maintainer: Johannes Löthberg <johannes@kyriasis.com>
+# Maintainer: Jan Alexander Steffens (heftig) <heftig@archlinux.org>
+# Contributor: Alexander F Rødseth <xyproto@archlinux.org>
+# Contributor: Daniel Micay <danielmicay@gmail.com>
+# Contributor: userwithuid <userwithuid@gmail.com>
+# ppc64le: Omarchy ppc64le -- see README.md.  Arch POWER's recipe, narrowed to
+# little-endian POWER9: the big-endian ELFv2 hotfix and the powerpc/espresso
+# branches are gone, and the shipped compiler is built -C target-cpu=pwr9.
+
+# LTO passes may not produce any output for quite some time
+# especially on slower systems
+apb_output_timeout=7200
+
+pkgbase=rust
+pkgname=(
+  rust
+  rust-src
+  rust-wasm
+)
+epoch=1
+pkgver=1.98.1
+pkgrel=1
+pkgdesc="Systems programming language focused on safety, speed and concurrency"
+url=https://www.rust-lang.org/
+arch=(powerpc64le)
+license=("Apache-2.0 OR MIT")
+options=(
+  !emptydirs
+  !lto
+)
+depends=(
+  curl
+  gcc
+  gcc-libs
+  libgit2
+  libssh2
+  llvm-libs
+)
+makedepends=(
+  clang
+  cmake
+  libffi
+  lld
+  llvm
+  llvm-libs
+  ninja
+  perl
+  python
+  rust
+  wasi-libc
+  wasm-component-ld
+)
+checkdepends=(
+  gdb
+  procps-ng
+)
+source=(
+  # Upstream ships .tar.gz and .tar.xz of the same tree, each with its own
+  # .asc from the same key; Arch POWER fetches the .gz, this takes the .xz.
+  "https://static.rust-lang.org/dist/rustc-$pkgver-src.tar.xz"{,.asc}
+  # Patch bootstrap so that rust-analyzer-proc-macro-srv
+  # is in /usr/lib instead of /usr/libexec
+  0001-bootstrap-Change-libexec-dir.patch
+
+  # Put bash completions where they belong
+  0002-bootstrap-Change-bash-completion-dir.patch
+
+  # Fix build with system rustc
+  # https://github.com/rust-lang/rust/issues/143735
+  0003-bootstrap-Workaround-for-system-stage0.patch
+
+  # Use our *-pc-linux-gnu targets, making LTO with clang simpler
+  0004-compiler-Change-LLVM-targets.patch
+
+  # Use our aarch64-linux-gnu-gcc
+  0005-compiler-Use-aarch64-linux-gnu-gcc-to-link-aarch64-t.patch
+
+  # Prefer "lib" over "lib64"
+  0006-compiler-Swap-primary-and-secondary-lib-dirs.patch
+
+  # Arch POWER also carries hotfix-abi.powerpc64.elfv2.patch, which flips the
+  # big-endian powerpc64 target from ELFv1 to ELFv2. That is their BE target's
+  # problem; powerpc64le is ELFv2 in upstream rustc already, and the patch does
+  # not apply to 1.98.1 anyway. Dropped.
+)
+b2sums=('a055c8341556f29a6e2ca5137ca7943365d61d3b7dc30b182c5c62907659d16ad0caf8c5e884ce2bcf79a01844e19563c9c208fecbebe0c38f8ae6473f60e0eb'
+        'SKIP'
+        '48d81e3cfb2009426ca5ee22f2e17a0fb5b253507892fe77489d080ee78d8094dc959f35def651f8518669f85a024986d821e4666afc31bf78ce320bf2aa7c57'
+        '45946e9789dd75f7c61e3c99ffc6c20dce8c6a86c2abed807969f46c3f463a5c9801156ca4aab8c88748e51ba7d451c934aaf093707b29367de3bf5fa2579a46'
+        '73498b1a504e4f7f4a3e3ba9f79b02b475e2cbc6e5ba65f633add3dc1aca2a2097094ca0e6a933614f461285ef8a82d360f4b3b199a178e4f85d85a705df27c7'
+        'edb55e641b6b8ef70e8a696cc13ca5907c3c0cb48982b515034f4a0fd66520215cd5447bc16d61ac81b5fcc92b752b3195acaa171ed1cf63f2accf51ed12ec50'
+        '40e14ccc8b5dfff5d87f43a8763d1d2a49435c7a76633a920648a43dd25df0ab056107722ccdc574d9d603322699c6f3990878e19ab25d5e0117689d8f6b99b8'
+        '3db6d42bb77db44fc220084314b015280507d4afe81990baefdb6c9303d7b9e102497042c67969105b7d1d6206e947f29ec44788299ee8b7e39562be610091aa')
+validpgpkeys=(
+  108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE  # Rust Language (Tag and Release Signing Key) <rust-key@rust-lang.org>
+)
+
+# Make sure the duplication in rust-wasm is found
+COMPRESSZST+=(--long)
+
+prepare() {
+  cd rustc-$pkgver-src
+
+  local src
+  for src in "${source[@]}"; do
+    src="${src%%::*}"
+    src="${src##*/}"
+    src="${src%.zst}"
+    [[ $src = *.patch ]] || continue
+    echo "Applying patch $src..."
+    patch -Np1 < "../$src"
+  done
+
+  sed -i 's/\("files":{[^,]*\),[^}]*}/\1}/' vendor/*/.cargo-checksum.json
+
+  _rust_target="\"${CHOST}\""
+
+  # Arch POWER turns LTO off for 32-bit powerpc; powerpc64le is the only arch
+  # here, so it is always fat.
+  _lto="fat"
+
+  cat >bootstrap.toml <<END
+# see src/bootstrap/defaults/
+profile = "dist"
+
+[llvm]
+download-ci-llvm = false
+link-shared = true
+
+[build]
+target = [
+  ${_rust_target},
+  "wasm32-unknown-unknown",
+  "wasm32-wasip1",
+  "wasm32-wasip1-threads",
+  "wasm32-wasip2",
+  "wasm32v1-none"
+]
+cargo = "/usr/bin/cargo"
+description = "Omarchy ppc64le $pkgbase $epoch:$pkgver-$pkgrel"
+rustc = "/usr/bin/rustc"
+rustfmt = "/usr/bin/rustfmt"
+locked-deps = true
+vendor = true
+tools = [
+  "cargo",
+  "clippy",
+  "rustdoc",
+  "rustfmt",
+  "rust-analyzer-proc-macro-srv",
+  "analysis",
+  "src",
+]
+sanitizers = true
+profiler = true
+
+# Generating docs fails with the wasm32-* targets
+docs = false
+
+[install]
+prefix = "/usr"
+
+[rust]
+codegen-units = 1
+codegen-units-std = 1
+debuginfo-level = 0
+debuginfo-level-std = 0
+incremental = true 
+channel = "stable"
+rpath = false
+frame-pointers = true
+lld = false
+#use-lld = "external"
+llvm-bitcode-linker = false
+deny-warnings = false
+backtrace-on-ice = true
+jemalloc = false
+remap-debuginfo = false
+lto = "${_lto}"
+
+[dist]
+compression-formats = ["gz"]
+compression-profile = "fast"
+
+[target.${_rust_target}]
+cc = "/usr/bin/${CHOST}-gcc"
+cxx = "/usr/bin/${CHOST}-g++"
+ar = "/usr/bin/${CHOST}-gcc-ar"
+ranlib = "/usr/bin/${CHOST}-gcc-ranlib"
+llvm-config = "/usr/bin/llvm-config"
+linker = "${CHOST}-gcc"
+# Build the compiler we ship, its std and its tools for POWER9. Per-target so
+# the wasm32 std does not see it: an unrecognised CPU on wasm32 is "ignored"
+# by LLVM but wipes the target's default feature set (bulk-memory, sign-ext,
+# ...), which RUSTFLAGS_NOT_BOOTSTRAP -- the stage-scoped alternative -- did
+# to rust-wasm in the first 1.98.1 build. See README.md. Applies at every
+# stage, so the throwaway stage-1 compiler is POWER9 code too; that costs
+# nothing here.
+rustflags = ["-Ctarget-cpu=pwr9"]
+
+[target.wasm32-unknown-unknown]
+cc = "/usr/bin/clang"
+cxx = "/usr/bin/clang++"
+ar = "/usr/bin/llvm-ar"
+ranlib = "/usr/bin/llvm-ranlib"
+linker = "/usr/bin/wasm-ld"
+default-linker = "wasm-ld"
+sanitizers = false
+profiler = false
+
+[target.wasm32v1-none]
+cc = "/usr/bin/clang"
+cxx = "/usr/bin/clang++"
+ar = "/usr/bin/llvm-ar"
+ranlib = "/usr/bin/llvm-ranlib"
+linker = "/usr/bin/wasm-ld"
+default-linker = "wasm-ld"
+sanitizers = false
+profiler = false
+
+[target.wasm32-wasip1]
+cc = "/usr/bin/clang"
+cxx = "/usr/bin/clang++"
+ar = "/usr/bin/llvm-ar"
+ranlib = "/usr/bin/llvm-ranlib"
+linker = "/usr/bin/wasm-ld"
+default-linker = "wasm-ld"
+sanitizers = false
+profiler = false
+wasi-root = "/usr/share/wasi-sysroot"
+
+[target.wasm32-wasip1-threads]
+cc = "/usr/bin/clang"
+cxx = "/usr/bin/clang++"
+ar = "/usr/bin/llvm-ar"
+ranlib = "/usr/bin/llvm-ranlib"
+linker = "/usr/bin/wasm-ld"
+default-linker = "wasm-ld"
+sanitizers = false
+profiler = false
+wasi-root = "/usr/share/wasi-sysroot"
+
+[target.wasm32-wasip2]
+cc = "/usr/bin/clang"
+cxx = "/usr/bin/clang++"
+ar = "/usr/bin/llvm-ar"
+ranlib = "/usr/bin/llvm-ranlib"
+linker = "/usr/bin/wasm-ld"
+default-linker = "wasm-ld"
+sanitizers = false
+profiler = false
+wasi-root = "/usr/share/wasi-sysroot"
+END
+}
+
+_pick() {
+  local p="$1" f d; shift
+  for f; do
+    d="$srcdir/$p/${f#$pkgdir/}"
+    mkdir -p "$(dirname "$d")"
+    mv "$f" "$d"
+    rmdir -p --ignore-fail-on-non-empty "$(dirname "$f")"
+  done
+}
+
+build() {
+  cd rustc-$pkgver-src
+
+  export RUST_BACKTRACE=1
+  unset CFLAGS CXXFLAGS LDFLAGS
+
+  # The POWER9 target-cpu for the shipped compiler is set per target in
+  # bootstrap.toml above (prepare()), not through RUSTFLAGS here. bootstrap
+  # (src/bootstrap/src/core/builder/cargo.rs) builds CARGO_ENCODED_RUSTFLAGS
+  # for each cargo run from: bootstrap's own flags, the [target.*] rustflags
+  # for the target being compiled, then the environment's RUSTFLAGS and
+  # RUSTFLAGS_{,NOT_}BOOTSTRAP (stage 0 / stage >= 1). Nothing overrides
+  # anything; they concatenate.
+  #
+  # Do not rely on makepkg's RUSTFLAGS for this: /etc/makepkg.conf.d/rust.conf
+  # is a local edit on the build box (Arch POWER's own 1.97.1 binaries are plain
+  # POWER8 code), and bq's makepkg --config never loads makepkg.conf.d at all.
+  # The recipe has to carry the flag itself. README.md has the measurements.
+  #
+  # -vv hands cargo -v, so every rustc command line -- flags included, out-dir
+  # naming the stage -- is in the makepkg log. That log is the evidence for the
+  # claims above; keep it.
+  DESTDIR="$srcdir/dest-rust" python ./x.py install -vv -j "$(nproc)"
+
+  cd ../dest-rust
+
+  # delete unnecessary files, e.g. files only used for the uninstall script
+  rm -v usr/lib/rustlib/{components,install.log,rust-installer-version,uninstall.sh}
+  rm -v usr/lib/rustlib/manifest-*
+
+  # licenses for main rust package
+  local ldir="usr/share/licenses/rust" f d
+  mkdir -p "$ldir"
+  for f in usr/share/doc/*/{COPYRIGHT,LICENSE}*; do
+    d="$(dirname "$f")"
+    case $f in
+      */LICENSE-APACHE) rm -v "$f" ;;
+      *) mv -v "$f" "$ldir/${f##*/}.${d##*/}" ;;
+    esac
+    rmdir -p --ignore-fail-on-non-empty "$d"
+  done
+
+  _pick dest-src  usr/lib/rustlib/src
+  _pick dest-wasm usr/lib/rustlib/wasm32{,v1}-*
+}
+
+package_rust() {
+  optdepends=(
+    'gdb: rust-gdb script'
+    'lldb: rust-lldb script'
+  )
+  provides=(
+    cargo
+    rustfmt
+  )
+  conflicts=(
+    cargo
+    'rust-docs<1:1.56.1-3'
+    rustfmt
+  )
+  replaces=(
+    cargo
+    cargo-tree
+    'rust-docs<1:1.56.1-3'
+    rustfmt
+  )
+
+  cp -a dest-rust/* "$pkgdir"
+}
+
+package_rust-wasm() {
+  pkgdesc="WebAssembly targets for Rust"
+  depends=(
+    lld
+    rust
+    wasm-component-ld
+  )
+
+  cp -a dest-wasm/* "$pkgdir"
+
+  install -Dt "$pkgdir/usr/share/licenses/$pkgname" -m644 \
+    rustc-$pkgver-src/{COPYRIGHT,LICENSE-MIT}
+}
+
+package_rust-src() {
+  pkgdesc="Source code for the Rust standard library"
+  depends=(rust)
+
+  cp -a dest-src/* "$pkgdir"
+
+  install -Dt "$pkgdir/usr/share/licenses/$pkgname" -m644 \
+    rustc-$pkgver-src/{COPYRIGHT,LICENSE-MIT}
+}
+
+# vim:set ts=2 sw=2 et:
