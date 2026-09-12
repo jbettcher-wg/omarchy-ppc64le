@@ -1,0 +1,59 @@
+From: <author>
+Subject: [PATCH] powerpc/eeh: fix pci_rescan_remove_lock self-deadlock in eeh_rmv_device()
+
+Since commit 1010b4c012b0 ("powerpc/eeh: Make EEH driver device hotplug
+safe"), eeh_handle_normal_event() takes pci_rescan_remove_lock on entry and
+holds it across eeh_reset_device(). Commit 815a8d2feb56 ("powerpc/eeh: fix
+recursive pci_lock_rescan_remove locking in EEH event handling") removed
+the recursive acquisition in eeh_pe_bus_get(), but eeh_rmv_device() still
+takes the same non-recursive mutex around pci_stop_and_remove_bus_device().
+
+eeh_rmv_device() is only reached through eeh_pe_dev_traverse() from
+eeh_reset_device() or from the recover_failed path of
+eeh_handle_normal_event(), both of which run with the lock held. So the
+first time a PE containing a device whose driver has no EEH error handlers
+(xhci_hcd, ahci, ...) needs a reset, eehd deadlocks on itself:
+
+  EEH: Reset without hotplug activity
+  EEH: Removing 0030:0f:00.0 without EEH sensitive driver
+  INFO: task eehd:1049 blocked for more than 122 seconds.
+  Call Trace:
+   __mutex_lock.constprop.0+0x8b0/0x10f0
+   pci_lock_rescan_remove+0x24/0x40
+   eeh_rmv_device+0x204/0x280
+   eeh_pe_dev_traverse+0x80/0x130
+   eeh_reset_device+0xd8/0x298
+   eeh_handle_normal_event+0x834/0xa60
+   eeh_event_handler+0xe8/0x160
+  INFO: task eehd:1049 is blocked on a mutex likely owned by task eehd:1049.
+
+The PE is never reset, every driver in it stays in the frozen state, and
+because the global rescan/remove lock is held forever, all later PCI
+hotplug, rescan and remove operations on the system block as well.
+
+Drop the lock/unlock pair; pci_stop_and_remove_bus_device() already
+asserts that the lock is held by the caller.
+
+Fixes: 1010b4c012b0 ("powerpc/eeh: Make EEH driver device hotplug safe")
+Cc: stable@vger.kernel.org # v6.17+
+---
+ arch/powerpc/kernel/eeh_driver.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+--- a/arch/powerpc/kernel/eeh_driver.c
++++ b/arch/powerpc/kernel/eeh_driver.c
+@@ -533,9 +533,12 @@ static void eeh_rmv_device(struct eeh_de
+ 		if (rmv_data)
+ 			list_add(&edev->rmv_entry, &rmv_data->removed_vf_list);
+ 	} else {
+-		pci_lock_rescan_remove();
++		/*
++		 * Callers (eeh_reset_device() and the recover_failed path of
++		 * eeh_handle_normal_event()) hold pci_rescan_remove_lock;
++		 * pci_stop_and_remove_bus_device() asserts it.
++		 */
+ 		pci_stop_and_remove_bus_device(dev);
+-		pci_unlock_rescan_remove();
+ 	}
+ }
+ 

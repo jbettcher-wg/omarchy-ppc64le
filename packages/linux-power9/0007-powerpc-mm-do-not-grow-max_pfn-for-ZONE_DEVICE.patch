@@ -1,0 +1,62 @@
+From: daedalao <daedalao@hotmail.com>
+Subject: [PATCH] powerpc/mm: do not grow max_pfn for ZONE_DEVICE ranges
+
+add_pages() unconditionally calls update_end_of_memory_vars(), so a
+devm_memremap_pages() of a MEMORY_DEVICE_PRIVATE range (which lives in a
+fake physical window near the top of the physical address space) raises
+max_pfn far beyond the end of RAM.
+
+dma_direct_get_required_mask() derives a device's DMA requirement from
+max_pfn, and dma_go_direct() re-evaluates it on every mapping for a
+dma_ops_bypass device. On powernv, a PCI device whose DMA mask is smaller
+than the bypass window (e.g. amdgpu, 44 bits) is given the TVE#0 "64-bit
+DMA iommu bypass" by pnv_pci_ioda_dma_64bit_bypass(): a static 256MB-TCE
+table mapping dma = phys + 4GB, while the PE's software iommu_table is
+left in place. Once max_pfn exceeds the device mask, dma_go_direct()
+starts returning false and every subsequent mapping goes through
+dma_iommu_ops: IOVAs are allocated from, and TCEs written into, the
+software table the hardware is no longer consulting. The static table
+translates those IOVAs linearly onto unrelated RAM. Nothing faults.
+
+Observed on an IBM 8335-GCA (POWER8, hash MMU, 64K pages) with two
+Radeon Pro V620 (Navi21): amdgpu registers 30GB of VRAM as device-private
+memory for KFD SVM, after which all user-VM GPU access to system memory
+returns garbage while kernel buffers mapped before the registration keep
+working. With 4K pages the registration fails (linear map range) so the
+bug is masked. Skipping the max_pfn update for ZONE_DEVICE ranges (which
+are not RAM and can never be DMA targets) restores correct DMA with HMM
+fully enabled.
+
+The powernv pseudo-bypass leaving a stale iommu_table attached is a
+second problem: any later growth of max_pfn (memory hotplug) would
+re-trigger the same silent corruption. That deserves its own fix in
+pci-ioda.c.
+
+Signed-off-by: daedalao <daedalao@hotmail.com>
+---
+ arch/powerpc/mm/mem.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+--- a/arch/powerpc/mm/mem.c
++++ b/arch/powerpc/mm/mem.c
+@@ -135,9 +135,17 @@
+ 	if (ret)
+ 		return ret;
+
+-	/* update max_pfn, max_low_pfn and high_memory */
+-	update_end_of_memory_vars(start_pfn << PAGE_SHIFT,
+-				  nr_pages << PAGE_SHIFT);
++	/*
++	 * Do not let ZONE_DEVICE (e.g. MEMORY_DEVICE_PRIVATE) ranges grow
++	 * max_pfn: they are not RAM and can never be DMA targets, but
++	 * dma_direct_get_required_mask() derives the device DMA requirement
++	 * from max_pfn, and on powernv a dma_ops_bypass device whose PE uses
++	 * the TVE#0 64-bit pseudo-bypass table would silently fall back to
++	 * the (now stale) iommu_table path once max_pfn exceeds its mask.
++	 */
++	if (!params->pgmap)
++		update_end_of_memory_vars(start_pfn << PAGE_SHIFT,
++					  nr_pages << PAGE_SHIFT);
+
+ 	return ret;
+ }

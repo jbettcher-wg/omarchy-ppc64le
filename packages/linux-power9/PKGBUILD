@@ -1,0 +1,219 @@
+# Maintainer: Jordan Bettcher <thebettcher@gmail.com>
+# ppc64le: Omarchy ppc64le -- see README.md.  The POWER9 kernel: mainline
+# 7.2.2 plus seven patches this machine needs to boot, keep its USB alive,
+# run the chromium sandbox, and hand the GPU correct DMA.  Nothing here is
+# a fork: every patch is a separate file with a header saying what it fixes.
+#
+# This recipe replaces the old `make pacman-pkg` flow, which built out of a
+# hand-maintained working tree in ~/Development and kept the config nowhere
+# at all.  Everything the kernel is made of is now a tracked file in this
+# directory.
+
+# ppc64le: which MMU page size to build (see README.md):
+#   4k   the desktop kernel -- what .24 boots, what the ISO ships
+#   64k  the same kernel with CONFIG_PPC_64K_PAGES, for ROCm/KFD: amdgpu
+#        can only register device-private memory for SVM when the linear
+#        map granule is 64K, so HMM/KFD compute needs this one
+# Both are built from this one recipe; they differ only in the config file
+# and the package name.  The default is the one bq builds unattended; build
+# the other with `_pagesize=64k makepkg` (README.md, "Building both").
+_pagesize=${_pagesize:-4k}
+
+_kernver=7.2.2
+
+case "$_pagesize" in
+  4k)
+    pkgbase=linux-power9
+    _config=config.4k
+    pkgver=$_kernver
+    # api-headers only ships from the 4K build: it provides/conflicts
+    # linux-api-headers, and only one package in the repo can do that.
+    _extra=(headers api-headers)
+    ;;
+  64k)
+    pkgbase=linux-power9-64k
+    _config=config.64k
+    # CONFIG_LOCALVERSION="-64k" makes kernelrelease 7.2.2-64k; pacman has
+    # no '-' in pkgver, hence the underscore.  prepare() asserts the two
+    # still agree, so a config edit cannot silently rename the package.
+    pkgver=${_kernver}_64k
+    _extra=(headers)
+    ;;
+  *) echo "_pagesize must be 4k or 64k" >&2; return 1 ;;
+esac
+
+pkgname=("$pkgbase")
+for _p in "${_extra[@]}"; do pkgname+=("$pkgbase-$_p"); done
+
+# ppc64le: pkgrel is now a number in this file, not kbuild's .version
+# counter, and it is shared by both page sizes.  It starts at 22 because
+# the 4K package had already reached 7.2.2-21 under the old flow and
+# repo-publish.sh refuses a same-version rebuild with different contents.
+# Bump it for every change to this directory -- README.md, "Versioning".
+pkgrel=22
+pkgdesc='Upstream Linux'
+url='https://www.kernel.org/'
+arch=(powerpc64le)
+license=(GPL-2.0-only)
+makedepends=(
+  bc
+  bison
+  cpio
+  flex
+  gettext
+  kmod
+  libelf
+  openssl
+  pahole
+  perl
+  python
+  rsync
+  tar
+)
+# ppc64le: !buildflags is the load-bearing one -- makepkg.conf's CFLAGS
+# have no business in a kernel build.  !strip because modules are stripped
+# by INSTALL_MOD_STRIP=1 and vmlinuz must not be touched; !debug because
+# the old flow dropped the `debug` split (an unstripped vmlinux, ~1.5 GB,
+# not wanted on an install medium).
+options=(!strip !debug !buildflags)
+
+source=("https://cdn.kernel.org/pub/linux/kernel/v${_kernver%%.*}.x/linux-$_kernver.tar.xz"
+        # Applied in this order.  0003 depends on 0001 (it edits the block
+        # 0001 adds) and 0005 depends on 0002 being in place first.
+        0001-xhci-pci-no-64bit-dma-for-amd-promontory19-43fc.patch
+        0002-powerpc-syscall_exit_restart-return-accumulated-exit_result.patch
+        0003-xhci-pci-trb-overfetch-for-amd-promontory19-43fc.patch
+        0004-powerpc-syscall-keep-seccomp-ptrace-return-value-when-syscall-skipped.patch
+        0005-powerpc-interrupt-clear-exit_flags-before-irqentry_exit-exit-work.patch
+        0006-powerpc-eeh-fix-pci_rescan_remove_lock-self-deadlock-in-eeh_rmv_device.patch
+        0007-powerpc-mm-do-not-grow-max_pfn-for-ZONE_DEVICE.patch
+        # Both configs are listed whatever _pagesize is, so the sums below
+        # are one fixed list and the two builds share a source cache.
+        config.4k
+        config.64k)
+sha256sums=('7d0e7ce14f98c43efe880cffbf354a59be45928fdf7170d7333c374ae91c0d83'
+            '966e5fe6696603044769a3b7781e084aacb262faf7b32c57016504e865989f08'
+            '84cf2930d34a9523f952d5d3311f0a2df6ce26166fa9d850d3c1630b0d5bf63e'
+            '598c846855ed395f496266a022cc8c3ae95143562f152344269932a5e1945356'
+            '6989363b6cf739e25d9283734bbec68d949f27629c8f44cf560565e5a54c84bf'
+            '894d71341824ead1a454ea70d112b45d34cd4c4aa057d4495a133c8cccd44755'
+            '44b1b99ebc531e2f5617fde996338ba88dcfae9437eae1d461550e266c7d400f'
+            '4f24f8bdcbae70eee6098a5161989140c735e838c32a5aa64b17d60d8fbf27f5'
+            '3ef6c5e7cc100433cd71c9bc981c57710e98d40f6dba9a1b3088b4d621e62d95'
+            '79e770b6002c296ba74b4c449d974a35cbac7bbc0672702d3435485b307aa03c')
+
+# Reproducible-ish build stamps.  The old flow inherited whatever the shell
+# had; name them so two builds of the same pkgrel differ only by timestamp.
+export KBUILD_BUILD_HOST=omarchy-ppc64le
+export KBUILD_BUILD_USER=$pkgbase
+export KBUILD_BUILD_TIMESTAMP="$(date -Ru${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH})"
+
+prepare() {
+  cd "linux-$_kernver"
+
+  local src
+  for src in "${source[@]}"; do
+    src="${src%%::*}"
+    src="${src##*/}"
+    [[ $src = *.patch ]] || continue
+    echo "Applying patch $src..."
+    patch -Np1 -i "$srcdir/$src"
+  done
+
+  echo "Setting config ($_config)..."
+  cp "$srcdir/$_config" .config
+  # olddefconfig, not oldconfig: no prompts, and it is what regenerates
+  # include/config/auto.conf.  Builds 14 and 16 shipped without HSA_AMD
+  # because a hand-edited .config was built against a stale auto.conf.
+  make olddefconfig
+
+  # The config decides the package name (CONFIG_LOCALVERSION), so refuse
+  # to build if it no longer matches the pkgver above.
+  make -s kernelrelease > version
+  local rel; rel="$(<version)"
+  if [[ "${rel//-/_}" != "$pkgver" ]]; then
+    echo "kernelrelease '$rel' does not match pkgver '$pkgver'" >&2
+    return 1
+  fi
+  echo "Prepared $pkgbase version $rel"
+}
+
+build() {
+  cd "linux-$_kernver"
+  # KBUILD_BUILD_VERSION is the "#22" in `uname -v`.  The old flow put
+  # kbuild's own .version counter there and then reused it as pkgrel; keep
+  # the two equal so a running kernel still names its package version.
+  make KBUILD_BUILD_VERSION="$pkgrel" all
+}
+
+# The splits below are the in-tree scripts/package/PKGBUILD's, kept
+# deliberately close to it so these packages stay byte-comparable with the
+# ones `make pacman-pkg` produced (same paths, same pkgdesc, same absence
+# of depends -- see README.md before adding any).
+
+_package() {
+  pkgdesc="The $pkgdesc kernel and modules"
+
+  cd "linux-$_kernver"
+  local kernver="$(<version)"
+  local modulesdir="$pkgdir/usr/lib/modules/$kernver"
+
+  echo "Installing boot image..."
+  # systemd expects to find the kernel here to allow hibernation.
+  install -Dm644 "$(make -s image_name)" "$modulesdir/vmlinuz"
+
+  # mkinitcpio's pacman hook reads this file to decide what to call the
+  # kernel: it is what produces /boot/vmlinuz-linux-power9 and the matching
+  # initramfs, which is what p9-petitboot-entry writes boot entries for.
+  echo "$pkgbase" > "$modulesdir/pkgbase"
+
+  echo "Installing modules..."
+  make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
+    DEPMOD=true modules_install
+
+  if [ -d "arch/powerpc/boot/dts" ]; then
+    echo "Installing dtbs..."
+    make INSTALL_DTBS_PATH="$modulesdir/dtb" dtbs_install
+  fi
+
+  # remove build link, it is part of -headers
+  rm -f "$modulesdir/build"
+}
+
+_package-headers() {
+  pkgdesc="Headers and scripts for building modules for the $pkgdesc kernel"
+
+  cd "linux-$_kernver"
+  local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
+
+  if grep -q CONFIG_MODULES=y include/config/auto.conf; then
+    echo "Installing build files..."
+    ./scripts/package/install-extmod-build "$builddir"
+  fi
+
+  echo "Installing System.map and config..."
+  mkdir -p "$builddir"
+  cp System.map "$builddir/System.map"
+  cp .config "$builddir/.config"
+
+  echo "Adding symlink..."
+  mkdir -p "$pkgdir/usr/src"
+  ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+}
+
+_package-api-headers() {
+  pkgdesc="Kernel headers sanitized for use in userspace"
+  provides=(linux-api-headers="$pkgver")
+  conflicts=(linux-api-headers)
+
+  cd "linux-$_kernver"
+  make headers_install INSTALL_HDR_PATH="$pkgdir/usr"
+}
+
+# pkgname is computed above, so the package_* functions have to be too.
+for _p in "${pkgname[@]}"; do
+  eval "package_$_p() {
+    $(declare -f "_package${_p#$pkgbase}")
+    _package${_p#$pkgbase}
+  }"
+done
