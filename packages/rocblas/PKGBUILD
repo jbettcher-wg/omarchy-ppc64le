@@ -114,7 +114,12 @@ build() {
     # ~20 of them; the only GPU in this machine is the RX 7900 XTX (gfx1100).
     # If MI50s (gfx906) go into the box this becomes "gfx1100;gfx906" and
     # the package must be rebuilt.  README.md.
-    -D GPU_TARGETS=gfx1100
+    #
+    # ROCBLAS_GPU_TARGETS in the environment overrides it without editing this
+    # file, for building the same recipe against a different machine's GPU
+    # (e.g. ROCBLAS_GPU_TARGETS=gfx1030 for a Radeon Pro V620).  Unset, the
+    # default above is what it always was.
+    -D GPU_TARGETS="${ROCBLAS_GPU_TARGETS:-gfx1100}"
   )
   cmake "${cmake_args[@]}"
   cmake --build build

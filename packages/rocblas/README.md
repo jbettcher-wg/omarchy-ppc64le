@@ -16,6 +16,12 @@ Tensile generate+assemble pass, and no other AMD GPU is present.
 `../llama.cpp-hip`. rocBLAS has no runtime fallback for an architecture
 without a Tensile library; a gfx906 would enumerate and then fail every GEMM.
 
+`ROCBLAS_GPU_TARGETS` in the build environment overrides the target list
+without editing the recipe -- `ROCBLAS_GPU_TARGETS='gfx1030'` builds the same
+package for a Navi21 (Radeon Pro V620) box, `'gfx1100;gfx906'` for two GPUs.
+Unset, the default is `gfx1100` exactly as before; this repo's own builds are
+unaffected.
+
 ## Deviations from Arch's recipe
 
 - `arch=()` gains `powerpc64le`.
