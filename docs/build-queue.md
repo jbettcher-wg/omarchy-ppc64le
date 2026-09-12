@@ -351,6 +351,21 @@ and much more than 30% of the part ccache can touch: embree's build went from
 235 s to 120 s, and what is left in the warm pass is meson and cmake configure,
 `stage-deps`, linking, `strip` and the zstd of the archive.
 
+The same three passes on `mesa`, a package from the packager sweep, at `-j144`
+across the whole machine (wall is the whole bq run; build is makepkg alone):
+
+| pass | wall | build | ccache |
+|---|---|---|---|
+| `--no-ccache` | 372 s | 263 s | — |
+| cold (empty cache) | 366 s | 274 s | 246/3268 hits, 7.5% |
+| warm | **315 s** | **222 s** | 3266/3268 hits, 99.9% |
+
+A 99.9% hit rate buys mesa only 16% of its build time. At 144 threads its
+3,268 compiles were never the bulk of the wall clock. What's left is meson
+configure, LTO link, strip and compression, and ccache can't touch any of that.
+The cold pass's 7.5% hit rate comes from mesa compiling some of its own sources
+more than once, into different drivers.
+
 Two settings are deliberate:
 
 - **`compiler_check=content`**, not ccache's default `mtime`. The default

@@ -149,6 +149,32 @@ package_qt6-base() {
   depends+=(qt6-translations)
   DESTDIR="$pkgdir" cmake --install build
 
+  # QtBuildInternalsExtra.cmake records QT_SOURCE_TREE as the absolute path of
+  # this build's source tree ($srcdir/qtbase). Nothing at that path exists on an
+  # installed system -- but it is not inert either. Qt6BuildInternalsConfig.cmake
+  # does `if(EXISTS "${QT_SOURCE_TREE}/cmake")` and PREPENDS that directory to
+  # CMAKE_MODULE_PATH for every downstream qt6 module build (qt6-declarative,
+  # qt6-webengine, ...), and five more helpers prefer files under it over the
+  # installed ones. So on any machine where that path happens to exist -- a
+  # later qt6-base build in the same buildroot -- a module build would silently
+  # load a stale qtbase's CMake. The published 6.11.2-3 ships
+  # "/var/tmp/qt6t/build/qt6-base/src/qtbase" here; elf-pathguard caught it
+  # on -4.
+  #
+  # Emptied rather than deleted, so the cache entry still exists and every
+  # EXISTS check above resolves to the installed files. Building qtbase itself
+  # is unaffected: QtBuildHelpers.cmake sets QT_SOURCE_TREE with FORCE from
+  # QtBase_SOURCE_DIR. Local workaround; the upstreamable form is for Qt not to
+  # write the variable into an installed file at all.
+  local _extra="$pkgdir"/usr/lib/cmake/Qt6BuildInternals/QtBuildInternalsExtra.cmake
+  sed -i -E 's|^(set\(QT_SOURCE_TREE )"[^"]*"|\1""|' "$_extra"
+  # Fail here, by name, if the line format ever changes and the sed misses --
+  # rather than leaving it to the guard's generic message after packaging.
+  if grep -qF "$srcdir" "$_extra"; then
+    error "QT_SOURCE_TREE still records the build tree in ${_extra#$pkgdir}"
+    return 1
+  fi
+
   install -Dm644 $_pkgfn/LICENSES/* -t "$pkgdir"/usr/share/licenses/$pkgbase
 }
 

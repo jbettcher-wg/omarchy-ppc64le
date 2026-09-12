@@ -675,6 +675,28 @@ CLASSES = [
 ]
 
 
+def _elf_pathguard_fix(line):
+    """The fix for an elf-pathguard FAIL line depends on what it caught."""
+    if "in a file other builds read" in line:
+        return ("A .pc, *-config, CMake or Makefile fragment records a build-tree "
+                "or sysroot path, and downstream builds read it. This is not an "
+                "rpath problem: find what consumes the variable, then scrub it in "
+                "package() -- e.g. qt6-base's QT_SOURCE_TREE, which "
+                "Qt6BuildInternalsConfig.cmake prepends to CMAKE_MODULE_PATH "
+                "whenever the path exists.")
+    if "in shebang" in line or "interpreter outside /usr" in line:
+        return ("A script's #! line points into the build tree. Fix the "
+                "interpreter the build substitutes (usually a python/perl "
+                "path taken from the sysroot) in the recipe; do not ship it.")
+    return None      # an ELF finding: the class's rpath advice is right
+
+
+# Per-guard refinements of the canned CLASSES fix text, keyed by guard name.
+# Each takes the guard's FAIL line and returns a fix, or None to keep the
+# canned one.
+GUARD_FIXES = {"elf-pathguard": _elf_pathguard_fix}
+
+
 def classify(logpath):
     try:
         body = open(logpath, errors="replace").read()
@@ -1582,6 +1604,21 @@ def build_one(pkgbase, recipe_src, args, st, slot):
             _g = result.get("guard", "elf-pathguard")
             cls, fix = _g, dict((c[0], c[2]) for c in CLASSES).get(
                 _g, "A post-build guard rejected this package.")
+            # The class's canned fix talks about ELF rpaths, but elf-pathguard
+            # also rejects text files, and for those that advice points the
+            # wrong way: qt6-base 6.11.2-4 was refused for a path in a CMake
+            # script and told to fix its rpath handling.  Take the detail from
+            # the guard's own FAIL line, which names the file, and pick the fix
+            # by what kind of file it is.  classify() alone can land on an
+            # unrelated earlier line (a cmake "Could NOT find ...").
+            try:
+                _body = open(log, errors="replace").read()
+            except OSError:
+                _body = ""
+            _m = re.search(r"^%s: FAIL [^\n]*$" % re.escape(_g), _body, re.M)
+            if _m:
+                line = _m.group(0)[:200]
+                fix = GUARD_FIXES.get(_g, lambda l: fix)(line) or fix
         if rc == 124:
             cls, fix = "timeout", "Exceeded --timeout; re-run with a longer one."
         result.update(status="failed", rc=rc, **{"class": cls},
