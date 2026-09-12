@@ -21,7 +21,7 @@
 
 pkgname=omarchy-nvim
 pkgver=2026.8.13
-pkgrel=3
+pkgrel=4
 pkgdesc='Pre-built LazyVim configuration with cached plugins (native tools, no mason downloads)'
 arch=(any)
 url='https://github.com/LazyVim/LazyVim'
@@ -43,15 +43,18 @@ optdepends=(
   'fd: snacks.nvim file picker'
   'taplo-cli: TOML formatting and LSP'
   'yaml-language-server: LSP for YAML'
+  "rust: build blink.cmp's fuzzy matcher (falls back to the Lua one without it)"
 )
 conflicts=(omarchy-lazyvim)
 source=("https://pkgs.omarchy.org/x86_64/${pkgname}-${pkgver}-1-any.pkg.tar.zst"
         no-mason-downloads.lua
-        jit_startup.lua)
+        jit_startup.lua
+        blink-cmp-build-fuzzy.lua)
 noextract=("${pkgname}-${pkgver}-1-any.pkg.tar.zst")
 sha256sums=('ff7cca4d58198ef6ea0c16ff93bd0369b307a40fae4ed300f6a2a75bb444fe1f'
-            'SKIP'
-            'SKIP')
+            '2425c048171ccded73e92293501d66462a008ec7624f328e44f470a1a1067d5b'
+            'f639707ccb384d0ad8a696ee4f2809a4b77995ba1ec4fee8ede45a9584adb3dc'
+            '7cb7765e1732501c367113d2f31967c301a6a0c1943b8649eaf0b96ce3d946d4')
 
 _mason=etc/skel/.local/share/nvim/mason
 
@@ -107,6 +110,13 @@ package() {
     "${pkgdir}/etc/skel/.config/nvim/lua/plugins/no-mason-downloads.lua"
   install -Dm644 "${srcdir}/no-mason-downloads.lua" \
     "${pkgdir}/usr/share/omarchy-nvim/config/lua/plugins/no-mason-downloads.lua"
+
+  # blink.cmp's Rust matcher: build it, do not download it (no ppc64le asset).
+  # Header of the file has the reasoning; same two copies as above.
+  install -Dm644 "${srcdir}/blink-cmp-build-fuzzy.lua" \
+    "${pkgdir}/etc/skel/.config/nvim/lua/plugins/blink-cmp-build-fuzzy.lua"
+  install -Dm644 "${srcdir}/blink-cmp-build-fuzzy.lua" \
+    "${pkgdir}/usr/share/omarchy-nvim/config/lua/plugins/blink-cmp-build-fuzzy.lua"
 
   # Turn LuaJIT's trace compiler off for the duration of init.lua.  Startup
   # is run-once code, and compiling it costs about 20% of the time to first
