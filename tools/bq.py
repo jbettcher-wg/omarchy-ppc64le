@@ -31,9 +31,18 @@ makepkg ever sees it.
 Subcommands
 -----------
   plan     resolve build order for a set of targets, write queue.json
-  build    build the queue, in order, resumably
+  build    build the queue, in order, resumably; -j builds independent
+           packages concurrently
   status   what has been built, what failed, and why
   triage   emit the failure work queue grouped by failure class
+
+`build -j N` exists because most of a package's wall time is not compiling.
+configure probes one feature at a time, autoreconf is serial, the final link is
+one process, and so are strip and the zstd of the archive; on 176 threads the
+box idles through all of it.  The queue already knows which packages depend on
+each other, so the ones that do not can overlap.  Concurrency is off by default
+(-j1 is byte-for-byte the old behaviour); see the "concurrency" section below
+for how the sysroot, MAKEFLAGS and the state file are made safe under it.
 
 Nothing here writes to /etc, installs into the live system, or builds inside a
 source checkout.  See RULES.md.
@@ -44,8 +53,10 @@ import re
 import sys
 import json
 import time
+import fcntl
 import shutil
 import argparse
+import threading
 import subprocess
 from collections import defaultdict
 
@@ -76,6 +87,68 @@ STATE = os.environ.get("BQ_STATE", os.path.join(OMARCHY, ".bq-state.json"))
 CARCH = "powerpc64le"
 
 sys.path.insert(0, TOOLS)
+
+
+# ==========================================================================
+# concurrency
+# ==========================================================================
+#
+# `bq build -j N` runs N packages at once.  The reason is not that makepkg is
+# slow at compiling -- it is that a package spends a large fraction of its wall
+# time doing something that cannot use 176 threads: ./configure probing one
+# feature at a time, autoreconf, a single-threaded final link, `cargo` resolving,
+# a test suite, `strip`, and zstd-compressing the archive.  Serially, the box
+# idles through all of it.
+#
+# Four things have to be right for that to be safe, and each is handled at the
+# place named:
+#
+#   order        Packages that depend on each other must not overlap, and a
+#                package must not start before the sysroot can contain what it
+#                needs.  resolve_order() already computes the edges; it now
+#                returns them, cmd_plan() records them in queue.json, and
+#                schedule_blockers() turns them into a wait-set.  A dependent is
+#                released when its blocker *finishes*, pass or fail -- which is
+#                exactly what the serial loop does when a package fails and it
+#                moves on to the next one.
+#
+#   sysroot      Shared mutable state, and the hard part.  See Slot.
+#
+#   parallelism  MAKEFLAGS is divided, not duplicated: see CpuPool.  N jobs at
+#                the system's -j144 would be 144N processes.
+#
+#   state file   .bq-state.json is written after every package so a run is
+#                resumable.  Every mutation of `st` now happens under
+#                _STATE_LOCK, and repo-add -- which takes its own .lck and fails
+#                outright if a second one is running -- under _REPODB_LOCK plus
+#                an flock, because a *second bq process* can be running too.
+#
+# --rebuild, --force and --retry-failed are untouched by any of this.
+
+_STATE_LOCK = threading.RLock()     # every st[...] mutation + save_state()
+_REPODB_LOCK = threading.Lock()     # repo-add, in this process
+_PRINT_LOCK = threading.Lock()      # interleaved progress lines
+
+
+def emit(line):
+    with _PRINT_LOCK:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
+
+def record(st, pkgbase, result):
+    with _STATE_LOCK:
+        st["packages"][pkgbase] = result
+        save_state(st)
+
+
+def note_staged(st, names):
+    if not names:
+        return
+    with _STATE_LOCK:
+        staged = set(st.get("staged", []))
+        staged.update(n for n in names if n)
+        st["staged"] = sorted(staged)
 
 
 # ==========================================================================
@@ -430,6 +503,11 @@ def resolve_order(targets, source_order, assume_installed=True):
             if owner and owner != t:
                 edges[t].add(owner)
 
+    # Snapshot before draining: drain() and the cycle cutter below both mutate
+    # `edges` down to nothing, and `bq build -j` needs the real graph to know
+    # which packages may overlap.
+    deps = {t: set(es) for t, es in edges.items()}
+
     rdeps = defaultdict(set)
     for t, es in edges.items():
         for e in es:
@@ -481,7 +559,29 @@ def resolve_order(targets, source_order, assume_installed=True):
             edges[c[0]] -= set(c)
         ordered = drain(ordered)
 
-    return ordered, recipes, real_cycles, provided_by
+    return ordered, recipes, real_cycles, provided_by, deps
+
+
+def schedule_blockers(order, deps, todo):
+    """Which of `todo` each entry of `todo` must wait for.
+
+    The scheduler cannot simply use `deps`: resolve_order() cuts genuine
+    dependency cycles to produce an order at all, so `deps` can contain edges
+    that point *forward* in the order.  Waiting on those would deadlock, and
+    honouring them is not even correct-by-serial-standards -- the serial loop
+    builds in `order`, so a dependency positioned later was not available to it
+    either.  Keeping only the edges that point backwards in `order` therefore
+    makes the parallel run see exactly the same sysroot contents the serial run
+    saw, and is acyclic by construction because it is a subset of a total order.
+
+    Dependencies that are not in `todo` are already built and sitting in repo/,
+    where stage-deps finds them; they constrain nothing.
+    """
+    pos = {t: i for i, t in enumerate(order)}
+    pending = set(todo)
+    return {t: {d for d in deps.get(t, ())
+                if d in pending and pos.get(d, len(pos)) < pos.get(t, 0)}
+            for t in todo}
 
 
 # ==========================================================================
@@ -616,12 +716,16 @@ def save_state(st):
 # the build itself
 # ==========================================================================
 
-def write_makepkg_conf(path, pkgdest, srcdest, logdest):
+def write_makepkg_conf(path, pkgdest, srcdest, logdest, make_jobs=None):
     """A makepkg.conf that inherits the system one and overrides only what the
     mass rebuild needs.
 
     !debug is the headline: debug packages measured 590 MiB against 338 MiB of
     real packages -- 1.75x -- and nothing in this queue is being debugged.
+
+    make_jobs overrides /etc/makepkg.conf's MAKEFLAGS for one concurrency slot.
+    It has to be written here rather than exported, because makepkg *sets*
+    MAKEFLAGS from the config file and would overwrite an inherited one.
     """
     os.makedirs(pkgdest, exist_ok=True)
     os.makedirs(srcdest, exist_ok=True)
@@ -651,6 +755,16 @@ def write_makepkg_conf(path, pkgdest, srcdest, logdest):
             "# !debug into !!debug and makepkg errors on every single build.\n"
             "OPTIONS+=(!debug)\n"
             % (pkgdest, srcdest, logdest))
+        if make_jobs:
+            # Written AFTER the sourcing above, so it beats /etc/makepkg.conf's
+            # -j144 and any drop-in.  NINJAFLAGS is set for the recipes that
+            # honour it; the taskset pin in Slot.wrap() is what actually holds
+            # the line for the ones that do not.
+            fh.write(
+                '# bq -j: this slot\'s share of the machine.\n'
+                'MAKEFLAGS="-j%d"\n'
+                'NINJAFLAGS="-j%d"\n'
+                'export CARGO_BUILD_JOBS=%d\n' % (make_jobs, make_jobs, make_jobs))
 
 
 def bwrap_prefix(sysroot):
@@ -666,13 +780,18 @@ def bwrap_prefix(sysroot):
     /usr goes first and the sysroot on top.  The other way round, a staged
     package that also exists in /usr is shadowed by the system copy, which is
     the opposite of the point.
+
+    `sysroot` may be a list, for -j: several sysroot layers stack in the same
+    bottom-to-top order.  See Slot.
     """
-    if not shutil.which("bwrap") or not os.path.isdir(os.path.join(sysroot, "usr")):
+    layers = [sysroot] if isinstance(sysroot, str) else list(sysroot)
+    layers = [l for l in layers if os.path.isdir(os.path.join(l, "usr"))]
+    if not shutil.which("bwrap") or not layers:
         return []
-    cmd = ["bwrap", "--dev-bind", "/", "/",
-           "--overlay-src", "/usr",
-           "--overlay-src", os.path.join(sysroot, "usr"),
-           "--ro-overlay", "/usr"]
+    cmd = ["bwrap", "--dev-bind", "/", "/", "--overlay-src", "/usr"]
+    for l in layers:
+        cmd += ["--overlay-src", os.path.join(l, "usr")]
+    cmd += ["--ro-overlay", "/usr"]
     # The whole ROCm stack installs under /opt/rocm, not /usr, and every
     # package in it finds the previous one by that absolute path (hsa-rocr
     # runs /opt/rocm/lib/llvm/bin/clang, rocminfo and hip-runtime do
@@ -681,17 +800,21 @@ def bwrap_prefix(sysroot):
     # never visible, and rocminfo would have linked the host's 6.2.4 hsa-rocr
     # instead of the 7.2.4 built two queue entries earlier.  Same layering
     # rule as /usr: live /opt below, staged /opt on top.
-    if os.path.isdir(os.path.join(sysroot, "opt")):
-        cmd += ["--overlay-src", "/opt",
-                "--overlay-src", os.path.join(sysroot, "opt"),
-                "--ro-overlay", "/opt"]
+    opt = [l for l in layers if os.path.isdir(os.path.join(l, "opt"))]
+    if opt:
+        cmd += ["--overlay-src", "/opt"]
+        for l in opt:
+            cmd += ["--overlay-src", os.path.join(l, "opt")]
+        cmd += ["--ro-overlay", "/opt"]
     return cmd
 
 
 def build_env(sysroot, bwrapped):
     e = dict(os.environ)
     e["LANG"] = e["LC_ALL"] = "C.UTF-8"
-    su = os.path.join(sysroot, "usr")
+    layers = [sysroot] if isinstance(sysroot, str) else list(sysroot)
+    sus = [os.path.join(l, "usr") for l in layers]   # bottom layer first
+    su = sus[-1]                                     # topmost
     def pre(var, val):
         e[var] = val + (":" + e[var] if e.get(var) else "")
     # Same split as CMAKE_PREFIX_PATH below. Under the overlay the staged .pc
@@ -703,12 +826,14 @@ def build_env(sysroot, bwrapped):
     # headers into errors for anything built -pedantic -Werror (xmlsec).
     pre("PKG_CONFIG_PATH",
         "/usr/lib/pkgconfig:/usr/share/pkgconfig" if bwrapped
-        else "%s/lib/pkgconfig:%s/share/pkgconfig" % (su, su))
+        else ":".join("%s/lib/pkgconfig:%s/share/pkgconfig" % (s, s)
+                      for s in reversed(sus)))
     # Under the overlay the sysroot is already visible at /usr, so listing /usr
     # first makes CMake return paths that are still correct after install.
     # Without the overlay we have no choice but to point at the sysroot, and
     # elf-pathguard is what catches it if one of those paths gets baked in.
-    pre("CMAKE_PREFIX_PATH", "/usr:" + su if bwrapped else su)
+    pre("CMAKE_PREFIX_PATH",
+        "/usr:" + su if bwrapped else ":".join(reversed(sus)))
     # Same reasoning as CMAKE_PREFIX_PATH above: under the overlay the sysroot
     # IS /usr, so these are redundant -- and worse, they get baked into what
     # gets shipped. perl records -Wl,-rpath-link,<sysroot>/lib as a RUNPATH on
@@ -718,25 +843,29 @@ def build_env(sysroot, bwrapped):
     # runtime. Only set them when there is no overlay to make the sysroot
     # visible.
     if not bwrapped:
-        # -isystem, not -I: with -I the staged headers are ordinary user
-        # headers, so warnings inside them are reported and any package built
-        # -pedantic -Werror dies on glibc's own #include_next (xmlsec did).
-        # C_INCLUDE_PATH below is already -isystem semantics; this just stops
-        # the -I from overriding that.
-        pre("CPPFLAGS", "-isystem %s/include" % su)
-        # A .pc with a bare "Cflags: -I${includedir}" (libxslt has one) expands
-        # to -I<sysroot>/usr/include, and that plain -I outranks the -isystem
-        # above -- the staged headers go back to being user headers and any
-        # package built -pedantic -Werror dies inside glibc. These two vars are
-        # pkg-config's own mechanism for "this is a system dir, drop the flag";
-        # they default to /usr/include and /usr/lib, so name those too.
-        pre("PKG_CONFIG_SYSTEM_INCLUDE_PATH", "%s/include:/usr/include" % su)
-        pre("PKG_CONFIG_SYSTEM_LIBRARY_PATH", "%s/lib:/usr/lib" % su)
-        pre("LDFLAGS", "-L%s/lib -Wl,-rpath-link,%s/lib" % (su, su))
-        pre("LIBRARY_PATH", "%s/lib" % su)
-        pre("C_INCLUDE_PATH", "%s/include" % su)
-        pre("CPLUS_INCLUDE_PATH", "%s/include" % su)
-        pre("LD_LIBRARY_PATH", "%s/lib" % su)
+        # Bottom layer first: pre() prepends, so the topmost sysroot layer ends
+        # up leftmost and wins, matching the overlay's stacking order.
+        for su in sus:
+            # -isystem, not -I: with -I the staged headers are ordinary user
+            # headers, so warnings inside them are reported and any package built
+            # -pedantic -Werror dies on glibc's own #include_next (xmlsec did).
+            # C_INCLUDE_PATH below is already -isystem semantics; this just stops
+            # the -I from overriding that.
+            pre("CPPFLAGS", "-isystem %s/include" % su)
+            # A .pc with a bare "Cflags: -I${includedir}" (libxslt has one) expands
+            # to -I<sysroot>/usr/include, and that plain -I outranks the -isystem
+            # above -- the staged headers go back to being user headers and any
+            # package built -pedantic -Werror dies inside glibc. These two vars are
+            # pkg-config's own mechanism for "this is a system dir, drop the flag";
+            # they default to /usr/include and /usr/lib, so name those too.
+            pre("PKG_CONFIG_SYSTEM_INCLUDE_PATH", "%s/include:/usr/include" % su)
+            pre("PKG_CONFIG_SYSTEM_LIBRARY_PATH", "%s/lib:/usr/lib" % su)
+            pre("LDFLAGS", "-L%s/lib -Wl,-rpath-link,%s/lib" % (su, su))
+            pre("LIBRARY_PATH", "%s/lib" % su)
+            pre("C_INCLUDE_PATH", "%s/include" % su)
+            pre("CPLUS_INCLUDE_PATH", "%s/include" % su)
+            pre("LD_LIBRARY_PATH", "%s/lib" % su)
+        su = sus[-1]
     # Under the overlay the sysroot IS /usr, and pointing at its raw path takes
     # you back OUT of the merge. A "#!/usr/bin/env python3" script then resolves
     # to <sysroot>/usr/bin/python3, whose sys.prefix is the sysroot, so its
@@ -744,8 +873,9 @@ def build_env(sysroot, bwrapped):
     # "No module named distutils" in g-ir-scanner and "No module named build"
     # in yt-dlp, while the very same interpreter works fine as /usr/bin/python3.
     if not bwrapped:
-        e["XDG_DATA_DIRS"] = "%s/share:/usr/share" % su
-        e["PATH"] = "%s/bin:%s" % (su, e["PATH"])
+        e["XDG_DATA_DIRS"] = ":".join(["%s/share" % s for s in reversed(sus)]
+                                      + ["/usr/share"])
+        e["PATH"] = ":".join(["%s/bin" % s for s in reversed(sus)] + [e["PATH"]])
     e["ELF_PATHGUARD"] = os.path.join(TOOLS, "elf-pathguard.sh")
     # Inside bwrap's user namespace the real chown(uid 0) returns EINVAL
     # because the id is not mapped, and fakeroot propagates that instead of
@@ -756,6 +886,183 @@ def build_env(sysroot, bwrapped):
     # we are staging a package tree, not changing anything on the system.
     e["FAKEROOTDONTTRYCHOWN"] = "1"
     return e
+
+
+# ==========================================================================
+# build slots -- one per concurrent package
+# ==========================================================================
+
+class Slot:
+    """One concurrency slot: its own sysroot layer, makepkg.conf and CPU set.
+
+    **The sysroot.**  It is shared mutable state, and there were three ways to
+    make it safe:
+
+      per-job sysroot      Simple, and far too expensive here: rehydrate_sysroot
+                           stages *everything already in repo/* -- 1,400 packages,
+                           9 GiB -- and duplicating that per slot is 9 GiB of
+                           tmpfs and several minutes of tar per slot, paid before
+                           a single package builds.
+
+      a lock around
+      stage_deps()         Cheap, and not actually sufficient.  It serialises the
+                           writers, but the overlay's lowerdir is still being
+                           written to while another slot's build has it mounted.
+                           Overlayfs calls that undefined; in practice it is
+                           stale dentries and ESTALE, i.e. exactly the class of
+                           intermittent failure that is impossible to debug from
+                           a build log.
+
+      layered              What this does.  bwrap already stacks overlay layers,
+                           so there is no reason to have only one: a single
+                           *shared base* holds everything rehydrate_sysroot
+                           stages, is written once before any job starts, and is
+                           never touched again while the run is in flight; each
+                           slot gets a small private layer on top that only that
+                           slot ever writes, and only in stage_deps() *before*
+                           its own bwrap starts.  No lock is needed because there
+                           is no sharing, and no lowerdir mutates under a mount.
+
+    The base stays immutable for the whole run, which is why a package must not
+    start before its dependencies have *finished*: the mechanism that makes a
+    just-built dependency visible is stage_deps() reading repo/ into the slot
+    layer, and repo/ only gains the artifact when the dependency's build ends.
+    That is what schedule_blockers() enforces.
+
+    **MAKEFLAGS and CPUs.**  N slots inheriting the system's -j144 would be
+    144N processes, so the budget is divided rather than duplicated -- see
+    CpuPool, which also explains why the division is made at dispatch time
+    rather than fixed per slot.  Each job is additionally pinned to its CPUs
+    with taskset, which is not belt-and-braces decoration: MAKEFLAGS only
+    reaches make.  ninja, cargo, rustc's codegen threads, GCC's LTO partitioner
+    and `xargs -P` all size themselves from sched_getaffinity() and would each
+    take the whole machine.  Verified on this host: `taskset -c 0-7 nproc`
+    answers 8.
+
+    `cpus` and `make_jobs` are therefore set on the slot at dispatch, not in the
+    constructor; build_one() writes make_jobs into that slot's makepkg.conf and
+    wraps every child in taskset.
+    """
+
+    def __init__(self, idx, base, args):
+        self.idx = idx
+        self.cpus = None                      # list[int] or None; set per job
+        self.make_jobs = 0                    # set per job
+        self.staged = set()                   # for preflight_deps, per layer
+        if args.jobs > 1:
+            self.layer = "%s.slot%d" % (base, idx)
+            os.makedirs(self.layer, exist_ok=True)
+            self.layers = [base, self.layer]
+        else:
+            # Serial runs keep the single sysroot they have always had, so a
+            # resumed or interleaved serial run behaves exactly as before.
+            self.layer = base
+            self.layers = [base]
+        self.conf = os.path.join(BUILDROOT, "makepkg.conf"
+                                 if args.jobs == 1 else
+                                 "makepkg.conf.slot%d" % idx)
+
+    def wrap(self, cmd):
+        if not self.cpus:
+            return cmd
+        return ["taskset", "-c", cpuspec(self.cpus)] + cmd
+
+    def label(self):
+        return "slot%d/-j%d" % (self.idx, self.make_jobs)
+
+
+def cpuspec(cpus):
+    """Compress a sorted cpu list to taskset's range syntax."""
+    out, i = [], 0
+    while i < len(cpus):
+        j = i
+        while j + 1 < len(cpus) and cpus[j + 1] == cpus[j] + 1:
+            j += 1
+        out.append(str(cpus[i]) if j == i else "%d-%d" % (cpus[i], cpus[j]))
+        i = j + 1
+    return ",".join(out)
+
+
+class CpuPool:
+    """Hands CPUs to jobs when they start and takes them back when they end.
+
+    The obvious thing -- cut the machine into N fixed slices, one per slot --
+    was the first implementation, and it wastes the machine at the tail of a
+    queue.  Measured on a 10-package queue at -j4: 178 s against 291 s serial,
+    but for the last 100 s of that only embree was still building, holding 44
+    threads while 132 sat idle behind an affinity mask they were not allowed to
+    cross -- embree took 47 s on the whole machine and 159 s on a quarter of it.
+
+    So the split happens at dispatch instead.  A job takes the free CPUs divided
+    by the number of jobs about to start alongside it: a quarter of the machine
+    each when four are queued, and the whole machine for the last package
+    standing.  Same queue, same box: 93 s against 307 s serial, 3.3x.  Nothing
+    in flight ever has its share taken away -- makepkg's -j is fixed once the
+    build starts, so growing a running job is not possible anyway.
+
+    The allocation is contiguous, which on POWER9 SMT4 keeps whole cores
+    together while the pool is unfragmented (176 threads / 4 is 44, exactly 11
+    cores).  It is not forced to be: a job straddling a core boundary costs a
+    little SMT contention, and forcing alignment would cost whole idle cores.
+    """
+
+    def __init__(self, args):
+        try:
+            self.all = sorted(os.sched_getaffinity(0))
+        except AttributeError:
+            self.all = list(range(os.cpu_count() or 1))
+        self.free = list(self.all)
+        self.budget = args.job_budget or len(self.all)
+        self.force_jobs = args.make_jobs
+        self.nominal = max(1, args.jobs)
+        self.pinning = bool(args.cpu_affinity) and self.nominal > 1
+        self.lock = threading.Lock()
+
+    def take(self, sharers):
+        """Claim a share of the free CPUs for one job.
+
+        `sharers` is how many jobs are about to start together; one of them is
+        this one.  Returns None when pinning is off, which is also the serial
+        case -- a lone job should see the machine it is actually running on.
+        """
+        if not self.pinning:
+            return None
+        with self.lock:
+            n = max(1, len(self.free) // max(1, sharers))
+            got, self.free = self.free[:n], self.free[n:]
+            return got
+
+    def give(self, cpus):
+        if not cpus:
+            return
+        with self.lock:
+            self.free = sorted(set(self.free) | set(cpus))
+
+    def jobs_for(self, cpus):
+        """The -j that goes with that CPU allocation."""
+        if self.force_jobs:
+            return self.force_jobs
+        if cpus is None:
+            # Unpinned: there is no allocation to scale from, so fall back to an
+            # even split of the budget.  MAKEFLAGS still has to be divided --
+            # that is the whole point -- even when nothing is holding ninja to
+            # it.
+            return max(2, self.budget // self.nominal)
+        return max(2, round(len(cpus) * self.budget / max(1, len(self.all))))
+
+
+def make_slots(args, base):
+    return [Slot(i, base, args) for i in range(max(1, args.jobs))]
+
+
+def mem_available_gib():
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 2**20
+    except OSError:
+        pass
+    return float("inf")
 
 
 def rehydrate_sysroot(st, order, args):
@@ -874,7 +1181,24 @@ def disk_free_gib(path):
     return st.f_bavail * st.f_frsize / 2**30
 
 
-def build_one(pkgbase, recipe_src, args, st):
+class repo_db_lock:
+    """flock on a file beside the repo db, held across the repo-add."""
+
+    def __init__(self, dest):
+        self.path = os.path.join(dest, ".bq-repo-add.lock")
+
+    def __enter__(self):
+        self.fh = open(self.path, "a+")
+        fcntl.flock(self.fh, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.fh, fcntl.LOCK_UN)
+        self.fh.close()
+        return False
+
+
+def build_one(pkgbase, recipe_src, args, st, slot):
     work = os.path.join(BUILDROOT, "build", pkgbase)
     logdir = os.path.join(BUILDROOT, "logs")
     os.makedirs(logdir, exist_ok=True)
@@ -910,19 +1234,24 @@ def build_one(pkgbase, recipe_src, args, st):
         return {"status": "failed", "class": "arch-gate",
                 "detail": "arch=(%s)" % " ".join(info["arch"])}
 
-    missing = preflight_deps(work, st.get("staged", []))
+    # Per slot, not run-wide: with -j each slot has its own sysroot layer, so
+    # "already staged" is only true of the layer this package will build against.
+    # A run-wide set would suppress a genuine missing-dep under --strict-deps.
+    missing = preflight_deps(work, slot.staged)
     if missing and args.strict_deps:
         return {"status": "failed", "class": "missing-dep",
                 "detail": "not installed: " + " ".join(missing),
                 "missing_deps": missing}
 
-    conf = os.path.join(BUILDROOT, "makepkg.conf")
+    conf = slot.conf
     write_makepkg_conf(conf, args.pkgdest or REPO,
-                       os.path.join(BUILDROOT, "srcdest"), logdir)
+                       os.path.join(BUILDROOT, "srcdest"), logdir,
+                       make_jobs=slot.make_jobs)
 
-    sysroot = args.sysroot
-    pre = bwrap_prefix(sysroot)
-    env = build_env(sysroot, bool(pre))
+    sysroot = slot.layer            # where new deps get staged
+    layers = slot.layers            # what the build actually sees
+    pre = bwrap_prefix(layers)
+    env = build_env(layers, bool(pre))
 
     # Already built by an earlier run?  Plain makepkg fails with "A package has
     # already been built" and -f would rebuild it; at queue scale neither is
@@ -939,10 +1268,9 @@ def build_one(pkgbase, recipe_src, args, st):
             _names = list(_ri["pkgname"])
             if _names:
                 sysroot_add(_names, sysroot)
-                _staged = set(st.get("staged", []))
-                _staged.update(_names)
-                _staged.update(_ri["provides"])
-                st["staged"] = sorted(_staged)
+                slot.staged.update(_names)
+                slot.staged.update(_ri["provides"])
+                note_staged(st, _names + _ri["provides"])
             return {"status": "ok", "class": "existing", "seconds": 0.0,
                     "reused": True,
                     "packages": [os.path.basename(f) for f in _want]}
@@ -965,11 +1293,14 @@ def build_one(pkgbase, recipe_src, args, st):
     # -I/-L fallback instead. That is why perl leaked a sysroot RUNPATH as a lone
     # [1/1] and yt-dlp could not see its staged python modules as [1/2] while
     # zbar got further as [2/2].
-    pre = bwrap_prefix(sysroot)
-    env = build_env(sysroot, bool(pre))
+    pre = bwrap_prefix(layers)
+    env = build_env(layers, bool(pre))
 
-    cmd = pre + ["makepkg", "--config", conf, "-d", "--noconfirm",
-                 "--needed", "--nocheck", "--log", "--skippgpcheck"]
+    # taskset outermost: it must be inherited by bwrap and by everything under
+    # it.  An affinity set inside the sandbox would not apply to bwrap's own
+    # setup, and setting it per-makepkg would miss the guards below.
+    cmd = slot.wrap(pre + ["makepkg", "--config", conf, "-d", "--noconfirm",
+                           "--needed", "--nocheck", "--log", "--skippgpcheck"])
     if args.force:
         cmd.append("-f")
 
@@ -1023,9 +1354,15 @@ def build_one(pkgbase, recipe_src, args, st):
             # "<sysroot>/usr/bin" as XKB_BIN_DIRECTORY and passed clean, and
             # Xwayland aborted at startup on the installed system because that
             # xkbcomp does not exist there.
-            g = subprocess.run([_g] + pkgdirs, capture_output=True, text=True,
+            # The *base* sysroot, not this slot's layer.  elf-pathguard
+            # substring-matches SYSROOT against file contents, and the slot
+            # layers are named "<base>.slotN" -- so passing the base catches a
+            # leaked path from either, while passing the layer would miss the
+            # base.
+            g = subprocess.run(slot.wrap([_g] + pkgdirs),
+                               capture_output=True, text=True,
                                timeout=1800,
-                               env={**os.environ, "SYSROOT": sysroot,
+                               env={**os.environ, "SYSROOT": args.sysroot,
                                     "BUILDROOT": BUILDROOT})
             with open(log, "a") as fh:
                 fh.write("\n--- %s ---\n" % os.path.basename(_g)
@@ -1059,17 +1396,22 @@ def build_one(pkgbase, recipe_src, args, st):
         names = list(rinfo["pkgname"])
         if names:
             sysroot_add(names, sysroot)
-            staged = set(st.get("staged", []))
-            staged.update(names)
-            staged.update(rinfo["provides"])
-            st["staged"] = sorted(staged)
+            slot.staged.update(names)
+            slot.staged.update(rinfo["provides"])
+            note_staged(st, names + rinfo["provides"])
         dest = args.pkgdest or REPO
         newfiles = [os.path.join(dest, b) for b in built
                     if "-debug-" not in b and os.path.isfile(os.path.join(dest, b))]
         if newfiles and args.repo_db:
-            subprocess.run(["repo-add", "-q", "-n", "-R",
-                            os.path.join(dest, args.repo_db)] + newfiles,
-                           capture_output=True, text=True, timeout=600)
+            # repo-add takes a <db>.lck of its own and *aborts* rather than
+            # waits if one already exists, so two slots finishing together
+            # would silently lose one package's db entry.  The threading lock
+            # covers this process; the flock covers a second bq process sharing
+            # the same repo (which BQ_REPO exists to allow).
+            with _REPODB_LOCK, repo_db_lock(dest):
+                subprocess.run(["repo-add", "-q", "-n", "-R",
+                                os.path.join(dest, args.repo_db)] + newfiles,
+                               capture_output=True, text=True, timeout=600)
 
     # Clean as we go.  makepkg -c would drop src/ and pkg/; dropping the whole
     # per-package work directory is strictly more thorough and costs nothing,
@@ -1141,7 +1483,7 @@ def dir_size_gib(path):
 
 def cmd_plan(args):
     targets = read_targets(args)
-    order, recipes, stuck, provided_by = resolve_order(
+    order, recipes, stuck, provided_by, deps = resolve_order(
         targets, args.sources.split(","),
         assume_installed=not args.full_bootstrap)
     # A target with no recipe of its own is not missing if some recipe already
@@ -1152,6 +1494,11 @@ def cmd_plan(args):
                      if b not in provided_by)
     q = {"order": order, "cycles": stuck, "missing_recipe": sorted(missing),
          "sources": {t: recipes[t].get("source") for t in order},
+         # The edges, not just the order: `bq build -j` needs to know which
+         # packages may overlap, and re-deriving them from a bare order is
+         # impossible.  A queue.json written before this existed still works --
+         # cmd_build re-resolves in that case.
+         "deps": {t: sorted(deps.get(t, ())) for t in order},
          "generated": time.strftime("%Y-%m-%dT%H:%M:%S")}
     out = args.out or os.path.join(BUILDROOT, "queue.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
@@ -1193,15 +1540,25 @@ def read_targets(args):
 
 def cmd_build(args):
     qf = args.queue or os.path.join(BUILDROOT, "queue.json")
+    deps = {}
     if args.targets or args.targets_file:
         targets = read_targets(args)
-        order, recipes, stuck, _ = resolve_order(
+        order, recipes, stuck, _, deps = resolve_order(
             targets, args.sources.split(","),
             assume_installed=not getattr(args, "full_bootstrap", False))
         srcmap = {t: recipes[t].get("source") for t in order}
     elif os.path.isfile(qf):
         q = json.load(open(qf))
         order, srcmap = q["order"], q.get("sources", {})
+        deps = q.get("deps") or {}
+        if args.jobs > 1 and not deps:
+            # A queue.json from before `deps` was recorded.  Re-resolving from
+            # the order gives the same graph -- the recipes are cached in
+            # <buildroot>/_meta -- and running -j without it would build
+            # dependents alongside their dependencies.
+            _o, _r, _c, _p, deps = resolve_order(
+                order, args.sources.split(","),
+                assume_installed=not getattr(args, "full_bootstrap", False))
     else:
         print("nothing to build: pass targets or run `bq plan` first", file=sys.stderr)
         return 2
@@ -1224,18 +1581,43 @@ def cmd_build(args):
     if args.limit:
         todo = todo[:args.limit]
 
-    print("bq: %d/%d to build (buildroot %s, %.0f GiB free)"
-          % (len(todo), len(order), BUILDROOT, disk_free_gib(BUILDROOT)))
+    # emit(), not print(): stdout is a file in every real run, so it is block
+    # buffered, and the header would otherwise sit unseen behind the flushing
+    # progress lines for as long as rehydrate_sysroot takes -- which on a full
+    # repo is 1,300 packages of tar.
+    emit("bq: %d/%d to build (buildroot %s, %.0f GiB free)"
+         % (len(todo), len(order), BUILDROOT, disk_free_gib(BUILDROOT)))
     os.makedirs(args.sysroot, exist_ok=True)
+    # Before any job starts.  With -j this is what freezes the shared base
+    # sysroot layer: nothing writes to it again for the rest of the run.
     rehydrate_sysroot(st, order, args)
     save_state(st)
 
-    ok = fail = 0
-    peak = 0.0
-    for i, t in enumerate(todo, 1):
-        print("[%d/%d] %s ... " % (i, len(todo), t), end="", flush=True)
+    slots = make_slots(args, args.sysroot)
+    # Every slot sees the base layer, so whatever rehydrate_sysroot just put
+    # there is staged as far as each of them is concerned.  Without this seed a
+    # --strict-deps run at -j would fail the first package in each slot for
+    # dependencies that are sitting right there in the base.
+    for _s in slots:
+        _s.staged.update(st.get("staged", []))
+    pool = CpuPool(args)
+    if args.jobs == 1:
+        # A serial run keeps /etc/makepkg.conf's own MAKEFLAGS unless the
+        # operator asked for something else, so -j1 stays byte-for-byte the
+        # behaviour it had before concurrency existed.
+        slots[0].cpus = None
+        slots[0].make_jobs = args.make_jobs or (args.job_budget or 0)
+    else:
+        emit("bq: %d concurrent jobs over %d cpus, budget -j%d%s"
+             % (args.jobs, len(pool.all), pool.budget,
+                "" if pool.pinning else " (unpinned)"))
+    t_start = time.time()
+    counters = {"ok": 0, "fail": 0, "peak": 0.0, "n": 0, "stop": False}
+
+    def run_one(t, slot):
+        """Build one package.  Returns the result dict; never raises."""
         try:
-            r = build_one(t, srcmap.get(t), args, st)
+            r = build_one(t, srcmap.get(t), args, st, slot)
         except Exception as exc:
             # An 858-package run cannot end because bq itself tripped over one
             # recipe.  Record it as a failure class of its own and carry on.
@@ -1244,20 +1626,151 @@ def cmd_build(args):
                  "detail": "%s: %s" % (type(exc).__name__, exc),
                  "traceback": traceback.format_exc()[-2000:], "seconds": 0}
         r["when"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        st["packages"][t] = r
-        save_state(st)            # after every package: the run is resumable
-        peak = max(peak, r.get("peak_gib", 0))
+        # Record the width the package was built at.  Without it `seconds` is
+        # not comparable between a -j1 run and a -j4 one, and `bq status -v`
+        # would quietly mix them.
+        if slot.make_jobs:
+            r["make_jobs"] = slot.make_jobs
+        if slot.cpus:
+            r["cpus"] = len(slot.cpus)
+        record(st, t, r)          # after every package: the run is resumable
+        with _STATE_LOCK:
+            counters["n"] += 1
+            counters["peak"] = max(counters["peak"], r.get("peak_gib", 0))
+            if r["status"] == "ok":
+                counters["ok"] += 1
+            else:
+                counters["fail"] += 1
+                if args.stop_on_fail:
+                    counters["stop"] = True
+            i = counters["n"]
         if r["status"] == "ok":
-            ok += 1
-            print("ok  %.0fs  %s" % (r["seconds"], " ".join(r.get("packages", []))[:90]))
+            tail = "ok  %.0fs  %s" % (r["seconds"],
+                                      " ".join(r.get("packages", []))[:90])
         else:
-            fail += 1
-            print("FAIL [%s] %.0fs  %s" % (r.get("class"), r.get("seconds", 0),
-                                           r.get("detail", "")[:90]))
-            if args.stop_on_fail:
+            tail = "FAIL [%s] %.0fs  %s" % (r.get("class"), r.get("seconds", 0),
+                                            r.get("detail", "")[:90])
+        if args.jobs == 1:
+            # Serial output is byte-for-byte what it always was.
+            with _PRINT_LOCK:
+                sys.stdout.write(tail + "\n")
+                sys.stdout.flush()
+        else:
+            emit("[%d/%d] %-34s %s" % (i, len(todo), t, tail))
+        return r
+
+    if args.jobs == 1:
+        for i, t in enumerate(todo, 1):
+            print("[%d/%d] %s ... " % (i, len(todo), t), end="", flush=True)
+            run_one(t, slots[0])
+            if counters["stop"]:
                 break
-    print("\nbq: %d ok, %d failed, peak build tree %.2f GiB" % (ok, fail, peak))
-    return 0 if fail == 0 else 1
+    else:
+        run_parallel(todo, order, deps, slots, pool, args, run_one, counters)
+
+    print("\nbq: %d ok, %d failed, peak build tree %.2f GiB, wall %.0fs"
+          % (counters["ok"], counters["fail"], counters["peak"],
+             time.time() - t_start))
+    return 0 if counters["fail"] == 0 else 1
+
+
+def run_parallel(todo, order, deps, slots, pool, args, run_one, counters):
+    """Dispatch `todo` across `slots`, respecting the dependency graph.
+
+    A package becomes runnable when every blocker of it has *finished*, pass or
+    fail.  Releasing on failure rather than on success is deliberate and is what
+    keeps this equivalent to the serial loop: serially, a failed package does not
+    stop the queue, and its dependents are attempted anyway (and usually fail
+    with missing-dep, which is information the triage pass wants).
+
+    Admission control on top of readiness:
+
+      disk    build_one() already defers a package when the buildroot is below
+              --min-free, and that stays.  But with jobs in flight the right
+              answer is to *wait* rather than mark a perfectly good package
+              deferred -- a slot finishing frees its build tree.  So: hold back
+              while something is running, and only fall through to build_one's
+              deferral when the machine is otherwise idle and the space still is
+              not there, which is the same verdict the serial run would give.
+
+      memory  Compile parallelism is bounded by the job budget, but link steps
+              are not: chromium, llvm and qt6-webengine each want many GiB in a
+              single ld/lld process, and three of those landing together is how
+              a 446 GiB machine still runs out.  Same wait-don't-defer rule.
+    """
+    blockers = schedule_blockers(order, deps, todo)
+    remaining = {t: set(b) for t, b in blockers.items()}
+    dependents = defaultdict(set)
+    for t, bs in remaining.items():
+        for b in bs:
+            dependents[b].add(t)
+
+    order_pos = {t: i for i, t in enumerate(order)}
+    pending = sorted(todo, key=lambda t: order_pos.get(t, 0))
+    free_slots = list(slots)
+    running = {}                                  # Future -> (pkg, slot)
+
+    import concurrent.futures as cf
+
+    def dispatch(exe, slot, t, sharers, note=""):
+        # `sharers` is how many jobs are about to be running side by side,
+        # counting this one.  That, not the nominal -j, is what the free CPUs
+        # get divided by: a quarter of the machine each at the head of a long
+        # queue, and the whole machine for the last package standing.
+        slot.cpus = pool.take(sharers)
+        slot.make_jobs = pool.jobs_for(slot.cpus)
+        emit("[--/%d] %-34s start (%s on cpu %s)%s"
+             % (len(todo), t, slot.label(),
+                cpuspec(slot.cpus) if slot.cpus else "any", note))
+        running[exe.submit(run_one, t, slot)] = (t, slot)
+
+    with cf.ThreadPoolExecutor(max_workers=len(slots)) as exe:
+        while pending or running:
+            # --stop-on-fail: let the in-flight jobs finish rather than
+            # abandoning half-written package trees, then dispatch nothing more.
+            if counters["stop"]:
+                pending = []
+            while free_slots and pending:
+                ready = [t for t in pending if not remaining[t]]
+                if not ready:
+                    break                       # blocked; wait for a finisher
+                if running and not admissible(args):
+                    break                       # hold back, do not defer
+                t = ready[0]
+                pending.remove(t)
+                slot = free_slots.pop(0)
+                dispatch(exe, slot, t,
+                         1 + min(len(free_slots), len(ready) - 1))
+
+            if not running:
+                if not pending:
+                    break
+                # Nothing dispatched and nothing running.  Either every
+                # remaining package is blocked -- impossible, schedule_blockers()
+                # only keeps backward edges -- or admission control is holding
+                # everything back on an idle machine.  Take the head anyway and
+                # let build_one() give the same verdict the serial run would.
+                t = pending.pop(0)
+                slot = free_slots.pop(0)
+                dispatch(exe, slot, t, 1, note="  [admitted on an idle machine]")
+
+            done, _ = cf.wait(list(running), return_when=cf.FIRST_COMPLETED)
+            for fut in done:
+                t, slot = running.pop(fut)
+                pool.give(slot.cpus)
+                slot.cpus = None
+                free_slots.append(slot)
+                for d in dependents.get(t, ()):
+                    remaining[d].discard(t)
+
+
+def admissible(args):
+    """Is there room for one more concurrent build right now?"""
+    if disk_free_gib(BUILDROOT) < args.min_free:
+        return False
+    if args.min_mem and mem_available_gib() < args.min_mem:
+        return False
+    return True
 
 
 def cmd_status(args):
@@ -1354,6 +1867,30 @@ def main():
     common(p)
     p.add_argument("-q", "--queue")
     p.add_argument("-n", "--limit", type=int)
+    p.add_argument("-j", "--jobs", default="1", metavar="N",
+                   help="build N packages concurrently (default 1, i.e. the "
+                        "serial behaviour). 'auto' picks one job per 44 threads "
+                        "-- 11 POWER9 cores each, four jobs on this box. "
+                        "Dependent packages never overlap; see Slot.")
+    p.add_argument("--job-budget", type=int, default=0, metavar="N",
+                   help="total make/ninja parallelism to divide between jobs "
+                        "(default: every CPU this process may run on). Each job "
+                        "gets budget/jobs, overriding /etc/makepkg.conf's "
+                        "MAKEFLAGS -- N jobs inheriting -j144 would be 144N "
+                        "processes.")
+    p.add_argument("--make-jobs", type=int, default=0, metavar="N",
+                   help="force each job's -j to exactly N, instead of dividing "
+                        "--job-budget")
+    p.add_argument("--no-cpu-affinity", dest="cpu_affinity",
+                   action="store_false", default=True,
+                   help="do not pin each job to its own CPUs. MAKEFLAGS only "
+                        "reaches make; ninja, cargo and LTO size themselves "
+                        "from sched_getaffinity(), so without the pin they each "
+                        "take the whole machine.")
+    p.add_argument("--min-mem", type=float, default=16.0, metavar="GIB",
+                   help="with -j, do not start another package while less than "
+                        "this much memory is available. Link steps, not "
+                        "compiles, are what a job budget does not bound.")
     p.add_argument("--sysroot", default=None,
                    help="staging root for build deps (default <buildroot>/sysroot)")
     p.add_argument("--timeout", type=int, default=14400)
@@ -1393,6 +1930,18 @@ def main():
 
     args = ap.parse_args()
     BUILDROOT = args.buildroot
+    if hasattr(args, "jobs"):
+        try:
+            avail = len(os.sched_getaffinity(0))
+        except AttributeError:
+            avail = os.cpu_count() or 1
+        if str(args.jobs).lower() == "auto":
+            # 44 threads is 11 POWER9 cores, which is enough that a big package
+            # still compiles fast and small enough that four of them fill the
+            # machine.  Below 8 threads, splitting costs more than it buys.
+            args.jobs = max(1, avail // 44)
+        else:
+            args.jobs = max(1, int(args.jobs))
     if getattr(args, "sysroot", None) is None and hasattr(args, "sysroot"):
         args.sysroot = os.path.join(BUILDROOT, "sysroot")
     if os.path.realpath(BUILDROOT).startswith(os.path.join(HOME, "Development")) \

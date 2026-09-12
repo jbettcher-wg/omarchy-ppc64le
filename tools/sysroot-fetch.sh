@@ -33,11 +33,18 @@ for name in "$@"; do
   rm -f "$_err"
   for u in $urls; do
     f="$CACHE/$(basename "$u")"
+    # Download to a private temp and rename.  The cache is shared, and under
+    # `bq build -j` two slots can want the same package at the same moment: with
+    # a direct `curl -o "$f"` the second one sees a nonempty, half-written file,
+    # skips the download, and tar dies on a truncated archive.  rename(2) is
+    # atomic, so a reader sees either nothing or the whole file.
     if [ ! -s "$f" ]; then
+      t="$f.part.$$"
       case "$u" in
-        file://*) cp "${u#file://}" "$f" ;;
-        *) curl -sSL -o "$f" "$u" || { echo "download failed: $u"; rc=1; continue; } ;;
+        file://*) cp "${u#file://}" "$t" ;;
+        *) curl -sSL -o "$t" "$u" || { echo "download failed: $u"; rm -f "$t"; rc=1; continue; } ;;
       esac
+      [ -s "$t" ] && mv -f "$t" "$f" || rm -f "$t"
     fi
     tar -I zstd -xf "$f" -C "$SYSROOT" \
       --exclude=.PKGINFO --exclude=.BUILDINFO --exclude=.MTREE --exclude=.INSTALL 2>/dev/null

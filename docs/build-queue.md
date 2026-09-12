@@ -221,6 +221,102 @@ the end. A resumed run skips anything already `ok`; `--retry-failed` re-tries
 failures, `--rebuild` redoes everything. There is no run that has to start from
 scratch.
 
+## `-j`: several packages at once
+
+`bq build -j N` builds N packages concurrently. The reason is not that makepkg
+compiles slowly — it is that a large fraction of a package's wall time cannot
+use 176 threads at all. `./configure` probes one feature at a time, `autoreconf`
+is serial, the final link is one process, and so are `strip` and the `zstd` of
+the archive. Serially the box idles through all of it.
+
+Measured on a real ten-package queue (`tomlplusplus fcft foot hyprlang
+hyprcursor glaze file embree libphonenumber ngspice`, seven of which build here;
+same buildroot path, same recipes, back to back):
+
+| | wall |
+|---|---|
+| `-j1` | 307 s |
+| `-j4`, fixed CPU slices | 178 s |
+| `-j4`, CPUs allocated at dispatch | **93 s** |
+
+Concurrency is **off by default**. `-j1` is byte-for-byte the behaviour bq had
+before it existed, down to leaving `/etc/makepkg.conf`'s own `MAKEFLAGS` alone.
+
+### What had to be made safe
+
+**Order.** The queue already knows the dependency edges; `plan` now records them
+in `queue.json` and the scheduler turns them into a wait-set. A dependent is
+released when its blocker *finishes*, pass or fail — which is exactly what the
+serial loop does. Only edges pointing backwards in the resolved order are
+honoured: a cut cycle leaves forward edges behind, waiting on one would
+deadlock, and the serial run did not honour it either.
+
+**The sysroot**, which is shared mutable state and the hard part. Three options
+were on the table. A sysroot per job is simple and far too expensive — a resumed
+run stages *everything in `repo/`*, 1,327 packages and 22 GiB, and paying that
+per slot costs 88 GiB and minutes of `tar` before a single package builds. A
+lock around staging serialises the writers but still leaves the overlay's
+lowerdir being written to while another slot has it mounted, which overlayfs
+calls undefined and which shows up as intermittent `ESTALE`. So: **layer it.**
+`bwrap` stacks overlay layers already, so one shared base holds what
+`rehydrate_sysroot` stages and is frozen before any job starts, and each slot
+gets a private layer on top that only it writes, and only before its own `bwrap`
+starts. Measured on the 15-package packager sweep: 22 GiB shared, 1–2 GiB per
+slot.
+
+That layering is also why a package must not start until its dependencies have
+*finished*, not merely started: the mechanism that makes a fresh dependency
+visible is `stage-deps` reading it out of `repo/`, and it only lands there when
+the build ends.
+
+**MAKEFLAGS**, divided rather than duplicated — four jobs inheriting the system's
+`-j144` would be 576 compilers. Each job also gets a disjoint CPU set via
+`taskset`, which is not decoration: `MAKEFLAGS` only reaches make. `ninja`,
+`cargo`, rustc's codegen threads and GCC's LTO partitioner all size themselves
+from `sched_getaffinity()` and would each take the whole machine.
+
+**The CPUs are allocated at dispatch, not partitioned up front.** Fixed slices
+waste the machine at the tail of a queue: in the middle row of the table above,
+the last 100 of those 178 seconds had one package (embree) holding 44 threads
+while 132 sat idle behind an affinity mask — embree takes 47 s on the whole box
+and 159 s on a quarter of it. A job now takes the free CPUs divided by the
+number of jobs starting alongside it, so the last package standing gets
+everything.
+
+**Concurrent writers.** `repo-add` takes a `.lck` of its own and *aborts* rather
+than waits, so it is serialised behind a lock and an `flock` (the flock because
+`BQ_REPO` exists precisely so a second bq can run). The `.bq-state.json` update
+is under a lock. `sysroot-fetch.sh` downloads to a private temp and renames,
+because two slots wanting the same Arch POWER package would otherwise have one
+of them read a half-written cache file.
+
+### When it does not pay
+
+A queue dominated by one very large package. Every package in the packager
+sweep except chromium finished inside two minutes at `-j4`; chromium, given a
+quarter of the machine, had reached 3,290 of 55,835 ninja steps in nine minutes
+with the rest of the box idle. It scales to 176 threads on its own, so splitting
+the box for it buys nothing and costs a factor of three. Build the giants at
+`-j1` and use `-j` for the tail.
+
+### Checking it
+
+`tools/bq-selftest.py` checks the invariants without building anything: that no
+dependent is dispatched before its dependency finishes, that packages do
+overlap, that the total `-j` stays inside the budget, that CPU sets are disjoint
+and cover the machine, and that the layers stack `/usr` → base → slot. Each
+check can be made to fail on purpose — `--break ordering|budget|affinity` —
+because a check nobody has watched fail is not evidence.
+
+`tools/pkg-treediff.py A B` compares two directories of built packages by their
+unpacked contents (path, type, mode, symlink target, sha256, with `.PKGINFO`,
+`.BUILDINFO` and `.MTREE` excluded because those legitimately differ). A serial
+run and a `-j4` run of the queue above produced byte-identical payloads for
+seven of the eight packages. The eighth, `foot`, is simply not reproducible:
+two *serial* runs at identical settings differ in `usr/bin/foot` by 415,100 of
+659,504 bytes and carry different build-ids. `--self-test PKG` corrupts one hash
+on purpose to prove the comparison can report a difference.
+
 ## Failure classes
 
 The classifier turns logs into a work queue, because on POWER the class *is* the
@@ -270,8 +366,13 @@ edit just removed, because helpers read the `.SRCINFO` and not the `PKGBUILD`.
 ```sh
 bq plan   [targets…] [-f file] [--sources …]   # resolve order -> queue.json
 bq build  [targets…] [-n N] [--force] [--retry-failed] [--fix-arch]
+          [-j N|auto] [--job-budget N] [--make-jobs N] [--no-cpu-affinity]
+          [--min-free GIB] [--min-mem GIB]
 bq status [-v]
 bq triage [-o out.md]
+
+tools/bq-selftest.py [--break ordering|budget|affinity]   # -j invariants
+tools/pkg-treediff.py A B [--self-test PKG]               # same build twice?
 ```
 
 ### Rebuilding something already published
