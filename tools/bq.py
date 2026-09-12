@@ -1182,10 +1182,16 @@ def disk_free_gib(path):
 
 
 class repo_db_lock:
-    """flock on a file beside the repo db, held across the repo-add."""
+    """flock on a file beside the repo db, held across the repo-add.
 
-    def __init__(self, dest):
-        self.path = os.path.join(dest, ".bq-repo-add.lock")
+    Named after the database it guards, which is not decoration: `.gitignore`
+    already excludes `repo/*.db*`, so the lock file lands inside that pattern
+    instead of showing up as untracked clutter in a repo whose whole point is
+    that the recipes are tracked and the output is not.
+    """
+
+    def __init__(self, dest, db):
+        self.path = os.path.join(dest, (db or "repo") + ".bqlck")
 
     def __enter__(self):
         self.fh = open(self.path, "a+")
@@ -1408,7 +1414,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
             # would silently lose one package's db entry.  The threading lock
             # covers this process; the flock covers a second bq process sharing
             # the same repo (which BQ_REPO exists to allow).
-            with _REPODB_LOCK, repo_db_lock(dest):
+            with _REPODB_LOCK, repo_db_lock(dest, args.repo_db):
                 subprocess.run(["repo-add", "-q", "-n", "-R",
                                 os.path.join(dest, args.repo_db)] + newfiles,
                                capture_output=True, text=True, timeout=600)
