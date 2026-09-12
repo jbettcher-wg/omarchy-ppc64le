@@ -27,7 +27,7 @@
 
 pkgname=marksman
 pkgver=20260208
-pkgrel=3
+pkgrel=4
 pkgdesc="Write Markdown with code assist and intelligence in the comfort of your favourite editor."
 arch=('x86_64' 'powerpc64le')
 url="https://github.com/artempyanykh/marksman"

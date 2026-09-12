@@ -6,7 +6,7 @@
 
 pkgname=gnome-disk-utility
 pkgver=46.1
-pkgrel=3
+pkgrel=4
 pkgdesc="Disk Management Utility for GNOME"
 url="https://apps.gnome.org/DiskUtility/"
 arch=(x86_64 powerpc64le)

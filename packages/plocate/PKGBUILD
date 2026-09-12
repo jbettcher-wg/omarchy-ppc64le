@@ -6,7 +6,7 @@
 
 pkgname=plocate
 pkgver=1.1.24
-pkgrel=2
+pkgrel=3
 pkgdesc="Alternative to locate, faster and compatible with mlocate's database."
 url="https://plocate.sesse.net"
 arch=('x86_64' 'powerpc64le')

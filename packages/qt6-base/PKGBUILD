@@ -7,8 +7,15 @@ pkgname=(qt6-base
          qt6-xcb-private-headers)
 _pkgver=6.11.2
 pkgver=${_pkgver/-/}
-pkgrel=3
-arch=(x86_64)
+pkgrel=4
+# powerpc64le added to arch=(): upstream Arch ships x86_64 only, and
+# libalpm enforces the guard itself, so no makepkg flag gets past it.
+# Every previous build of this recipe here went through `bq --fix-arch`,
+# which patches the copy in the build tree and leaves the recipe wrong --
+# so a plain `bq build qt6-base` failed with arch-gate. Portability fix,
+# upstreamable to Arch POWER as-is; nothing else in this recipe needed
+# changing for the architecture.
+arch=(x86_64 powerpc64le)
 url='https://www.qt.io'
 license=(GPL-3.0-only
          LGPL-3.0-only

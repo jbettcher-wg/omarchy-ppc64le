@@ -21,7 +21,7 @@
 pkgname=rnnoise
 epoch=1
 pkgver=0.2
-pkgrel=1
+pkgrel=2
 pkgdesc="A noise suppression library based on a recurrent neural network"
 arch=(x86_64 powerpc64le)
 url="https://gitlab.xiph.org/xiph/rnnoise"
