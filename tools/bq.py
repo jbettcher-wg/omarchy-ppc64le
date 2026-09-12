@@ -53,7 +53,15 @@ HOME = os.path.expanduser("~")
 OMARCHY = os.path.join(HOME, "Development/omarchy-ppc64le")
 ARCHPOWER = os.path.join(HOME, "Development/repo/archpower")
 TOOLS = os.path.join(OMARCHY, "tools")
-REPO = os.path.join(OMARCHY, "repo")
+# Where built packages land, and where sysroot-add/stage-deps look for "ours".
+# BQ_REPO points a side build at its own package pool: a cross-target build
+# (say the whole ROCm stack for someone else's POWER8 + gfx1030 box) must not
+# read this repo's packages as its own dependencies -- it would link the
+# queue's second entry against the first entry's POWER9/gfx1100 copy from
+# repo/ -- and must not drop its output in repo/ either, where the filenames
+# collide with ours.  Unset, everything behaves exactly as before.
+# sysroot-add.sh and stage-deps.sh read the same variable.
+REPO = os.environ.get("BQ_REPO", os.path.join(OMARCHY, "repo"))
 
 # Build under /tmp by default.  /tmp here is a 221 GiB tmpfs on a 440 GiB
 # machine, which is ideal for the ~850 small-to-medium packages and wrong for

@@ -20,6 +20,8 @@
 set -uo pipefail
 here=$(dirname "$(readlink -f "$0")")
 REPOROOT=/home/jbettcher/Development/omarchy-ppc64le
+# BQ_REPO lets a side build keep its own package pool; see tools/bq.py.
+REPO=${BQ_REPO:-$REPOROOT/repo}
 BUILDROOT=${BUILDROOT:-/var/tmp/omarchy-bq}
 
 pkg=${1:?usage: stage-deps.sh <package> [recipedir]}
@@ -43,7 +45,7 @@ for d in "${deps[@]}"; do
   # installed 6.27, and libheif would have gone on linking the system
   # libde265 1.0.18 that is missing de265_get_security_limits instead of the
   # 1.1.2 sitting in repo/.
-  if ls "$REPOROOT/repo"/${d}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; then
+  if ls "$REPO"/${d}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; then
     ours+=("$d")                                        # we built it earlier
   elif pacman -Qq "$d" >/dev/null 2>&1; then
     continue                                            # already on the system
@@ -70,14 +72,14 @@ _frontier=("${ours[@]}")
 while [ ${#_frontier[@]} -gt 0 ]; do
   _next=()
   for d in "${_frontier[@]}"; do
-    pkgfile=$(ls -t "$REPOROOT/repo"/${d}-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
+    pkgfile=$(ls -t "$REPO"/${d}-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
     [ -n "$pkgfile" ] || continue
     while read -r sub; do
       sub=${sub%%[<>=]*}
       [ -n "$sub" ] || continue
       [ -n "${_staged[$sub]:-}" ] && continue
       # Only follow it if we built it too; otherwise the system copy is right.
-      ls "$REPOROOT/repo"/${sub}-[0-9]*.pkg.tar.zst >/dev/null 2>&1 || continue
+      ls "$REPO"/${sub}-[0-9]*.pkg.tar.zst >/dev/null 2>&1 || continue
       _staged[$sub]=1
       ours+=("$sub")
       _next+=("$sub")
@@ -115,7 +117,7 @@ while [ -n "${_frontier[0]:-}" ]; do
       [ -n "${_fetched[$sub]:-}" ] && continue
       [ -n "${_staged[$sub]:-}" ] && continue
       # ours wins, host is fine, otherwise fetch it
-      if ls "$REPOROOT/repo"/${sub}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; then
+      if ls "$REPO"/${sub}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; then
         _staged[$sub]=1; ours+=("$sub"); continue
       fi
       pacman -Qq "$sub" >/dev/null 2>&1 && continue

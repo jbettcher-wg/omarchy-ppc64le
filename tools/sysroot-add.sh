@@ -5,7 +5,8 @@
 set -uo pipefail
 WORK=${BQ_WORK:-/home/jbettcher/omarchy-work}
 SYSROOT=${SYSROOT:-$WORK/sysroot}
-REPO=/home/jbettcher/Development/omarchy-ppc64le/repo
+# BQ_REPO lets a side build keep its own package pool; see tools/bq.py.
+REPO=${BQ_REPO:-/home/jbettcher/Development/omarchy-ppc64le/repo}
 mkdir -p "$SYSROOT"
 
 rc=0
