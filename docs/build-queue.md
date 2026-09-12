@@ -239,8 +239,9 @@ same buildroot path, same recipes, back to back):
 | `-j4`, fixed CPU slices | 178 s |
 | `-j4`, CPUs allocated at dispatch | **93 s** |
 
-Concurrency is **off by default**. `-j1` is byte-for-byte the behaviour bq had
-before it existed, down to leaving `/etc/makepkg.conf`'s own `MAKEFLAGS` alone.
+Concurrency is **off by default**. `-j1` schedules exactly as bq always did,
+down to leaving `/etc/makepkg.conf`'s own `MAKEFLAGS` alone. (ccache, below, is
+a separate switch and is on by default.)
 
 ### What had to be made safe
 
@@ -317,6 +318,76 @@ two *serial* runs at identical settings differ in `usr/bin/foot` by 415,100 of
 659,504 bytes and carry different build-ids. `--self-test PKG` corrupts one hash
 on purpose to prove the comparison can report a difference.
 
+## ccache
+
+A large share of what this queue rebuilds is *identical source*. The packager
+sweep rebuilt fifteen recipes only to change a metadata string. A soname bump
+rebuilds dependents whose own code did not move. `--force` after a rejected
+pathguard recompiles everything that already compiled. All of those go from full
+cost to nearly nothing with a compiler cache, so bq turns one on. `--no-ccache`
+switches it off.
+
+`/etc/makepkg.conf` ships `BUILDENV=(!distcc color !ccache check !sign)` and is
+not ours to edit, so bq writes `BUILDENV+=(ccache)` into its own generated
+config after the `source /etc/makepkg.conf` line. That works because makepkg's
+`in_opt_array()` walks the array backwards and returns on the first match, so
+the last occurrence wins — the same mechanism `OPTIONS+=(!debug)` relies on.
+makepkg then prepends `/usr/lib/ccache/bin` to `PATH`; that directory is on the
+host `/usr`, which the bwrap overlay stacks *below* the sysroot, so it stays
+visible, and because it is only a `PATH` entry ccache still resolves the real
+compiler through the overlay and will pick a staged gcc over the host one.
+
+Measured on four real packages (`embree hyprutils hyprlang tllist`), three
+passes over the same set in the same buildroot on the same 16 CPUs:
+
+| pass | wall | ccache |
+|---|---|---|
+| `--no-ccache` | 497 s | — |
+| cold (empty cache) | 532 s | 4/146 hits, 2.7% |
+| warm | **347 s** | 145/146 hits, 99.3% |
+
+So the cold pass costs about 7% and the warm pass saves 30% of the whole run —
+and much more than 30% of the part ccache can touch: embree's build went from
+235 s to 120 s, and what is left in the warm pass is meson and cmake configure,
+`stage-deps`, linking, `strip` and the zstd of the archive.
+
+Two settings are deliberate:
+
+- **`compiler_check=content`**, not ccache's default `mtime`. The default
+  identifies a compiler by path, size and mtime, and in this tree the sysroot
+  can stack a *different* gcc over the host one at the same path. Hashing the
+  compiler binary itself removes the whole class, for the cost of hashing a
+  ~1 MiB executable per invocation.
+- **`base_dir` left unset**, so absolute paths go into the hash and a build
+  under a different `--buildroot` misses rather than hits. That is the safe
+  direction; rewriting paths to make it hit is the classic source of "ccache
+  handed me the wrong object".
+
+### What it does not cover
+
+- **rustc.** There is no rustc shim and ccache does not speak Rust, so rust
+  packages get neither the benefit nor the risk.
+- **Recipes that disable it themselves, correctly.** `foot`'s own
+  `pgo/pgo.sh` does `export CCACHE_DISABLE=1` on line 82, because
+  profile-generate/profile-use and a compiler cache do not mix. A foot build
+  under bq reports a 0% hit rate and that is right. This is why the summary
+  line reports the measured hit rate rather than announcing that ccache was
+  "enabled" — the first measurement taken here showed 0% and the reason was
+  real.
+
+### The correctness check
+
+A cache hit that survives a flag change would be worse than no cache: a
+POWER8-targeted build would silently reuse POWER9 objects. `tools/ccache-check.sh`
+does not take ccache's word for it. Against a throwaway cache, inside the same
+bwrap overlay bq builds in, it checks that the shim is what `gcc` resolves to,
+that a cold compile misses, that an identical recompile hits and returns the
+same object, and then that changing `-mcpu` **misses** and produces a
+genuinely different object — verified twice over, by byte comparison and by the
+`_ARCH_PWR9`-gated instruction appearing in exactly one of them.
+`tools/ccache-check.sh --break` feeds the last two checks two identical
+compilations instead, and they must then fail; that is what shows they are live.
+
 ## Failure classes
 
 The classifier turns logs into a work queue, because on POWER the class *is* the
@@ -368,11 +439,13 @@ bq plan   [targets…] [-f file] [--sources …]   # resolve order -> queue.json
 bq build  [targets…] [-n N] [--force] [--retry-failed] [--fix-arch]
           [-j N|auto] [--job-budget N] [--make-jobs N] [--no-cpu-affinity]
           [--min-free GIB] [--min-mem GIB]
+          [--no-ccache] [--ccache-dir DIR] [--ccache-size SIZE]
 bq status [-v]
 bq triage [-o out.md]
 
 tools/bq-selftest.py [--break ordering|budget|affinity]   # -j invariants
 tools/pkg-treediff.py A B [--self-test PKG]               # same build twice?
+tools/ccache-check.sh [--break]                           # no hit across -mcpu
 ```
 
 ### Rebuilding something already published

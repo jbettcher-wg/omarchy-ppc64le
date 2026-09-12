@@ -716,7 +716,8 @@ def save_state(st):
 # the build itself
 # ==========================================================================
 
-def write_makepkg_conf(path, pkgdest, srcdest, logdest, make_jobs=None):
+def write_makepkg_conf(path, pkgdest, srcdest, logdest, make_jobs=None,
+                       ccache=False):
     """A makepkg.conf that inherits the system one and overrides only what the
     mass rebuild needs.
 
@@ -755,6 +756,23 @@ def write_makepkg_conf(path, pkgdest, srcdest, logdest, make_jobs=None):
             "# !debug into !!debug and makepkg errors on every single build.\n"
             "OPTIONS+=(!debug)\n"
             % (pkgdest, srcdest, logdest))
+        if ccache:
+            # /etc/makepkg.conf ships BUILDENV=(… !ccache …) and must not be
+            # edited, so turn it on here.  This works because makepkg's
+            # in_opt_array() walks the array *backwards* and returns on the
+            # first hit, so the last occurrence wins -- exactly the mechanism
+            # OPTIONS+=(!debug) above relies on.  Verified rather than assumed:
+            # a build with this line moves ccache's own hit/miss counters, and
+            # without it they stay at zero.
+            #
+            # What makepkg then does is prepend /usr/lib/ccache/bin to PATH,
+            # where cc/gcc/g++/clang are symlinks to ccache.  That directory is
+            # on the host /usr, which the bwrap overlay stacks *under* the
+            # sysroot, so it stays visible -- and because it is only a PATH
+            # entry, ccache still resolves the real compiler through the
+            # overlay and will pick a staged gcc over the host one if a package
+            # staged one.
+            fh.write("BUILDENV+=(ccache)\n")
         if make_jobs:
             # Written AFTER the sourcing above, so it beats /etc/makepkg.conf's
             # -j144 and any drop-in.  NINJAFLAGS is set for the recipes that
@@ -885,7 +903,13 @@ def build_env(sysroot, bwrapped):
     # Telling fakeroot not to attempt the real call is exactly right here:
     # we are staging a package tree, not changing anything on the system.
     e["FAKEROOTDONTTRYCHOWN"] = "1"
+    e.update(_CCACHE_ENV)
     return e
+
+
+# Filled in by cmd_build once, from ccache_env(args); build_env() is called
+# from several places and none of them has `args`.
+_CCACHE_ENV = {}
 
 
 # ==========================================================================
@@ -1053,6 +1077,111 @@ class CpuPool:
 
 def make_slots(args, base):
     return [Slot(i, base, args) for i in range(max(1, args.jobs))]
+
+
+# ==========================================================================
+# ccache
+# ==========================================================================
+#
+# The compiler cache is worth having here for a reason specific to this repo:
+# a large share of the rebuilds are of *identical source*.  The packager sweep
+# rebuilt fifteen recipes purely to change a metadata string; a soname bump
+# rebuilds a dependent whose own code did not move; --force after a failed
+# guard recompiles everything that already compiled.  ccache turns all of those
+# from full cost into near-nothing.
+#
+# It is enabled by default and switched off with --no-ccache.
+#
+# Two settings are deliberate rather than defaulted:
+#
+#   compiler_check=content   The default is `mtime`, which identifies a
+#                            compiler by path, size and modification time.  In
+#                            a tree where the sysroot can stack a *different*
+#                            gcc over the host one at the same path, that is
+#                            the wrong identity to hash.  `content` hashes the
+#                            compiler binary itself.  It costs one hash of a
+#                            ~1 MiB executable per invocation and removes the
+#                            whole class.
+#
+#   base_dir unset           Leaving it unset means absolute paths go into the
+#                            hash, so a build under a different --buildroot
+#                            misses instead of hitting.  That is the safe
+#                            direction, and the alternative -- rewriting
+#                            absolute paths to relative so they hit -- is the
+#                            classic source of "ccache handed me the wrong
+#                            object" reports.  bq's buildroot is stable within
+#                            a machine, so there is little to win and a
+#                            correctness property to lose.
+#
+# What ccache does NOT cover:
+#
+#   rustc          `/usr/lib/ccache/bin` has no rustc symlink and ccache does
+#                  not speak Rust, so rust packages (marksman, rust itself)
+#                  get neither the benefit nor the risk.  sccache would be a
+#                  separate exercise.
+#
+#   recipes that   Some upstreams turn it off themselves and are right to.
+#   turn it off    foot's `pgo/pgo.sh` does `export CCACHE_DISABLE=1` on line
+#                  82, because profile-generate/profile-use and a compiler
+#                  cache do not mix.  A foot build under bq therefore shows a
+#                  0% hit rate and that is correct, not a wiring failure --
+#                  which is exactly why the summary line below reports the hit
+#                  rate rather than reporting that ccache was "enabled".
+
+def ccache_env(args):
+    if not args.ccache:
+        return {}
+    e = {"CCACHE_DIR": args.ccache_dir,
+         # Set here rather than left to ~/.config/ccache/ccache.conf: bq must
+         # not depend on a config file it does not write.  That is the same
+         # lesson as the makepkg.conf.d drop-ins, which were silently not
+         # applying to any bq build for weeks.
+         "CCACHE_MAXSIZE": args.ccache_size,
+         "CCACHE_COMPILERCHECK": "content"}
+    os.makedirs(args.ccache_dir, exist_ok=True)
+    return e
+
+
+def ccache_counters():
+    """{stat: int} from `ccache --print-stats`, or {} if ccache is not there.
+
+    _CCACHE_ENV is load-bearing, not tidiness: without it this reads whatever
+    CCACHE_DIR the *caller's* shell implies -- ~/.cache/ccache -- while the
+    builds write to the one bq configured, so a run against an alternate
+    --ccache-dir reported "no compilations went through it" while the cache was
+    filling up perfectly well.
+    """
+    try:
+        r = subprocess.run(["ccache", "--print-stats"], capture_output=True,
+                           text=True, timeout=60,
+                           env={**os.environ, **_CCACHE_ENV})
+    except Exception:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2:
+            try:
+                out[parts[0]] = int(parts[1])
+            except ValueError:
+                pass
+    return out
+
+
+def ccache_delta(before, after):
+    """A one-line hit/miss summary for the run, or None."""
+    if not before or not after:
+        return None
+    hit = ((after.get("direct_cache_hit", 0) - before.get("direct_cache_hit", 0))
+           + (after.get("preprocessed_cache_hit", 0)
+              - before.get("preprocessed_cache_hit", 0)))
+    miss = after.get("cache_miss", 0) - before.get("cache_miss", 0)
+    total = hit + miss
+    if total <= 0:
+        return None
+    return ("ccache: %d/%d hits (%.1f%%), %d misses, cache now %.1f GiB"
+            % (hit, total, 100.0 * hit / total, miss,
+               after.get("cache_size_kibibyte", 0) / 2**20))
 
 
 def mem_available_gib():
@@ -1252,7 +1381,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     conf = slot.conf
     write_makepkg_conf(conf, args.pkgdest or REPO,
                        os.path.join(BUILDROOT, "srcdest"), logdir,
-                       make_jobs=slot.make_jobs)
+                       make_jobs=slot.make_jobs, ccache=args.ccache)
 
     sysroot = slot.layer            # where new deps get staged
     layers = slot.layers            # what the build actually sees
@@ -1593,6 +1722,14 @@ def cmd_build(args):
     # repo is 1,300 packages of tar.
     emit("bq: %d/%d to build (buildroot %s, %.0f GiB free)"
          % (len(todo), len(order), BUILDROOT, disk_free_gib(BUILDROOT)))
+    global _CCACHE_ENV
+    _CCACHE_ENV = ccache_env(args)
+    cc_before = {}
+    if args.ccache:
+        cc_before = ccache_counters()
+        emit("bq: ccache on, %s (%s max, %.0f GiB free on that filesystem)"
+             % (args.ccache_dir, args.ccache_size,
+                disk_free_gib(args.ccache_dir)))
     os.makedirs(args.sysroot, exist_ok=True)
     # Before any job starts.  With -j this is what freezes the shared base
     # sysroot layer: nothing writes to it again for the rest of the run.
@@ -1677,6 +1814,12 @@ def cmd_build(args):
     print("\nbq: %d ok, %d failed, peak build tree %.2f GiB, wall %.0fs"
           % (counters["ok"], counters["fail"], counters["peak"],
              time.time() - t_start))
+    if args.ccache:
+        # The hit rate is the only honest evidence that the shim was actually
+        # invoked -- a PATH that looks right proves nothing.
+        line = ccache_delta(cc_before, ccache_counters())
+        print(line if line else
+              "ccache: no compilations went through it this run")
     return 0 if counters["fail"] == 0 else 1
 
 
@@ -1893,6 +2036,25 @@ def main():
                         "reaches make; ninja, cargo and LTO size themselves "
                         "from sched_getaffinity(), so without the pin they each "
                         "take the whole machine.")
+    p.add_argument("--no-ccache", dest="ccache", action="store_false",
+                   default=True,
+                   help="do not enable ccache. /etc/makepkg.conf has !ccache "
+                        "and is not ours to edit, so bq turns it on in its own "
+                        "generated config instead. Rust is not covered: there "
+                        "is no rustc shim and ccache does not speak Rust.")
+    p.add_argument("--ccache-dir",
+                   default=os.environ.get(
+                       "BQ_CCACHE_DIR",
+                       os.path.join(HOME, ".cache/ccache")),
+                   help="where the compiler cache lives (default "
+                        "~/.cache/ccache, which is ccache's own default). "
+                        "Redirect it if that filesystem is short of space -- "
+                        "bq reports the free space it sees at start-up.")
+    p.add_argument("--ccache-size", default=os.environ.get("BQ_CCACHE_SIZE",
+                                                           "100G"),
+                   help="ccache max size (default 100G). Set here rather than "
+                        "left to ~/.config/ccache/ccache.conf, so a bq run does "
+                        "not depend on a config file bq does not write.")
     p.add_argument("--min-mem", type=float, default=16.0, metavar="GIB",
                    help="with -j, do not start another package while less than "
                         "this much memory is available. Link steps, not "
