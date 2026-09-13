@@ -925,6 +925,13 @@ def build_env(sysroot, bwrapped):
     # Telling fakeroot not to attempt the real call is exactly right here:
     # we are staging a package tree, not changing anything on the system.
     e["FAKEROOTDONTTRYCHOWN"] = "1"
+    # Compiler and toolchain scratch files follow TMPDIR: GCC's LTO partitions,
+    # `go build`'s work directories, rustc, and every `mktemp` a recipe runs.
+    # Unset, they all land in /tmp -- a RAM-backed tmpfs here, shared with the
+    # desktop -- whatever --buildroot says.  Put them beside the build tree,
+    # so --buildroot /var/tmp/... really does move a large build off tmpfs.
+    e["TMPDIR"] = os.path.join(BUILDROOT, "tmp")
+    os.makedirs(e["TMPDIR"], exist_ok=True)
     e.update(_CCACHE_ENV)
     return e
 
@@ -1159,8 +1166,15 @@ def ccache_env(args):
          # lesson as the makepkg.conf.d drop-ins, which were silently not
          # applying to any bq build for weeks.
          "CCACHE_MAXSIZE": args.ccache_size,
-         "CCACHE_COMPILERCHECK": "content"}
+         "CCACHE_COMPILERCHECK": "content",
+         # ccache preprocesses into $XDG_RUNTIME_DIR/ccache-tmp by default --
+         # /run/user/<uid>, a 45 GiB tmpfs that also holds the desktop
+         # session's sockets.  zig 0.16's bootstrap compiles a generated 222 MiB
+         # zig2.c; its preprocessed .i reached 48 GiB there, filled the tmpfs
+         # and left cc1 spinning (2026-09-13).  Keep it in the buildroot.
+         "CCACHE_TEMPDIR": os.path.join(BUILDROOT, "ccache-tmp")}
     os.makedirs(args.ccache_dir, exist_ok=True)
+    os.makedirs(e["CCACHE_TEMPDIR"], exist_ok=True)
     return e
 
 
@@ -1291,17 +1305,22 @@ def preflight_deps(recipedir, staged):
     return [d for d in r.stdout.split() if d and d not in staged]
 
 
-def stage_deps(pkgbase, recipedir, sysroot, log):
+def stage_deps(pkgbase, recipedir, sysroot, log, lowers=()):
     """Fetch this package's depends/makedepends/checkdepends into the sysroot.
 
     Without this a missing makedepend only surfaced as whatever meson or cmake
     chose to say about it, halfway through the build.
+
+    `lowers` are the sysroot layers beneath `sysroot` (the shared base under a
+    -j slot).  sysroot-add.sh needs them to decide opaque directories: an
+    opaque mark in the slot would hide the base's copy too.
     """
     try:
         r = subprocess.run(
             [os.path.join(TOOLS, "stage-deps.sh"), pkgbase, recipedir],
             capture_output=True, text=True, timeout=2400,
-            env={**os.environ, "SYSROOT": sysroot, "BUILDROOT": BUILDROOT})
+            env={**os.environ, "SYSROOT": sysroot, "BUILDROOT": BUILDROOT,
+                 "SYSROOT_LOWER": ":".join(lowers)})
         out = r.stdout + r.stderr
     except Exception as exc:
         out = "stage-deps failed to run: %s: %s\n" % (type(exc).__name__, exc)
@@ -1321,10 +1340,11 @@ def stage_deps(pkgbase, recipedir, sysroot, log):
     return absent
 
 
-def sysroot_add(names, sysroot):
+def sysroot_add(names, sysroot, lowers=()):
     subprocess.run([os.path.join(TOOLS, "sysroot-add.sh")] + list(names),
                    capture_output=True, text=True, timeout=900,
-                   env={**os.environ, "SYSROOT": sysroot})
+                   env={**os.environ, "SYSROOT": sysroot,
+                        "SYSROOT_LOWER": ":".join(lowers)})
 
 
 def disk_free_gib(path):
@@ -1424,7 +1444,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
             _ri = read_recipe(work)
             _names = list(_ri["pkgname"])
             if _names:
-                sysroot_add(_names, sysroot)
+                sysroot_add(_names, sysroot, layers[:-1])
                 slot.staged.update(_names)
                 slot.staged.update(_ri["provides"])
                 note_staged(st, _names + _ri["provides"])
@@ -1441,7 +1461,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     # stage-deps.sh at all: preflight_deps() only *reported* what was missing,
     # so bluez went in without `ell libical` and bolt without `asciidoc` even
     # though all three are packaged in Arch POWER.
-    unstaged = stage_deps(pkgbase, work, sysroot, log)
+    unstaged = stage_deps(pkgbase, work, sysroot, log, layers[:-1])
 
     # Recompute AFTER staging. bwrap_prefix() returns [] when <sysroot>/usr does
     # not exist, and on a fresh buildroot stage_deps() is what creates it -- so
@@ -1552,7 +1572,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
         rinfo = read_recipe(work)
         names = list(rinfo["pkgname"])
         if names:
-            sysroot_add(names, sysroot)
+            sysroot_add(names, sysroot, layers[:-1])
             slot.staged.update(names)
             slot.staged.update(rinfo["provides"])
             note_staged(st, names + rinfo["provides"])

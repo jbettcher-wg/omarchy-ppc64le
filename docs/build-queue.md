@@ -148,6 +148,82 @@ memorise. bq classified the `systemd` failure as `missing-dep` on the line
 lookup, several hundred lines above the actual error. The class was right by
 accident and the named dependency was wrong in both cases.
 
+### Stale host files: opaque directories
+
+The overlay merges directories. A staged file replaces the host file at the
+same path, but a host file the staged package does **not** ship stays visible.
+When a repo package is a newer build of something installed on the host,
+every file the newer version dropped leaks into the build.
+
+Two incidents, both on 2026-09-13:
+
+- **gcc-go.** Arch POWER's gcc recipe produced `gcc-go`, which ships
+  `/usr/bin/go` and `/usr/bin/gofmt` (`provides=go=1.17`). Staged from `repo/`,
+  those replaced the host's real Go in every build (chromium's dawn step on
+  2026-09-12). That one was a packaging decision rather than a staging bug:
+  gcc-go and libgo left `repo/`, and `packages/gcc` no longer builds the Go
+  front end.
+- **go 1.27.1 over host go 1.26.5.** stage-deps prefers our build over the
+  installed one, so it staged 1.27.1. 1.27.1 no longer ships 165 files that
+  1.26.5 has, and the merged `/usr/lib/go` held both. Every Go build then
+  died compiling the standard library:
+  `internal/strconv/uscale.go:82:5: uint64pow10 redeclared in this block`.
+
+Overlayfs has a switch for this: an **opaque** directory hides everything
+beneath it in lower layers. bwrap mounts its overlay with `userxattr`, so an
+unprivileged `user.overlay.opaque=y` on a sysroot directory works;
+`trusted.overlay.opaque` is refused without root.
+
+`tools/sysroot-add.sh` calls `tools/sysroot-opaque.py` after extracting.
+A directory is marked only if all of these hold:
+
+| rule | why |
+|---|---|
+| the staged package replaces a host-installed package: same pkgname, or named in its `replaces`/`conflicts` | nothing else can leave stale files behind |
+| the directory is under `usr/` or `opt/` | `bwrap_prefix` overlays nothing else |
+| no installed package outside that set owns any path at or under it (pacman's local db) | keeps `/usr`, `/usr/lib`, `/usr/include` and every other shared directory merged |
+| no lower sysroot layer holds anything under it that the staged package lacks | under `-j`, an opaque mark in a slot would hide the shared base too; bq passes the lower layers as `SYSROOT_LOWER` |
+| it is not on a fixed list of shared roots | defence in depth, not the mechanism |
+
+The shallowest eligible directories are marked. Across `repo/` against this
+host that is 3,011 directories in 863 packages, e.g. `usr/lib/go`,
+`usr/include/c++`, `usr/lib/cmake/llvm`, `usr/lib/python3.14/__pycache__`.
+Indexing the host db costs about 1.7 s per `sysroot-add.sh` call.
+
+What it does not change: the other overlaps a scan of `repo/` against the
+host found are same-path overwrites of a *different* package, not stale
+leftovers of the same one, and none of those packages declares
+`replaces`/`conflicts` against what it overwrites:
+
+| repo package | over host | overlap |
+|---|---|---|
+| `zlib-ng-compat` | `zlib` | `libz.so*` |
+| `jack` | `pipewire-jack` | `libjack*.so*` |
+| `linux-power9-api-headers` | `linux-api-headers` | 1,005 headers |
+| `iptables-legacy` | `iptables` | 239 files |
+| `bubblewrap-suid` | `bubblewrap` | `/usr/bin/bwrap` |
+| `dbus-daemon-units`, `pulseaudio` | `dbus-broker-units`, `pipewire-pulse` | unit / schema files |
+
+Those are open questions about what the sysroot *should* contain, not bugs
+this mechanism can decide.
+
+Marks persist in a sysroot. After a host upgrade that moves files between
+packages, delete `<buildroot>/sysroot*`; bq rebuilds it on the next run.
+
+### Temp files stay in the buildroot
+
+A build's scratch files follow two variables that bq now sets, both under the
+buildroot:
+
+- `CCACHE_TEMPDIR=<buildroot>/ccache-tmp`. ccache's default is
+  `$XDG_RUNTIME_DIR/ccache-tmp`, i.e. `/run/user/<uid>`: a 45 GiB tmpfs that
+  also holds the desktop session's sockets. zig 0.16's bootstrap compiles a
+  generated 222 MiB `zig2.c`; ccache's preprocessed copy reached 48 GiB there,
+  filled the tmpfs, and left `cc1` spinning with no I/O for twenty minutes.
+- `TMPDIR=<buildroot>/tmp`. GCC's LTO partitions, `go build` work
+  directories, rustc and every `mktemp` in a recipe otherwise land in `/tmp`,
+  RAM-backed here, whatever `--buildroot` says.
+
 ### Version-locked component sets
 
 Some upstreams release several packages as one versioned set, and mixing
