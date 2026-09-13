@@ -92,7 +92,7 @@ pkgname=(
  dotnet-source-built-artifacts
 )
 pkgver=10.0.12.sdk112
-pkgrel=1
+pkgrel=2
 arch=(powerpc64le)
 url=https://dotnet.microsoft.com
 license=(MIT)
@@ -122,9 +122,12 @@ options=(
   !lto
   staticlibs
 )
-source=(git+https://github.com/dotnet/dotnet.git#tag=v${pkgver/.*.sdk/.0.})
-b2sums=('4ae24a6cdfd7b1c13031991f2cbb12e4e24fe4a7293f5cf7a48d5d92d5b068380cc174c46dda6a11908b1230e50fe1a4dbb1acc863ba36e17b3b6123bc72c4b7')
-sha256sums=('SKIP')
+source=(git+https://github.com/dotnet/dotnet.git#tag=v${pkgver/.*.sdk/.0.}
+        mono-ppc64le-elfv2-small-aggregates.patch)
+b2sums=('4ae24a6cdfd7b1c13031991f2cbb12e4e24fe4a7293f5cf7a48d5d92d5b068380cc174c46dda6a11908b1230e50fe1a4dbb1acc863ba36e17b3b6123bc72c4b7'
+        '5affe6666187dd7d89b098c701b6d0b65843600a185e8c637214f33a74d36ce83aea8ba895ab78d5c9e6fe25f2b86d925e8cc10e02f83f2595f2686195422794')
+sha256sums=('SKIP'
+            '53c9ac0b6ba2decbc86f47c42f9f10449cdcf3faf0cc9c64fab6785cb4674fe7')
 
 # --- bootstrap selection (see header) --------------------------------------
 _seed_sdkver=10.0.111
@@ -188,6 +191,12 @@ prepare() {
 
   # fix bootstrap
   git remote set-url origin https://github.com/dotnet/dotnet.git
+
+  # ppc64le: Mono's ppc64 JIT returned every struct through a hidden pointer
+  # and loaded small struct arguments as whole doublewords, both against ELFv2.
+  # P/Invokes and callbacks returning small structs got every argument shifted
+  # one register (pinta/GirCore died at startup). Upstreamable; see the header.
+  patch -Np1 -d src/runtime -i "$srcdir/mono-ppc64le-elfv2-small-aggregates.patch"
 
   local _bootstrapver=$(xmllint --xpath "string(//*[local-name()='PrivateSourceBuiltSdkVersion'])" eng/Versions.props)
   if [[ ${_bootstrapver%%-*} != "$_seed_sdkver" ]]; then
