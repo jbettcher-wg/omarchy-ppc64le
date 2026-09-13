@@ -1,3 +1,24 @@
+# Maintainer: Jordan Bettcher <thebettcher@gmail.com>
+#
+# Reference recipe, not a bq package (README.md). Chromium 150 for powerpc64le
+# at 150.0.7871.250, the release Electron 43.7.0 pins; packages/electron43 is
+# built on this.
+#
+# Sources. Google published no release tarball for 150.0.7871.250; the newest
+# 150 tarball is .222. So source[0] is Google's 150.0.7871.222 -lite tarball,
+# and chromium-150.0.7871.222-250.patch is the verbatim upstream difference
+# between the two tags for chromium/src, v8, angle, dawn and skia, filtered to
+# the files the -lite tarball ships (mkdelta.py generated it). prepare()
+# rewrites the revision stamps generated into the .222 tarball to .250.
+#
+# Changes from 150.0.7871.128-1 (the previous commit has it verbatim), each one
+# something packages/chromium learned on 151:
+#   - the _power8_compat toggle, with the same values and semantics
+#   - build() sets -mcpu/-mtune per toggle value; it no longer strips them
+#   - chromium-launcher's Makefile version is pinned to pkgver-pkgrel
+#   - ppc64le patches r3: r1 with core/baseline-isa-3-0.patch rebased to 150
+#     (README.md has the r1/r2 comparison)
+#
 # Maintainer: Christian Heusel <gromit@archlinux.org>
 # Maintainer: Jonathan Grotelüschen <tippfehlr@archlinux.org>
 # Contributor: Evangelos Foutras <foutrelis@archlinux.org>
@@ -6,11 +27,35 @@
 # Contributor: Daniel J Griffiths <ghost1227@archlinux.us>
 
 pkgname=chromium
-pkgver=150.0.7871.128
+pkgver=150.0.7871.250
 pkgrel=1
 _launcher_ver=8
 _manual_clone=0
 _system_clang=1
+
+# Google's release tarball this recipe starts from, and what the .250 revision
+# stamps are (github.com/chromium/chromium tag 150.0.7871.250, and its DEPS).
+_tarball_ver=150.0.7871.222
+_chromium_commit=f916f1b7136907af19d96b95b891533d091d932a
+_chromium_commit_position=4305
+_chromium_commit_time=1786991556
+_skia_revision=9c7b2dffb2433f5a0cc2b77f06025a09126807ed
+_dawn_revision=b8cea1289d76a80e877e0d751ef3a35088256e89
+
+# ppc64le ISA level.
+#   0 = POWER9 (ISA 3.0). THE DEFAULT IN THIS TREE. Drops the POWER8 forcing
+#       patch so third-party code takes its POWER9 paths, and lets
+#       -mcpu=power9 stand.
+#   1 = POWER8-legal (ISA 2.07). The floor Arch POWER's multi-architecture
+#       repo needs; pass this explicitly when building for upstream.
+#
+# Source stays POWER8-compliant either way: no POWER9-only instruction is
+# written into any source file. The difference is compiler flags and which
+# build-system feature gates get set -- the LuaJIT model, POWER8 ISA floor
+# with ISA 3.0 paths selected at build/runtime rather than hardcoded.
+#
+# Override per build:  _power8_compat=1 makepkg -e   (POWER8-legal artifact)
+_power8_compat=${_power8_compat:-0}
 pkgdesc="A web browser built for speed, simplicity, and security"
 arch=('x86_64' 'powerpc64le')
 url="https://www.chromium.org/Home"
@@ -76,8 +121,9 @@ optdepends=('pipewire: WebRTC desktop sharing under Wayland'
             'org.freedesktop.secrets: password storage backend on GNOME, KDE and Xfce'
             'upower: Battery Status API support')
 options=('!lto') # Chromium adds its own flags for ThinLTO
-source=(https://commondatastorage.googleapis.com/chromium-browser-official/chromium-$pkgver-lite.tar.xz
+source=(https://commondatastorage.googleapis.com/chromium-browser-official/chromium-$_tarball_ver-lite.tar.xz
         https://github.com/foutrelis/chromium-launcher/archive/v$_launcher_ver/chromium-launcher-$_launcher_ver.tar.gz
+        chromium-150.0.7871.222-250.patch
         chromium-138-nodejs-version-check.patch
         chromium-145-fix-SYS_SECCOMP.patch
         chromium-147-revert-clang-no-lifetime-dse-flag.patch
@@ -94,11 +140,12 @@ source=(https://commondatastorage.googleapis.com/chromium-browser-official/chrom
         enable-widevine-arm64.patch
         use-oauth2-client-switches-as-default.patch
         glibc-2.42-baud-rate-fix.patch
-        chromium-ppc64le-patches-r1.tar.gz
+        chromium-150-ppc64le-patches-r3.tar.gz
         swiftshader-ppc-xcoff-baseclasses.patch
         git+https://gn.googlesource.com/gn#commit=27a549cc1f83b223cf07e152f3e36681d5dd68fd)
-sha256sums=('2e2f36e3cd1ebc4ad57fd310774a5e5e9db77883d5f9374fedeaabd3c103b819'
+sha256sums=('aa9f3f042c6ab77b0586c829d30af6e08cc485193c134772414187d8a42fc1d0'
             '213e50f48b67feb4441078d50b0fd431df34323be15be97c55302d3fdac4483a'
+            '1f266831b1a2a3f7bda5ae7e24ac133b39d9bec3af9aa31fa5164289a971edf9'
             '11a96ffa21448ec4c63dd5c8d6795a1998d8e5cd5a689d91aea4d2bdd13fb06e'
             '4fc040a0656a0a524dd8ad090cd129fc5b6cb21adcc66be82080165789e8c13e'
             'c382830318c5b37826ecf44f3ba9def6be8affdad1bce819ecb83f3222ff4b3a'
@@ -115,7 +162,7 @@ sha256sums=('2e2f36e3cd1ebc4ad57fd310774a5e5e9db77883d5f9374fedeaabd3c103b819'
             '33d1650e183a86cc2d0e9b0fcc08a5da76c7354d25a419921e9d2dc02b8b3854'
             '9343afa1a4308a7cfb3317229f5aff7778688debcc03c4a74a85908aa1d0cc3a'
             '1c1898f263eaacbc069a8e1a3e732852350350d1dad4cb1a6bba430e3b796cd0'
-            'a4aa7a5da8ba75b8429cc30ce27f1600b78e294e2a81d8fe0e6f658f54ed499f'
+            '981236f9e9ee379d27b210b43937bd6710f3de55439845f76051e8158b88d3ef'
             '389faf07f2fc7f0180998c78417ca23b7c8fa37d3ddd2f5ab569334834c3a955'
             'SKIP')  # pinned via #commit= — git verifies
 
@@ -197,7 +244,25 @@ EOF
   ninja -C out gn
   popd >/dev/null
 
+  # Google's .222 tarball -> the .250 tree. A fresh extraction always recreates
+  # chromium-$_tarball_ver, so a leftover chromium-$pkgver is stale.
+  if [[ -d chromium-$_tarball_ver ]]; then
+    rm -rf chromium-$pkgver
+    mv chromium-$_tarball_ver chromium-$pkgver
+  fi
   cd chromium-$pkgver
+  msg2 "Applying chromium-150.0.7871.222-250.patch"
+  patch -Np1 -i ../chromium-150.0.7871.222-250.patch
+
+  # Revision stamps the release tarball generates from its own checkout
+  # (chrome://version, the GPU blocklist version, the skia and dawn hashes).
+  printf 'LASTCHANGE=%s-refs/branch-heads/7871@{#%s}\nLASTCHANGE_YEAR=2026\n' \
+    "$_chromium_commit" "$_chromium_commit_position" > build/util/LASTCHANGE
+  printf '%s' "$_chromium_commit_time" > build/util/LASTCHANGE.committime
+  printf '%s' "$_dawn_revision" > gpu/webgpu/DAWN_VERSION
+  sed -i -E "s/\"[0-9a-f]{40}\"/\"$_skia_revision\"/" skia/ext/skia_commit_hash.h
+  sed -i -E "s/\"[0-9a-f]{40}\"/\"$_chromium_commit\"/" gpu/config/gpu_lists_version.h
+  sed -i -E "s/\"[0-9a-f]{40}\"/\"$_dawn_revision\"/" gpu/webgpu/dawn_commit_hash.h
 
   # Allow building against system libraries in official builds
   sed -i 's/OFFICIAL_BUILD/GOOGLE_CHROME_BUILD/' \
@@ -276,18 +341,42 @@ EOF
     patch -Np1 -i ../swiftshader-ppc-xcoff-baseclasses.patch
   fi
 
-  # ppc64le patches (Raptor Engineering / Debian chromium-team, series-ordered).
-  # Applied on a Chromium version four security releases newer than Debian's
-  # baseline; expect the vast majority to apply cleanly since they touch
-  # arch-specific files upstream rarely modifies in point releases.
+  # ppc64le patches (Debian chromium-team, series-ordered): r1's set for 150,
+  # with core/baseline-isa-3-0.patch rebased (r3; see README.md).
   if [[ $CARCH == powerpc64le ]]; then
     local _p
     while IFS= read -r _p; do
       [[ -z $_p || $_p == \#* ]] && continue
       [[ $_p == ppc64le/* ]] || continue
+
+      # POWER9 build: skip the patch that pins v8's GN toolchain config to
+      # -mcpu=power8 -maltivec -mvsx, so v8 follows the command-line -mcpu.
+      if (( ! _power8_compat )) && [[ $_p == *Force-baseline-POWER8-AltiVec-VSX* ]]; then
+        msg2 "Skipping (POWER9 build): $_p"
+        continue
+      fi
+
       msg2 "Applying ppc64le patch: $_p"
       patch -Np1 -i "$srcdir/ppc64le-patches/${_p#ppc64le/}"
     done < "$srcdir/ppc64le-patches/debian-series"
+
+    # core/baseline-isa-3-0.patch is commented out of debian-series because it
+    # is POWER9-only. Apply it explicitly for the POWER9 build. Unlike the 151
+    # recipe there is no v8 hunk to strip: the r3 copy was rebased without it.
+    if (( ! _power8_compat )); then
+      msg2 "Applying ppc64le patch (POWER9 build): core/baseline-isa-3-0.patch"
+      patch -Np1 -i "$srcdir/ppc64le-patches/core/baseline-isa-3-0.patch"
+    fi
+
+    # skia-vsx-instructions.patch hardcodes -mcpu=power9 -mtune=power9 into
+    # skia's config("default") -- all of skia, not just the vsx TU. Undo that
+    # for the POWER8 build so POWER8-legality does not silently depend on what
+    # the build host's makepkg.conf happens to set.
+    if (( _power8_compat )); then
+      msg2 "Pinning skia back to POWER8 (_power8_compat=1)"
+      sed -i -e 's/-mcpu=power9/-mcpu=power8/g' -e 's/-mtune=power9/-mtune=power8/g' \
+        third_party/skia/gn/skia/BUILD.gn third_party/skia/BUILD.gn
+    fi
   fi
 
   # Link to system tools required by the build
@@ -340,6 +429,11 @@ EOF
 }
 
 build() {
+  # Pin LAUNCHER_VERSION to pkgver-pkgrel. Without this, the launcher's Makefile
+  # falls through to `git describe` which walks up into any parent git repo
+  # (e.g. our own working tree) and picks whatever tag it finds there.
+  sed -i "s@\$(shell git describe 2>/dev/null || echo v8)@$pkgver-$pkgrel@" \
+    chromium-launcher-$_launcher_ver/Makefile
   make -C chromium-launcher-$_launcher_ver
 
   cd chromium-$pkgver
@@ -445,17 +539,23 @@ build() {
   fi
 
   if [[ $CARCH == powerpc64le ]]; then
-    # Same rationale as aarch64/riscv64: the ppc64le patch set (esp. libvpx,
-    # skia, pffft) uses per-TU -mcpu selection; a global -mcpu/-mtune overrides
-    # those and breaks the build. Baseline is forced to POWER8 by
-    # 0001-Force-baseline-POWER8-AltiVec-VSX-CPU-features-when-.patch.
-    CFLAGS="${CFLAGS//-mcpu=*([^ ]) }"
-    CFLAGS="${CFLAGS//-mtune=*([^ ]) }"
-    CXXFLAGS="${CXXFLAGS//-mcpu=*([^ ]) }"
-    CXXFLAGS="${CXXFLAGS//-mtune=*([^ ]) }"
+    # GN's unbundle toolchain (custom_toolchain= below) passes $CFLAGS and
+    # $CXXFLAGS through verbatim and appends them AFTER GN's own config flags,
+    # so the last -mcpu on the command line wins. Set it here explicitly rather
+    # than inheriting whatever the build host's makepkg.conf carries.
+    CFLAGS="${CFLAGS/-mcpu=*([^ ]) }";     CFLAGS="${CFLAGS/-mtune=*([^ ]) }"
+    CXXFLAGS="${CXXFLAGS/-mcpu=*([^ ]) }"; CXXFLAGS="${CXXFLAGS/-mtune=*([^ ]) }"
+    if (( _power8_compat )); then
+      CFLAGS+=" -mcpu=power8 -mtune=power8"
+      CXXFLAGS+=" -mcpu=power8 -mtune=power8"
+    else
+      CFLAGS+=" -mcpu=power9 -mtune=power9"
+      CXXFLAGS+=" -mcpu=power9 -mtune=power9"
+    fi
+    msg2 "ppc64le ISA level: _power8_compat=$_power8_compat"
   fi
 
-  # Arch's packaged gn (0.2324) doesn't support several dotfile/tool
+  # Arch POWER's packaged gn (0.2324) doesn't support several dotfile/tool
   # attributes chromium 150 uses (expand_directory_allowlist,
   # expand_directory(), inputs= on rust_* tools, c_additional_outputs).
   # We built a fresh gn in prepare() — use it. Drop this when Arch POWER's
