@@ -57,7 +57,6 @@ and top-level `.so` files are never installed, exactly as in Arch's recipe.
 
 `license=('LicenseRef-Obsidian')`, the same as Arch. `LICENSE-Obsidian` is
 Obsidian's licence overview. It permits free use and reserves Obsidian's rights
-to the app's code, and it does not grant redistribution. Arch ships the package
-under a written permission from Obsidian to Arch Linux: the file `Packaging
-permission from Arch Linux.eml` in Arch's packaging repository. That permission
-names Arch, so it isn't copied here and doesn't cover this repository.
+to the app's code. It ships in the package, as in Arch's. Arch redistributes
+Obsidian under a written permission from Obsidian to Arch Linux; this repository
+distributes it as part of Omarchy for POWER, which bundles Obsidian.
