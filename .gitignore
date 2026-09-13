@@ -14,6 +14,11 @@ packages/*/*.tar.zst
 repo/*.db*
 repo/*.files*
 
+# POWER8 secondary-target artifacts. Holding folder, not a published repo --
+# same reasoning as repo/: reproducible from the recipes, which are tracked.
+repo-power8/*.db*
+repo-power8/*.files*
+
 # Upstream Omarchy is tracked as its own clone, not vendored.
 upstream/
 
@@ -31,7 +36,14 @@ installer/test/work/
 .bq-state.json.*
 __pycache__/
 
+# bq's repo-add lock, held while it writes a package db. Created next to the db
+# it guards (repo/, or a BQ_REPO side pool); ephemeral, never a recipe.
+.bq-repo-add.lock
+
 # makepkg VCS mirrors, cloned next to the recipe when SRCDEST is unset.
 packages/luajit/luajit-ppc64le/
 packages/neovim/neovim/
 packages/omarchy-theme-power9/power9.bak.*
+
+# Built ISO images (multi-GB). Reproducible from iso/build.sh + the repo.
+iso/out/

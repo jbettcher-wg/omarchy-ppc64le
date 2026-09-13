@@ -1,0 +1,570 @@
+#!/bin/bash
+
+# On the live ISO, .automated_script.sh exports OMARCHY_PATH and the package
+# targets before running us. The defaults keep bin/omarchy-iso-configurator
+# dry runs working outside the ISO.
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+OMARCHY_RUNTIME_PACKAGE="${OMARCHY_RUNTIME_PACKAGE:-omarchy}"
+OMARCHY_SETTINGS_PACKAGE="${OMARCHY_SETTINGS_PACKAGE:-omarchy-settings}"
+
+# The greeter draws this and measures the whole layout against its widest
+# line, so it must be plain text at a fixed width. Prefer the power9
+# theme's POWER9 wordmark (51 columns) when it is on the medium, and fall
+# back to Omarchy's own logo when it is not -- the ISO can be built
+# without the theme package.
+LOGO_PATH="${P9_LOGO:-/usr/share/omarchy/themes/power9/ascii/banner.txt}"
+[[ -r $LOGO_PATH ]] || LOGO_PATH="$OMARCHY_PATH/logo.txt"
+
+# The setup form — keyboard, account, hostname, and timezone questions, plus the
+# rules their answers are checked against — shared verbatim with the first-boot
+# owner setup that finishes a deferred install. build-iso.sh vendors it out of
+# the runtime package this ISO bundles, so the two can never offer different
+# layouts or accept different usernames. On the ISO that vendored copy is what
+# loads; a dry run outside the ISO falls back to the omarchy checkout
+# bin/omarchy-iso-configurator already points OMARCHY_PATH at.
+SETUP_FORM="${SETUP_FORM:-/usr/share/omarchy-iso/setup-form.sh}"
+[[ -r $SETUP_FORM ]] || SETUP_FORM="$OMARCHY_PATH/install/provisioning/setup-form.sh"
+if [[ ! -r $SETUP_FORM ]]; then
+  echo "ERROR: shared setup form not found at $SETUP_FORM" >&2
+  exit 1
+fi
+source "$SETUP_FORM"
+
+# Override the shared form's timezone prompt.
+#
+# Upstream asks `timedatectl list-timezones`, which is a D-Bus call to
+# systemd-timedated. On the live medium that service is not activatable --
+# "The name org.freedesktop.timedate1 was not activatable" -- so the command
+# prints nothing, gum is handed an empty list, and the question silently offers
+# no answers. tzdata is installed and the data is right there; read it.
+#
+# zone1970.tab is tzdata's canonical list, one zone in field 3. It deliberately
+# omits UTC, which is exactly the answer someone installing a server is most
+# likely to want, so add it back.
+p9_list_timezones() {
+  {
+    # Tab-separated; field 3 is the zone name. cut rather than awk so there is
+    # no quoting to get wrong.
+    if [[ -r /usr/share/zoneinfo/zone1970.tab ]]; then
+      grep -v '^#' /usr/share/zoneinfo/zone1970.tab | cut -f3
+    else
+      # No tab file: walk the tree instead. Region/City only, which skips the
+      # posix/ and right/ duplicate trees and the loose data files.
+      ( cd /usr/share/zoneinfo && find . -mindepth 2 -type f ) |
+        sed 's|^\./||' |
+        grep -E '^[A-Z][A-Za-z_]+/[A-Za-z_+-]+$' |
+        grep -vE '^(posix|right)/'
+    fi
+    echo UTC
+  } | grep . | sort -u
+}
+
+omarchy_prompt_timezone() {
+  local guess status
+  guess=$(tzupdate -p 2>/dev/null) || guess=""
+  if [[ -n $guess ]]; then
+    timezone=$(p9_list_timezones | gum choose --height 10 --selected "$guess" --header "Timezone") &&
+      status=0 || status=$?
+  else
+    timezone=$(p9_list_timezones | gum filter --height 10 --header "Timezone") &&
+      status=0 || status=$?
+  fi
+  ((status == 0)) || return $status
+  [[ -n $timezone ]] || timezone="UTC"
+}
+
+
+LOGO_WIDTH=$(awk '{ if (length > max) max = length } END { print max+0 }' "$LOGO_PATH")
+
+export GUM_CONFIRM_PROMPT_FOREGROUND="6"
+export GUM_CONFIRM_SELECTED_FOREGROUND="0"
+export GUM_CONFIRM_SELECTED_BACKGROUND="2"
+export GUM_CONFIRM_UNSELECTED_FOREGROUND="7"
+export GUM_CONFIRM_UNSELECTED_BACKGROUND="0"
+
+# The console can grow after boot (the framebuffer settles late, especially in
+# VMs), so remeasure at every redraw rather than trusting startup geometry.
+# gum draws on /dev/tty, so measure that rather than inherited COLUMNS.
+measure_terminal() {
+  TERM_WIDTH=$(stty size 2>/dev/null </dev/tty | awk '{print $2}')
+  (( TERM_WIDTH > 0 )) || TERM_WIDTH=${COLUMNS:-80}
+
+  PADDING_LEFT=$(((TERM_WIDTH - LOGO_WIDTH) / 2))
+  (( PADDING_LEFT < 0 )) && PADDING_LEFT=0
+  PADDING_LEFT_SPACES=$(printf "%*s" "$PADDING_LEFT" "")
+
+  PADDING="0 0 0 $PADDING_LEFT"
+  export GUM_CHOOSE_PADDING="$PADDING"
+  export GUM_FILTER_PADDING="$PADDING"
+  export GUM_INPUT_PADDING="$PADDING"
+  export GUM_SPIN_PADDING="$PADDING"
+  export GUM_TABLE_PADDING="$PADDING"
+  export GUM_CONFIRM_PADDING="$PADDING"
+}
+measure_terminal
+
+# The live VT resizes late during boot: tty1 starts as the 80-column boot
+# console and only grows once the kernel framebuffer/KMS takes over (noticeably
+# late in VMs). The logo is wider than 80 columns, so a first draw against that
+# transient narrow console wraps the logo ("smushed") and can't center it
+# (padding clamps to 0, so it hugs the left). A terminal emulator (or sudo's
+# pty) has the same problem the other way: it reports a stale 24x80 for a few
+# hundred ms after start before its real winsize is set. Either way, hold the
+# first draw until the width settles at (or above) the logo width. A real VT
+# that never widens (e.g. nomodeset) still proceeds after the cap.
+wait_for_stable_terminal() {
+  local width last="" stable=0 waited=0
+  while (( waited < 5000 )); do
+    width=$(stty size 2>/dev/null </dev/tty | awk '{print $2}')
+    [[ $width =~ ^[0-9]+$ ]] || width=0
+    if [[ $width == "$last" ]] && (( width >= LOGO_WIDTH )); then
+      (( ++stable >= 3 )) && break
+    else
+      stable=0
+    fi
+    last=$width
+    sleep 0.2
+    (( waited += 200 ))
+  done
+}
+
+clear_logo() {
+  measure_terminal
+  printf "\033[H\033[2J"
+  gum style --foreground 2 --padding "1 0 0 $PADDING_LEFT" "$(<"$LOGO_PATH")"
+}
+
+# Vertically-centered welcome shown once before the keyboard step — the same
+# frame the deferred-provisioning first boot opens on, so install and first boot
+# bookend the setup identically. Logo, the Omarchy tagline, and a single button,
+# centered like the boot logo. No animation.
+greeter() {
+  measure_terminal
+
+  local rows logo_h content_h top cols logo_row tagline_row hint_row
+  local tagline hint tpad hpad anim
+  cols=$TERM_WIDTH
+  rows=$(stty size 2>/dev/null </dev/tty | awk '{print $1}')
+  [[ $rows =~ ^[0-9]+$ ]] || rows=${LINES:-24}
+  logo_h=$(wc -l <"$LOGO_PATH")
+
+  # logo + blank + tagline + blank + hint
+  content_h=$((logo_h + 4))
+  top=$(((rows - content_h) / 2))
+  (( top < 0 )) && top=0
+  logo_row=$((top + 1))
+  tagline_row=$((top + logo_h + 2))
+  hint_row=$((top + logo_h + 4))
+
+  printf '\033[?25l\033[H\033[2J'
+
+  printf '\033[%d;1H' "$logo_row"
+  gum style --foreground 2 --padding "0 0 0 $PADDING_LEFT" "$(<"$LOGO_PATH")"
+
+  tagline="Beautiful, Fun & Agentic Linux by DHH"
+  tpad=$(((cols - ${#tagline}) / 2)); (( tpad < 0 )) && tpad=0
+  printf '\033[%d;%dH%s' "$tagline_row" "$((tpad + 1))" "$tagline"
+
+  hint="Press Return to Start Install"
+  hpad=$(((cols - ${#hint}) / 2)); (( hpad < 0 )) && hpad=0
+  printf '\033[%d;%dH\033[2m%s\033[0m' "$hint_row" "$((hpad + 1))" "$hint"
+
+  # ColorShift the logo: a green base (indexed color 2) with a cyan accent (6)
+  # drifting through, settling on green. Indexed ANSI colors, not hex — the
+  # framebuffer console can't render truecolor faithfully (it crushes the
+  # palette to a muddy lavender), but the 16 indexed colors map to the Tokyo
+  # Night palette and render true. --xterm-colors is what keeps them indexed:
+  # ttfx resolves even indexed stops to truecolor otherwise, which would put the
+  # settle color out of step with the `gum style --foreground 2` logo underneath.
+  # One long-running invocation (many cycles) so it never restarts — a restart is
+  # what flashed. The effect reads from /dev/null so it never swallows the
+  # Return; --reuse-canvas paints upward from the saved cursor, anchored one row
+  # below the logo.
+  printf '\033[%d;1H\0337' "$((logo_row + logo_h))"
+  # Run ttfx directly (not inside a `while` subshell) so $anim is ttfx's own
+  # PID: killing a wrapping subshell would orphan ttfx, which then keeps
+  # painting the logo over the keyboard step. --cycles is high enough that it
+  # never ends on its own before Return.
+  # Two columns narrower than the console: ttfx centers its text two columns
+  # right of plain centering, so a full-width canvas would sit the animated
+  # logo a column off the gum-drawn one underneath it.
+  ttfx -i "$LOGO_PATH" \
+    --canvas-width "$((cols > 2 ? cols - 2 : cols))" \
+    --anchor-text c \
+    --frame-rate 60 \
+    --reuse-canvas \
+    --xterm-colors \
+    colorshift \
+    --gradient-stops 2 10 6 10 \
+    --gradient-frames 3 \
+    --cycles 1000 \
+    --final-gradient-stops 2 \
+    </dev/null >/dev/tty 2>/dev/null &
+  anim=$!
+
+  IFS= read -r _ </dev/tty || true
+  # Tolerate ttfx's kill signal in `wait` so a future `set -e` here can't abort.
+  kill "$anim" 2>/dev/null
+  wait "$anim" 2>/dev/null || true
+  # ttfx leaves the tty in raw/no-echo mode when killed; restore it or the gum
+  # prompts in the keyboard step that follows silently die.
+  stty sane </dev/tty 2>/dev/null || true
+  # Reset the screen so the leftover animation frame doesn't linger under the
+  # keyboard step that follows.
+  printf '\033[0m\033[H\033[2J\033[?25h'
+}
+
+abort() {
+  gum style "${1:-Aborted installation}"
+  echo
+  gum style "You can retry later by running: ./.automated_script.sh"
+  exit 1
+}
+
+step() {
+  clear_logo
+  echo
+  gum style --padding "0 0 0 $PADDING_LEFT" "$1"
+  echo
+}
+
+# Padded body text to line up with the logo and gum widgets.
+say() {
+  gum style --padding "0 0 0 $PADDING_LEFT" "$@"
+}
+
+notice() {
+  clear_logo
+  echo
+  gum spin --spinner "pulse" --title "$1" -- sleep "${2:-2}"
+  echo
+}
+
+# STEP 1: KEYBOARD LAYOUT
+
+keyboard_form() {
+  # Ctrl+C is the hidden entry into deferred provisioning, offered on every
+  # visit: the user step unwinds back here and nothing is on disk yet. Callers
+  # re-check defer_provisioning after this returns.
+  local status
+
+  while true; do
+    clear_logo
+    echo
+    say "Let's setup your machine..."
+    say --foreground 8 "Press Ctrl+C to prepare this machine for another owner."
+    echo
+
+    omarchy_prompt_keyboard && status=0 || status=$?
+    ((status == 0)) && break
+
+    # Esc means "back", and nothing precedes the first screen, so re-ask.
+    ((status == OMARCHY_FORM_BACK)) && continue
+
+    if ((status == OMARCHY_FORM_SIGNAL)); then
+      if confirm_prepare_for_another_owner; then
+        defer_provisioning=true
+        return 0
+      fi
+      continue # declined: back to the keyboard picker
+    fi
+    abort
+  done
+
+  # Only attempt to load keyboard layout if we're on a real console
+  # loadkeys only works on Linux virtual consoles (tty), not in terminal emulators
+  if [[ $(tty 2>/dev/null) == "/dev/tty"* ]]; then
+    loadkeys "$keyboard" 2>/dev/null
+  fi
+}
+
+# Ctrl+C on the first screen offers to prepare the machine for another owner.
+# Confirm it before committing, so an accidental Ctrl+C doesn't silently switch
+# the whole install.
+confirm_prepare_for_another_owner() {
+  clear_logo
+  echo
+  say "This prepares the machine for another owner."
+  say --foreground 8 "The system installs now, but setup is delayed until first boot."
+  echo
+  gum confirm --affirmative "Yes, prepare for another owner" --negative "No, keep setting up" \
+    "Prepare this machine for another owner?"
+}
+
+# The user step. Deferred-provisioning installs skip it entirely — the machine's first owner
+# picks their keyboard and creates their user in the first-boot setup, so the
+# operator sets nothing user-specific.
+
+user_form() {
+  step "Let's setup your user account..."
+
+  # Each prompt reports 0 (set), OMARCHY_FORM_BACK (Esc), or OMARCHY_FORM_SIGNAL
+  # (Ctrl+C). Both non-zero cases unwind to user_step, which decides what they
+  # mean here; the form itself never aborts.
+  omarchy_prompt_username || return $?
+  omarchy_prompt_password || return $?
+
+  # Hash the password with SHA-512 crypt ($6$), which is what openssl passwd offers
+  password_hash=$(printf '%s' "$password" | openssl passwd -6 -stdin)
+
+  omarchy_prompt_identity || return $?
+  omarchy_prompt_hostname || return $?
+  omarchy_prompt_timezone || return $?
+}
+
+# Returns 0 on confirmed account details, or as soon as the keyboard screen
+# arms deferred provisioning.
+user_step() {
+  local status
+
+  while true; do
+    user_form && status=0 || status=$?
+    if ((status != 0)); then
+      # Esc unwinds to the start of the form. Ctrl+C has no side channel in the
+      # user step (only the keyboard and disk screens give it a meaning), so it
+      # keeps its long-standing behaviour of ending the install.
+      ((status == OMARCHY_FORM_BACK)) || abort
+      keyboard_form
+      $defer_provisioning && return 0
+      continue
+    fi
+
+    # Add manual padding since gum table -p doesn't respect padding
+    echo -e "Field,Value
+Username,$username
+Password,$(printf "%${#password}s" | tr ' ' '*')
+Full name,${full_name:-[Skipped]}
+Email address,${email_address:-[Skipped]}
+Hostname,$hostname
+Timezone,$timezone
+Keyboard,$keyboard" |
+      gum table -s "," -p | sed "s/^/${PADDING_LEFT_SPACES}/"
+
+    echo
+    if gum confirm --negative "No, change it" "Does this look right?"; then
+      break
+    else
+      keyboard_form
+      $defer_provisioning && return 0
+    fi
+  done
+}
+
+# STEP 3: DISK
+
+get_disk_info() {
+  local device="$1"
+  local size vendor model label
+
+  # Get basic disk information
+  size=$(lsblk -dno SIZE "$device" 2>/dev/null)
+  vendor=$(lsblk -dno VENDOR "$device" 2>/dev/null | sed 's/ *$//')
+  model=$(lsblk -dno MODEL "$device" 2>/dev/null | sed 's/ *$//')
+
+  # Combine vendor and model, avoiding duplication
+  label=""
+  if [[ -n $vendor && -n $model ]]; then
+    if [[ $model == *$vendor* ]]; then
+      label="$model"
+    else
+      label="$vendor $model"
+    fi
+  elif [[ -n $model ]]; then
+    label="$model"
+  elif [[ -n $vendor ]]; then
+    label="$vendor"
+  fi
+
+  # Format display string
+  local display="$device"
+  [[ -n $size ]] && display="$display ($size)"
+  [[ -n $label ]] && display="$display - $label"
+
+  # Append compact partition summary
+  local part_summary
+  part_summary=$(lsblk -nro TYPE,NAME,FSTYPE,MOUNTPOINT "$device" 2>/dev/null | \
+    awk '$1=="part" { printf "%s%s%s", s, ($3==""?"unknown":$3), ($4==""?"":"("$4")"); s=", " }')
+  [[ -n $part_summary ]] && display+=" [$part_summary]"
+
+  echo "$display"
+}
+
+get_root_disk() {
+  local device="$1"
+  local parent
+
+  [[ -n $device ]] || return 1
+
+  # /run/archiso/bootmnt usually resolves to the boot partition, but the
+  # installer picker works with whole disks. Walk back to the parent disk so
+  # the install media itself never shows up as a wipe target.
+  device=$(readlink -f "$device" 2>/dev/null || printf "%s\n" "$device")
+
+  while true; do
+    parent=$(lsblk -dno PKNAME "$device" 2>/dev/null | tail -n1)
+    [[ -n $parent ]] || break
+    device="/dev/$parent"
+  done
+
+  if [[ $(lsblk -dno TYPE "$device" 2>/dev/null) == "disk" ]]; then
+    printf "%s\n" "$device"
+  fi
+}
+
+# partition_path lives in disk-partitioning.sh alongside the creation helpers.
+
+# T2 Macs need their own kernel for keyboard/wifi drivers.
+# wait_for_device lives in disk-partitioning.sh: it now reports failure, and
+# every caller here aborts on it.
+
+# disk_step and create_partition fail through this rather than abort() so a
+# half-built layout is undone before the user is handed back their disk.
+disk_abort_hook() {
+  # Upstream unwound its own partitioning here -- unmount, close the LUKS
+  # mapping, roll back the partitions it had created. This configurator creates
+  # nothing: p9-install owns the disk from the moment it is handed one, and it
+  # does its own cleanup. Nothing to undo, so just report and stop.
+  abort "$1"
+}
+
+disk_form() {
+  step "Let's select where to install Omarchy..."
+
+  # Don't offer the install media as an option (Arch ISO mounts it here)
+  local boot_source
+  local exclude_disk
+  boot_source=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
+  exclude_disk=$(get_root_disk "$boot_source")
+
+  # List all installable disks, excluding the boot device if present
+  local available_disks
+  available_disks=$(
+    lsblk -dpno NAME,TYPE |
+      awk '$2=="disk"{print $1}' |
+      grep -E '/dev/(sd|hd|vd|nvme|mmcblk|xv)' |
+      { if [[ -n "$exclude_disk" ]]; then grep -Fvx "$exclude_disk"; else cat; fi; }
+  )
+
+  # Get available disks and format them with info
+  local disk_options=""
+  while IFS= read -r device; do
+    if [[ -n "$device" ]]; then
+      disk_info=$(get_disk_info "$device")
+      disk_options="$disk_options$disk_info"$'\n'
+    fi
+  done <<<"$available_disks"
+
+  selected_display=$(echo "$disk_options" | gum choose --header "Select install disk") || abort
+  disk=$(echo "$selected_display" | awk '{print $1}')
+}
+
+# STEP 4: INSTALL MODE
+
+# Ctrl+C on the keyboard screen arms deferred provisioning: install with no
+# account, and let the same setup form run at first boot instead.
+defer_provisioning=false
+
+# Let the live VT reach its settled width before the first screen so the logo
+# isn't measured against the transient 80-column boot console.
+
+# ---------------------------------------------------------------- ppc64le ----
+#
+# Everything below replaces upstream's partitioning and archinstall handoff.
+#
+# Upstream computes an EFI partition, negotiates free space against an existing
+# Windows install, checks for BitLocker, and writes a ~450-line archinstall JSON
+# config. None of that applies here:
+#
+#   * PowerNV has no EFI. petitboot is in firmware and reads a grub.cfg from an
+#     ext4 /boot; pseries wants an 8 MB PReP partition instead. p9-install
+#     already knows the difference and detects which from /proc/cpuinfo.
+#   * No POWER9 machine dual-boots Windows, so the free-space negotiation, the
+#     ESP adoption rules and the BitLocker check have no subject.
+#   * archinstall is not in the picture: p9-install does the partitioning,
+#     pacstrap, fstab, mkinitcpio and boot entry itself.
+#
+# So this file collects answers and calls p9-install. It never touches a disk.
+
+P9_INSTALL="${P9_INSTALL:-/usr/local/share/omarchy-p9/p9-install}"
+
+# Deliberately NOT passing --repo-server. It used to forward $P9_REPO_SERVER
+# unconditionally, which is always set because it has a built-in default -- so
+# p9-install saw an explicit server on every run and never consulted the
+# repo-servers.conf the ISO was built with. Let p9-install resolve it: command
+# line, then $P9_REPO_SERVER from the environment, then the baked-in list.
+P9_REPO_NAME="${P9_REPO_NAME:-omarchy-power9}"
+P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/omarchy-power9}"
+P9_KERNEL="${P9_KERNEL:-linux-power9}"
+P9_LOCALE="${P9_LOCALE:-en_US.UTF-8}"
+
+# The disk the user picked, confirmed by serial. Naming a device is not enough
+# on a machine with several idle NVMe drives: /dev/nvme2n1 can move between
+# boots, and every guard p9-install has -- mounted, backing /, active swap,
+# firmware flash -- passes happily on the wrong empty disk. Reading the serial
+# off the disk the operator actually selected and handing it back as --serial
+# turns "I typed the wrong name" from a wipe into an error.
+p9_confirm_and_install() {
+  local serial size model
+  serial=$(lsblk -dn -o SERIAL "$disk" 2>/dev/null | sed 's/[[:space:]]*$//')
+  size=$(lsblk -dn -o SIZE "$disk" 2>/dev/null)
+  model=$(lsblk -dn -o MODEL "$disk" 2>/dev/null | sed 's/[[:space:]]*$//')
+
+  clear_logo
+  echo
+  say "About to install Omarchy on this machine:"
+  echo
+  printf '    %-12s %s\n' "Disk"     "$disk  ($size${model:+ — $model})"
+  printf '    %-12s %s\n' "Serial"   "${serial:-<none reported>}"
+  printf '    %-12s %s\n' "Kernel"   "$P9_KERNEL"
+  printf '    %-12s %s\n' "Host"     "$hostname"
+  if $defer_provisioning; then
+    printf '    %-12s %s\n' "User"     "<deferred to first boot>"
+  else
+    printf '    %-12s %s\n' "User"     "$username"
+  fi
+  printf '    %-12s %s\n' "Timezone" "$timezone"
+  printf '    %-12s %s\n' "Keyboard" "$keyboard"
+  echo
+  say --foreground 1 "Everything on $disk will be erased. There is no recovery."
+  echo
+
+  gum confirm --affirmative "Yes, install" --negative "No, go back" \
+    "Erase $disk and install?" || return 1
+
+  local args=(
+    --disk "$disk"
+    --kernel "$P9_KERNEL"
+    --repo-name "$P9_REPO_NAME"
+    --repo-siglevel optional-trustall
+    --hostname "$hostname"
+    --timezone "$timezone"
+    --locale "$P9_LOCALE"
+    --keymap "$keyboard"
+    --yes
+  )
+  # "Prepare this machine for another owner" (Ctrl+C at the keyboard screen)
+  # installs without an account and leaves the setup form for first boot --
+  # p9-install already stages firstboot/, and setup-form.sh is the same file
+  # this configurator used, so the questions are identical either way.
+  if ! $defer_provisioning; then
+    args+=(--user "$username" --password "$password")
+  fi
+  # Only arm the serial guard when the disk actually reports one. Passing an
+  # empty --serial would make p9-install refuse every disk, including the right
+  # one; virtio disks without a serial= are the common case in a VM.
+  [[ -n $serial ]] && args+=(--serial "$serial")
+
+  exec "$P9_INSTALL" "${args[@]}"
+}
+
+# ------------------------------------------------------------------ flow -----
+
+wait_for_stable_terminal
+greeter
+keyboard_form
+user_step
+
+while true; do
+  disk_form
+  p9_confirm_and_install && break
+done

@@ -49,6 +49,21 @@ zram-generator
 omarchy
 omarchy-settings
 omarchy-nvim
+# The theme is listed in iso/profile/packages.ppc64le too, but that is the LIVE
+# medium -- it is there so p9-configurator can draw the POWER9 banner from
+# themes/power9/ascii/banner.txt during the install. Listing it there does
+# nothing for the installed system, and no package depends on it (the omarchy
+# package ships upstream's 20 themes; power9 is only ours). Without this line a
+# fresh install shows the branding while installing and then boots into stock
+# Omarchy theming, which is the wrong way round.
+omarchy-theme-power9
+# The screensaver's animation engine. omarchy-launch-screensaver opens with
+# `omarchy-cmd-missing ttfx && exit 1`, so without it the idle screensaver at
+# 150s silently does nothing -- no error, no notification, nothing to debug.
+# Omarchy publishes ttfx from their own repository, which is in none of bq's
+# sources (local/archpower/gitlab/aur all miss it), so packages/ttfx/ is our own
+# recipe built from upstream Rust. No porting was needed, only packaging.
+ttfx
 hyprland
 hyprland-guiutils
 hyprpicker
@@ -82,6 +97,15 @@ bluez-utils
 bolt
 brightnessctl
 btop
+
+# Chromium dlopens libXRes at runtime and does NOT link it -- readelf -d on the
+# binary shows zero references and the package declares nothing. So neither the
+# declared-dependency audit (tools/repo-gaps.py) nor the runtime ldd sweep can
+# see it; the only way it surfaces is chromium failing on a machine that has
+# everything else. Found exactly that way on the first real install.
+#
+# Do not remove this as an unreferenced entry. Nothing references it, by design.
+libxres
 chromium
 clang
 cups
@@ -116,7 +140,9 @@ imagemagick
 imv
 inotify-tools
 inxi
-kdenlive
+# kdenlive -- deferred. Pulls purpose -> kaccounts-integration -> signon-ui
+# -> qt6-webengine, i.e. Chromium's engine again. Nothing else in the
+# manifest wants any of that chain. See docs/package-status.md.
 kernel-modules-hook
 lazydocker
 lazygit
@@ -188,3 +214,44 @@ lsp-plugins-lv2
 powerpc-utils
 opal-utils
 ipmitool
+alacritty
+
+# Language servers and formatters for Neovim.
+#
+# omarchy-nvim ships lua/plugins/no-mason-downloads.lua, which turns off every
+# automatic mason install -- the mason registry publishes x86_64 and aarch64
+# assets only, so on ppc64le each one is a download that cannot succeed. That
+# file's promise is that "every tool LazyVim's defaults reach for is packaged
+# natively instead", and these are the packages that make it true. Without them
+# the config disables mason and leaves nothing behind it: no LSP, no formatting,
+# and a per-tool error on every start.
+#
+# clang (clangd) and tree-sitter-cli are listed elsewhere in this file.
+#
+# typescript-language-server needed pnpm, which needed pnpm. Bootstrapped via
+# `npm install -g --prefix $srcdir/bootstrap pnpm` -- corepack was the obvious
+# alternative but Arch's nodejs 26 no longer ships it.
+#
+# acorn is listed as a dependency of eslint rather than here: Arch's eslint
+# deliberately deletes its bundled copy ("experimental dedup") and depends on
+# the system package, which Arch POWER had never built.
+#
+# prettier needs oxc-parser only to BUILD -- its build imports every plugin to
+# generate .d.ts files, and plugin-oxc pulls the native module. The shipped
+# package contains no ELF and no .node at all, so arch=any is still right. The
+# recipe builds oxc's napi cdylib for powerpc64le from source; oxc's published
+# bindings.js already has a process.arch === 'ppc64' branch, so nothing needed
+# patching, only providing.
+lua-language-server
+gopls
+marksman
+taplo-cli
+bash-language-server
+yaml-language-server
+typescript-language-server
+eslint
+prettier
+stylua
+shfmt
+ruff
+rust-analyzer

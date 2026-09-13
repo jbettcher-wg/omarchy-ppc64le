@@ -27,7 +27,7 @@ lsblk -d -o NAME,SIZE,TYPE,MODEL,SERIAL
   --platform powernv \
   --kernel linux-4k \
   --manifest "$PAYLOAD/guest/p9-test.packages" \
-  --repo-name omarchy-ppc64le \
+  --repo-name omarchy-power9 \
   --repo-server "http://10.0.2.2:8099" \
   --repo-siglevel optional-trustall \
   --hostname p9test \

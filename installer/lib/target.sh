@@ -13,16 +13,51 @@
 # installs offline and then overwrites /etc/pacman.conf at the end with the
 # Omarchy channel. There is nothing to switch to here: the repositories the
 # install used are the repositories the machine should keep.
-# render_pacman_conf <path> [force]
+# render_pacman_conf <path> [force] [for_target]
 # force=1 writes even under --dry-run: the file goes to the throwaway work
 # directory, and without it the resolve step below has no config to read, which
 # would make --dry-run unable to check the one thing it is best placed to check.
 render_pacman_conf() {
-  local out="$1" force="${2:-0}" stanza="" note=""
+  local out="$1" force="${2:-0}" for_target="${3:-0}" stanza="" note=""
+  local -a servers=("${P9_REPO_SERVERS[@]}")
 
-  if [[ -n $P9_REPO_SERVER && $P9_REPO_SERVER != none ]]; then
-    stanza=$(printf '[%s]\nSigLevel = %s\nServer = %s\n' \
-      "$P9_REPO_NAME" "$P9_REPO_SIGLEVEL" "$P9_REPO_SERVER")
+  # The target keeps this file forever; the install-time copy lives for one
+  # pacstrap. A file:// server on the boot medium is right for the install and
+  # wrong afterwards -- /run/archiso/bootmnt does not exist once the machine
+  # reboots, so pacman reports a failed database on every -Sy for the life of
+  # the system. Drop those from the target's copy.
+  #
+  # Only when something else remains. On an ISO that bundles its repo and names
+  # no network mirror, the medium URL is the only server there is: a target with
+  # a [repo] stanza and no Server silently has no repo, which is worse than one
+  # that fails loudly and can be pointed at a mirror by hand.
+  if ((for_target)); then
+    local -a kept=() dropped=()
+    for _srv in "${servers[@]}"; do
+      case "$_srv" in
+        file:///run/archiso/*|file:///run/p9-medium/*) dropped+=("$_srv") ;;
+        *) kept+=("$_srv") ;;
+      esac
+    done
+    if ((${#dropped[@]})); then
+      if ((${#kept[@]})); then
+        servers=("${kept[@]}")
+        log "target pacman.conf: dropped ${#dropped[@]} boot-medium server(s); they do not survive a reboot"
+      else
+        warn "the only [$P9_REPO_NAME] server is on the boot medium; the target will
+      carry a Server it cannot reach. Give --repo-server a network mirror, or
+      edit /etc/pacman.conf after the first boot."
+      fi
+    fi
+  fi
+
+  if [[ ${#servers[@]} -gt 0 && ${servers[0]} != none ]]; then
+    # $( ) strips trailing newlines, so add them back explicitly or SigLevel
+    # and the first Server end up on one line.
+    stanza=$(printf '[%s]\nSigLevel = %s' "$P9_REPO_NAME" "$P9_REPO_SIGLEVEL")$'\n'
+    for _srv in "${servers[@]}"; do
+      stanza+=$(printf 'Server = %s\n' "$_srv")$'\n'
+    done
     note="[$P9_REPO_NAME] SigLevel is '$P9_REPO_SIGLEVEL', chosen with --repo-siglevel."
   else
     stanza=""
@@ -232,12 +267,26 @@ EOF
     tee -a "$P9_LOG_FILE"
 
   # pSeries is the only platform that installs a bootloader, because SLOF has
-  # no petitboot. Untested here; PowerNV is the target.
-  if [[ $P9_PLATFORM == pseries && -n ${P9_PART_PREP:-} ]]; then
+  # no petitboot. grub reads the same grub.cfg petitboot does: every entry
+  # above does `search --set=root --fs-uuid` and uses /boot-relative paths.
+  #
+  # Fatal here, not a warning: without GRUB in the PReP partition the disk does
+  # not boot, and an install that "succeeds" into that is worse than one that
+  # stops. grub-install also writes boot-device to NVRAM through nvsetenv; if
+  # that alone fails (some hypervisors refuse it), retry with --no-nvram --
+  # SLOF still scans the disks and boots the PReP ELF, the firmware boot order
+  # just is not pinned to this disk.
+  if [[ $P9_PLATFORM == pseries ]]; then
+    [[ -n ${P9_PART_PREP:-} ]] || die "pSeries install with no PReP partition"
     step "pSeries: installing GRUB to the PReP partition $P9_PART_PREP"
-    run_loud arch-chroot "$mnt" grub-install --target=powerpc-ieee1275 \
-      --boot-directory=/boot --modules="part_gpt ext2" "$P9_PART_PREP" ||
-      warn "grub-install failed; on PowerNV this does not matter, on pSeries it does"
+    local grub_args=(--target=powerpc-ieee1275 --boot-directory=/boot
+      --modules="part_gpt ext2")
+    if ! run_loud arch-chroot "$mnt" grub-install "${grub_args[@]}" "$P9_PART_PREP"; then
+      warn "grub-install failed; retrying without the NVRAM boot-device update"
+      run_loud arch-chroot "$mnt" grub-install --no-nvram "${grub_args[@]}" "$P9_PART_PREP" ||
+        die "grub-install failed -- a pSeries target without GRUB does not boot"
+      warn "GRUB installed, but boot-device was not set in NVRAM; SLOF will find it by scanning"
+    fi
   fi
 }
 
@@ -252,8 +301,60 @@ EOF
 #                       and it is the only way Omarchy's setup form ever runs on
 #                       ppc64le hardware without running it on the build host.
 #   --user NAME         create the account here, the ordinary archinstall shape.
+# --- theme branding -----------------------------------------------------------
+#
+# /etc/fastfetch/config.jsonc comes from omarchy-settings, shipped byte-for-byte
+# as upstream built it, and hardcodes the logo as
+# ~/.config/omarchy/branding/about.txt. That path is per-user, so no package can
+# set it for an account that does not exist yet; upstream seeds it from
+# /etc/skel/.config/omarchy/branding/, which omarchy-settings owns and fills
+# with Omarchy's own U+2588 block logo.
+#
+# omarchy-theme-power9 ships the braille OpenPOWER cube at
+# themes/power9/branding/about.txt but has no way to install it: writing to
+# /etc/skel from that package is a pacman file conflict with omarchy-settings,
+# which owns both paths. So the installer overwrites the seed instead, here,
+# before any account exists -- which is what makes it cover BOTH account paths:
+# the useradd in configure_users below, and the deferred first-boot wizard
+# (omarchy-provision-owner), which also runs `useradd -m` and so reads the same
+# skel. Nothing did this before, and fastfetch on a fresh install showed the
+# stock block logo despite the theme being installed.
+#
+# Caveat: omarchy-settings declares no backup= entries, so a later upgrade of it
+# restores upstream's about.txt in /etc/skel. Accounts already created keep the
+# cube -- their $HOME copy is never touched -- but accounts created after such an
+# upgrade revert. `omarchy-theme-power9-branding` re-applies it per user.
+apply_theme_branding() {
+  local mnt="$1"
+  local src="$mnt/usr/share/omarchy/themes/power9/branding"
+  local dst="$mnt/etc/skel/.config/omarchy/branding"
+
+  if [[ ! -d $src ]]; then
+    warn "omarchy-theme-power9 is not installed in the target; new accounts keep Omarchy's own logo"
+    return 0
+  fi
+
+  step "Seeding POWER9 branding into /etc/skel"
+  if ((P9_DRY_RUN)); then
+    printf '  would copy %s/{about,screensaver}.txt -> %s/\n' "$src" "$dst" >&2
+    return 0
+  fi
+
+  local f
+  for f in about screensaver; do
+    if [[ -r $src/$f.txt ]]; then
+      install -Dm644 "$src/$f.txt" "$dst/$f.txt"
+      log "branding: $f.txt <- themes/power9"
+    else
+      warn "theme branding $f.txt is missing; leaving the seeded default in place"
+    fi
+  done
+}
+
 configure_users() {
   local mnt="$1"
+
+  apply_theme_branding "$mnt"
 
   if [[ -z $P9_USER ]]; then
     step "Deferring account creation to the target's first boot"
@@ -298,6 +399,46 @@ configure_users() {
   else
     warn "no --password given: set one with 'passwd' before rebooting, or arm deferred provisioning"
   fi
+
+
+  # Tell sddm who just got created.
+  #
+  # Omarchy's sddm theme has NO username field. It is password-only and submits
+  # userModel.lastUser, read from /var/lib/sddm/state.conf -- the record of who
+  # logged in last. On a freshly installed machine nobody ever has, so the theme
+  # submits an empty string and PAM answers:
+  #
+  #   pam_unix(sddm:auth): check pass; user unknown
+  #   [PAM] authenticate: User not known to the underlying authentication module
+  #
+  # which reads like a rejected password and is nothing of the sort -- ruser= is
+  # empty in the log. The account cannot be logged into because it has never
+  # been logged into. Upstream's install/login/sddm.sh says outright that "the
+  # ISO owns autologin/session state because it knows whether the target is
+  # encrypted", so this is the installer's job by design; we never did it.
+  #
+  # The autologin drop-in matches upstream: the operator already authenticated
+  # in the configurator. Upstream drops it after the first boot on unencrypted
+  # installs -- that cleanup is NOT reproduced here, so it persists. Remove
+  # /etc/sddm.conf.d/autologin.conf on the target to require a password.
+  if [[ -n $P9_USER ]] && arch-chroot "$mnt" test -x /usr/bin/sddm 2>/dev/null; then
+    local _sess=omarchy.desktop
+    if ! arch-chroot "$mnt" test -e "/usr/local/share/wayland-sessions/$_sess" &&
+       ! arch-chroot "$mnt" test -e "/usr/share/wayland-sessions/$_sess"; then
+      _sess=hyprland-uwsm.desktop
+    fi
+
+    install -d -m 0750 "$mnt/var/lib/sddm"
+    printf '[Last]\nSession=%s\nUser=%s\n' "$_sess" "$P9_USER" \
+      >"$mnt/var/lib/sddm/state.conf"
+    arch-chroot "$mnt" chown -R sddm:sddm /var/lib/sddm >>"$P9_LOG_FILE" 2>&1 || true
+
+    install -d -m 0755 "$mnt/etc/sddm.conf.d"
+    printf '[Autologin]\nUser=%s\nSession=%s\n' "$P9_USER" "$_sess" \
+      >"$mnt/etc/sddm.conf.d/autologin.conf"
+    log "sddm: seeded last-user and autologin for $P9_USER (session $_sess)"
+  fi
+
 }
 
 # --- first boot ---------------------------------------------------------------

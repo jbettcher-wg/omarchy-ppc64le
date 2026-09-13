@@ -1,0 +1,136 @@
+alsa-utils
+arch-install-scripts
+archpower-keyring
+b43-fwcutter
+base
+bind
+brltty
+btrfs-progs
+clonezilla
+cryptsetup
+darkhttpd
+ddrescue
+dhcpcd
+diffutils
+dmidecode
+dmraid
+dnsmasq
+dosfstools
+e2fsprogs
+edk2-shell
+espeakup
+ethtool
+exfatprogs
+f2fs-tools
+fatresize
+fsarchiver
+gpm
+gptfdisk
+grml-zsh-config
+grub
+hdparm
+irssi
+iw
+iwd
+jfsutils
+# kitty-terminfo is absent from Arch POWER's base -- their build drops that
+# split -- so we build pkgbase kitty ourselves (0.48.0 vs their 0.46.2) and
+# get all three splits. Its deps are not in Arch POWER either:
+# python-sphinx_design, shader-slang, unordered_dense, miniz.
+alacritty
+kitty-terminfo
+ldns
+less
+lftp
+libfido2
+libusb-compat
+# linux / linux-4k -- Arch POWER's 7.1.5 and 7.1.4. Replaced by our own
+# 7.2.2, because the LIVE MEDIUM is where an EEH fence would hurt most: if
+# PHB#30 fences while pacstrap is writing, 7.1 deadlocks eehd on
+# pci_rescan_remove_lock and the install hangs with no recovery. 0006 fixes
+# that and is only in our tree. Same 4K pages, same amdgpu=m.
+linux-power9
+linux-atm
+linux-firmware-amdgpu
+linux-firmware-radeon
+linux-firmware-nvidia
+livecd-sounds
+lsscsi
+lvm2
+lynx
+mac-fdisk
+man-db
+man-pages
+mc
+mdadm
+mkinitcpio
+mkinitcpio-archiso
+mkinitcpio-nfs-utils
+modemmanager
+mtools
+nano
+nbd
+ndisc6
+nfs-utils
+nilfs-utils
+nmap
+ntfs-3g
+nvme-cli
+open-iscsi
+openconnect
+openssh
+openvpn
+partclone
+parted
+partimage
+pcsclite
+ppp
+pptpclient
+pv
+qemu-guest-agent
+reflector
+rsync
+rxvt-unicode-terminfo
+screen
+sdparm
+sg3_utils
+smartmontools
+squashfs-tools
+sudo
+systemd-resolvconf
+tcpdump
+terminus-font
+testdisk
+tmux
+tpm2-tss
+udftools
+usb_modeswitch
+usbmuxd
+usbutils
+vim
+vpnc
+wireless-regdb
+wireless_tools
+wpa_supplicant
+wvdial
+xdg-utils
+xfsprogs
+xl2tpd
+zsh
+
+# --- Omarchy ppc64le additions -------------------------------------------
+# gum      the configurator's entire UI: gum choose/input/confirm/table.
+# omarchy  provides install/provisioning/setup-form.sh -- the keyboard,
+#          account, hostname and timezone prompts, shared verbatim with the
+#          first-boot owner setup so a deferred install asks the same
+#          questions -- and logo.txt, which the greeter measures and draws.
+gum
+omarchy
+# omarchy-theme-power9  the POWER9 wordmark the greeter draws, plus the
+#                       colours and wallpapers for the installed system.
+omarchy-theme-power9
+# tzdata -- setup-form.sh asks the timezone with
+#           `timedatectl list-timezones | gum choose`, which enumerates
+#           /usr/share/zoneinfo. Without it the list is empty and the
+#           question cannot be answered.
+tzdata

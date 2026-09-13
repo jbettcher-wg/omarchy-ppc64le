@@ -36,9 +36,19 @@ P9_SERIAL=""
 P9_PLATFORM=""
 P9_BOOT_SIZE=2G
 
-# Substitution 2. linux-power9 does not exist yet: the user's 7.2.2 is
-# hand-installed from ~/Development/linux-7.2.2 and the package is planned but
-# unbuilt. So this is a variable, not a constant, and what it expects is:
+# Substitution 2. linux-power9 now EXISTS: built from ~/Development/linux-7.2.2
+# with `make pacman-pkg`, which ships its own PKGBUILD under scripts/package/.
+# Two things that build needs and the stock target does not give you:
+#
+#   * PACMAN_PKGBASE=linux-power9, or it names itself linux-upstream.
+#   * a CARCH override. scripts/Makefile.package hardcodes CARCH="$(UTS_MACHINE)",
+#     which on this arch is `ppc64le` -- but every Arch POWER package is tagged
+#     `powerpc64le`, so pacman refuses the result outright with
+#     ALPM_ERR_PKG_INVALID_ARCH. We carry a one-line patch adding PACMAN_CARCH.
+#
+# This stays a variable, not a constant, because --kernel linux-4k (Arch POWER's
+# own 4K-page kernel) is still the right choice for bring-up on a machine whose
+# own kernel has not been proven yet. What any value here must satisfy:
 #
 #   * an Arch-shaped kernel package, i.e. one that installs
 #     /usr/lib/modules/<release>/vmlinuz and, next to it, a `pkgbase` file
@@ -56,8 +66,20 @@ P9_KERNEL_PKG="${P9_KERNEL_PKG:-linux-power9}"
 # Substitution 4. The design's layout is a repo named `power9` served from
 # <root>/power9/os/$arch, listed ahead of Arch POWER's [base] so repo order
 # does the overriding (nothing in [base] gets rebuilt).
-P9_REPO_NAME="${P9_REPO_NAME:-power9}"
-P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/power9}"
+P9_REPO_NAME="${P9_REPO_NAME:-omarchy-power9}"
+# May be given more than once. pacman tries each Server in order and falls
+# through on failure, which is what makes one config correct both on the medium
+# and after it is gone: the file:// entry serves the install at local speed, and
+# once the ISO is unmounted pacman simply moves to the next one. Without this
+# an installed machine keeps a [repo] pointing at /run/archiso/bootmnt, which
+# stops existing at first reboot and breaks every pacman -Sy afterwards.
+# Was the environment variable actually set, or are we looking at the default?
+# Without this the two are indistinguishable and the baked-in list can never
+# win over a default nobody chose -- or, worse, can never lose to one somebody
+# did.
+P9_REPO_SERVER_FROM_ENV="${P9_REPO_SERVER+1}"
+P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/omarchy-power9}"
+P9_REPO_SERVERS=()
 P9_REPO_SIGLEVEL=""   # deliberately empty -- see --repo-siglevel below
 P9_BASE_SERVER="${P9_BASE_SERVER:-https://repo.archlinuxpower.org/base/\$arch}"
 P9_BASE_ANY_SERVER="${P9_BASE_ANY_SERVER:-https://repo.archlinuxpower.org/base/any}"
@@ -71,7 +93,16 @@ P9_TIMEZONE="${P9_TIMEZONE:-UTC}"
 P9_HOSTNAME="${P9_HOSTNAME:-omarchy}"
 P9_USER=""
 P9_PASSWORD=""
-P9_CMDLINE="${P9_CMDLINE:-loglevel=3}"
+# console= twice, deliberately. The last one listed becomes /dev/console, so
+# tty0 goes last and the monitor stays the primary console; hvc0 is still in
+# /sys/class/tty/console/active, so systemd-getty-generator gives it a login
+# too. On OPAL the serial console is always there whether or not it is named --
+# naming it is what makes it usable, and a POWER server whose only console is
+# the video output is one graphical failure away from needing the BMC.
+#
+# video= because the installer and the console have to be readable on a 4K
+# panel. 1080p is the mode nothing refuses.
+P9_CMDLINE="${P9_CMDLINE:-console=hvc0 console=tty0 video=1920x1080 loglevel=3}"
 P9_ENTRY_TITLE="${P9_ENTRY_TITLE:-Omarchy POWER9}"
 P9_REBOOT=0
 P9_STAGE_FIRSTBOOT=1
@@ -103,7 +134,8 @@ Boot / kernel:
 
 Packages:
   --manifest FILE              package list (default share/p9-base.packages)
-  --repo-server URL|none       [power9] Server=. 'none' installs from Arch POWER only
+  --repo-server URL|none       [repo] Server=. May be repeated; pacman tries
+                               them in order. 'none' installs from Arch POWER only
   --repo-name NAME             repository name (default power9)
   --repo-siglevel LEVEL        REQUIRED, see below
   --base-server URL            Arch POWER [base] Server=
@@ -154,7 +186,7 @@ while (($#)); do
     --cmdline) P9_CMDLINE="$2"; shift 2 ;;
     --boot-size) P9_BOOT_SIZE="$2"; shift 2 ;;
     --manifest) P9_MANIFEST="$2"; shift 2 ;;
-    --repo-server) P9_REPO_SERVER="$2"; shift 2 ;;
+    --repo-server) P9_REPO_SERVERS+=("$2"); shift 2 ;;
     --repo-name) P9_REPO_NAME="$2"; shift 2 ;;
     --repo-siglevel)
       case "$2" in
@@ -223,7 +255,48 @@ case "$P9_PLATFORM" in
 esac
 
 log "kernel package: $P9_KERNEL_PKG"
-log "repository: [$P9_REPO_NAME] ${P9_REPO_SERVER}  SigLevel = $P9_REPO_SIGLEVEL"
+# With nothing on the command line, take the list the ISO was built with.
+# iso/build.sh writes it: an ISO carrying the repo gets the file:// entry, one
+# built --no-repo gets only the network entries, and neither case needs the
+# operator to remember a URL. The single-value form is the last fallback.
+if ((!${#P9_REPO_SERVERS[@]})) && [[ -n $P9_REPO_SERVER_FROM_ENV ]]; then
+  P9_REPO_SERVERS=("$P9_REPO_SERVER")
+elif ((!${#P9_REPO_SERVERS[@]})) && [[ -r $P9_SHARE/repo-servers.conf ]]; then
+  while read -r _l; do
+    _l=${_l%%#*}; _l=${_l// /}
+    [[ -n $_l ]] && P9_REPO_SERVERS+=("$_l")
+  done < "$P9_SHARE/repo-servers.conf"
+fi
+((${#P9_REPO_SERVERS[@]})) || P9_REPO_SERVERS=("$P9_REPO_SERVER")
+
+for _i in "${!P9_REPO_SERVERS[@]}"; do
+  _s=${P9_REPO_SERVERS[$_i]}
+  [[ $_s == file://* ]] || continue
+  _p=${_s#file://}
+  # A file:// repo under the install target is either about to be shadowed by
+  # the target mount or is inside the filesystem being installed to; both read
+  # as "works until it doesn't".
+  if [[ $_p == "$P9_MNT" || $_p == "$P9_MNT"/* ]]; then
+    die "--repo-server $_s is under the install target $P9_MNT; mount the medium somewhere else"
+  fi
+  [[ -d $_p ]] && continue
+  # Missing, and shaped like our bundled layout: the medium was unmounted by
+  # copytoram. Go find it rather than falling straight through to the network.
+  if [[ $_p == */p9repo/* ]]; then
+    _sub="p9repo/${_p#*/p9repo/}"
+    if _m=$(find_boot_medium "$_sub"); then
+      P9_REPO_SERVERS[$_i]="file://$_m/$_sub"
+      log "boot medium moved: bundled repo found at $_m/$_sub"
+    else
+      warn "bundled repo $_p is gone and the boot medium could not be found"
+    fi
+  else
+    warn "repo server $_s does not exist"
+  fi
+done
+
+log "repository: [$P9_REPO_NAME]  SigLevel = $P9_REPO_SIGLEVEL"
+for _s in "${P9_REPO_SERVERS[@]}"; do log "  Server = $_s"; done
 if [[ $P9_REPO_SIGLEVEL == *TrustAll* ]]; then
   warn "SigLevel 'Optional TrustAll' for [$P9_REPO_NAME]: package signatures are NOT verified."
 fi
@@ -237,6 +310,12 @@ P9_PACSTRAP_CONF="${P9_PACSTRAP_CONF:-$P9_WORKDIR/pacman.conf}"
 mapfile -t P9_PACKAGES < <(read_manifest "$P9_MANIFEST")
 log "manifest: ${#P9_PACKAGES[@]} names from $P9_MANIFEST, plus kernel $P9_KERNEL_PKG"
 P9_PACKAGES+=("$P9_KERNEL_PKG")
+# pSeries boots SLOF -> GRUB in the PReP partition, so the target needs grub
+# itself: grub-install, and the powerpc-ieee1275 modules it copies into
+# /boot/grub. PowerNV's petitboot only reads grub.cfg and needs none of it,
+# which is why the manifest does not list it -- and why, without this, a pSeries
+# install finished with no bootloader and a disk SLOF could not boot.
+[[ $P9_PLATFORM == pseries ]] && P9_PACKAGES+=(grub)
 resolve_packages "$P9_PACSTRAP_CONF" "${P9_PACKAGES[@]}"
 
 # -------------------------------------------------------------- the disk -----
@@ -268,7 +347,7 @@ if ((!P9_DRY_RUN)); then
 fi
 
 # keep the configuration the install actually used
-render_pacman_conf "$P9_MNT/etc/pacman.conf"
+render_pacman_conf "$P9_MNT/etc/pacman.conf" 0 1
 
 write_fstab "$P9_MNT"
 configure_system "$P9_MNT"

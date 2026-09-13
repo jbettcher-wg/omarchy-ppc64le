@@ -58,7 +58,17 @@ assert_disk_is_safe() {
   local disk="$1" want_serial="${2:-}"
   local have_serial src
 
-  [[ -b $disk ]] || die "$disk is not a block device"
+  # Under --dry-run a nonexistent device is a testing convenience, not a
+  # hazard: nothing downstream of here touches a disk in that mode, and
+  # requiring a real one meant the installer's own logic -- argument handling,
+  # repo-server precedence, platform branches, the boot entry -- could only be
+  # exercised on the target machine. Every other guard below still runs; this
+  # is the one that cannot.
+  if [[ ! -b $disk ]]; then
+    ((P9_DRY_RUN)) || die "$disk is not a block device"
+    warn "$disk is not a block device; continuing because this is a dry run"
+    return 0
+  fi
   if device_is_forbidden "$disk"; then
     die "$disk is not an install target. mtdblock devices on this platform are
       the firmware flash (PNOR: hostboot, skiboot, petitboot; and the BMC
@@ -105,29 +115,51 @@ partition_disk() {
     run sgdisk -n 1:0:+8M   -t 1:4100 -c 1:"PReP"  "$disk"
     run sgdisk -n 2:0:+"$boot_size" -t 2:8300 -c 2:"p9boot" "$disk"
     run sgdisk -n 3:0:0     -t 3:8300 -c 3:"p9root" "$disk"
-    P9_PART_PREP=$(part_path "$disk" 1)
-    P9_PART_BOOT=$(part_path "$disk" 2)
-    P9_PART_ROOT=$(part_path "$disk" 3)
+    _p9_prep_n=1 _p9_boot_n=2 _p9_root_n=3
   else
     run sgdisk -n 1:0:+"$boot_size" -t 1:8300 -c 1:"p9boot" "$disk"
     run sgdisk -n 2:0:0     -t 2:8300 -c 2:"p9root" "$disk"
-    P9_PART_PREP=""
-    P9_PART_BOOT=$(part_path "$disk" 1)
-    P9_PART_ROOT=$(part_path "$disk" 2)
+    _p9_prep_n="" _p9_boot_n=1 _p9_root_n=2
   fi
 
+  # Settle BEFORE naming the partitions, so part_path can ask the kernel what
+  # they are actually called instead of guessing from the disk name.
   run partprobe "$disk" || true
   run udevadm settle || true
+
+  [[ -n $_p9_prep_n ]] && P9_PART_PREP=$(part_path "$disk" "$_p9_prep_n") || P9_PART_PREP=""
+  P9_PART_BOOT=$(part_path "$disk" "$_p9_boot_n")
+  P9_PART_ROOT=$(part_path "$disk" "$_p9_root_n")
 }
 
-# /dev/sda1 vs /dev/nvme0n1p1 vs /dev/vda1: ask the kernel rather than guess.
+# /dev/sda1 vs /dev/nvme0n1p1 vs /dev/disk/by-id/X-part1: ask the kernel rather
+# than guess. The old version guessed from the trailing character of the disk
+# name and got by-id paths wrong in both directions:
+#
+#   /dev/disk/by-id/virtio-p9target   ends in a letter -> "...target1"
+#   /dev/disk/by-id/nvme-Samsung_..._S6B0NL0T123456  ends in a digit -> "...456p1"
+#
+# and the right answer is "-part1" for both. by-id is exactly how a disk should
+# be named on real hardware -- /dev/nvme2n1 can move between boots -- so this
+# has to be correct, not merely correct for /dev/vdX.
 part_path() {
-  local disk="$1" n="$2"
-  if [[ $disk == *[0-9] ]]; then
-    printf '%sp%s\n' "$disk" "$n"
-  else
-    printf '%s%s\n' "$disk" "$n"
+  local disk="$1" n="$2" real part
+  real=$(readlink -f "$disk" 2>/dev/null || printf '%s' "$disk")
+
+  # The kernel's own answer, in partition order. Empty under --dry-run (nothing
+  # was written) and in the window before udev publishes the nodes.
+  part=$(lsblk -lno NAME,TYPE "$real" 2>/dev/null |
+           awk '$2 == "part" { print $1 }' | sed -n "${n}p")
+  if [[ -n $part ]]; then
+    printf '/dev/%s\n' "$part"
+    return 0
   fi
+
+  case "$disk" in
+    */by-id/*|*/by-path/*|*/by-uuid/*) printf '%s-part%s\n' "$disk" "$n" ;;
+    *[0-9])                            printf '%sp%s\n'     "$disk" "$n" ;;
+    *)                                 printf '%s%s\n'      "$disk" "$n" ;;
+  esac
 }
 
 make_filesystems() {

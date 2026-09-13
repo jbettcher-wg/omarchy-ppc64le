@@ -1,0 +1,17 @@
+# mkinitcpio preset for the 'linux-power9' package on archiso.
+#
+# archiso's stock profile ships linux.preset, hardcoded to /boot/vmlinuz-linux.
+# The live medium runs our own kernel instead -- Arch POWER's 7.1 series lacks
+# the EEH fix (0006), and a fence during pacstrap would deadlock eehd with no
+# recovery -- so the preset has to name it, or mkinitcpio builds nothing and the
+# ISO ships a kernel with no initramfs.
+#
+# The image name follows the pkgbase written to /usr/lib/modules/<ver>/pkgbase,
+# which is what mkinitcpio's own pacman hook keys on.
+
+PRESETS=('archiso')
+
+ALL_kver='/boot/vmlinuz-linux-power9'
+ALL_config='/etc/mkinitcpio.conf.d/archiso.conf'
+
+archiso_image="/boot/initramfs-linux-power9.img"
