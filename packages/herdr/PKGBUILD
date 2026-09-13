@@ -1,0 +1,75 @@
+# Maintainer: Jordan Bettcher <thebettcher@gmail.com>
+#
+# herdr -- terminal workspace manager for AI coding agents.  Started from the
+# AUR `herdr` recipe at 0.8.2; metadata (url, license, conflicts, file list)
+# follows Omarchy's own package (omarchy.db herdr 0.8.2-1), which is what the
+# install manifest is pinned to.  Upstream moved from ogulcancelik/herdr to
+# herdrdev/herdr; the v0.8.2 tarball is byte-identical under both.
+#
+# What changed for ppc64le:
+#
+# - arch=(powerpc64le).
+# - herdr-build-rs-powerpc64le.patch: build.rs maps rust targets to zig
+#   targets through a fixed table and panics on powerpc64le.  One row added.
+#   Portability fix worth sending upstream.
+# - zig.  herdr's build.rs compiles its vendored libghostty-vt with zig
+#   (honouring $ZIG), and libghostty-vt's src/build/zig.zig requireZig()
+#   rejects any zig whose minor version is not 0.15 -- so the repo's zig
+#   0.16.0 cannot build it.  makedepends=zig0.15: zig 0.15.2 built from source
+#   against packages/llvm20, clang20 and lld20, installed beside zig 0.16 as
+#   /usr/bin/zig-0.15.  This replaces the earlier stopgap that downloaded
+#   ziglang.org's prebuilt powerpc64le zig 0.15.2 as a build tool.
+# - The AUR's fetch loop (re-scanning every build.zig.zon for URLs until no
+#   new ones appear) is replaced by `zig build --fetch=all`, which walks the
+#   same dependency tree and fills the same global cache.
+# - CARGO_HOME and the zig caches under $srcdir, so the build writes nothing
+#   into $HOME.  The repo's rust (1:1.98.1) builds it; upstream's
+#   rust-toolchain.toml pin (1.96.1) is inert without rustup.
+
+pkgname=herdr
+pkgver=0.8.2
+pkgrel=1
+pkgdesc='Herdr terminal workspace manager for AI coding agents'
+arch=(powerpc64le)
+url='https://github.com/herdrdev/herdr'
+license=(Apache-2.0)
+depends=(gcc-libs glibc)
+makedepends=(cargo git zig0.15)
+conflicts=(omarchy-herdr)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        herdr-build-rs-powerpc64le.patch)
+sha256sums=('60453051025ee44ebf055d26cdaf665a0accd99a992cddd22c166a26c49cd161'
+            'daaa7ae4442d64ec28a64117a88c61f494d23d5297a113ccfd8799b3f625e1e1')
+
+_env() {
+  export CARGO_HOME="$srcdir/cargo-home"
+  export ZIG=/usr/bin/zig-0.15
+  export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
+  export ZIG_LOCAL_CACHE_DIR="$srcdir/zig-local-cache"
+}
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  _env
+  patch -Np1 -i "$srcdir/herdr-build-rs-powerpc64le.patch"
+
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+
+  cd vendor/libghostty-vt
+  "$ZIG" build --fetch=all
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  _env
+  export HERDR_BUILD_CHANNEL=stable
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+  export CARGO_TARGET_DIR=target
+  cargo build --release --frozen
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

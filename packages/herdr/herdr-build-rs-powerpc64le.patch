@@ -1,0 +1,20 @@
+Map powerpc64le-unknown-linux-gnu to zig's powerpc64le-linux-gnu.
+
+build.rs hands `cargo`'s TARGET to `zig build -Dtarget=` through a fixed table
+and panics on anything not in it ("unsupported target for libghostty-vt
+build"), so the whole crate refuses to build on ppc64le before a line of zig
+or rust is compiled.  zig and libghostty-vt both support powerpc64le-linux;
+only the table was missing the row.
+
+Portability fix worth sending upstream.
+
+--- a/build.rs
++++ b/build.rs
+@@ -7,6 +7,7 @@ fn zig_target(target: &str) -> &str {
+     match target {
+         "x86_64-unknown-linux-gnu" => "x86_64-linux-gnu",
+         "aarch64-unknown-linux-gnu" => "aarch64-linux-gnu",
++        "powerpc64le-unknown-linux-gnu" => "powerpc64le-linux-gnu",
+         "x86_64-unknown-linux-musl" => "x86_64-linux-musl",
+         "aarch64-unknown-linux-musl" => "aarch64-linux-musl",
+         "x86_64-apple-darwin" => "x86_64-macos",
