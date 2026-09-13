@@ -17,6 +17,7 @@ linux-firmware
 btrfs-progs
 e2fsprogs
 dosfstools
+dotnet-runtime
 exfatprogs
 mkinitcpio
 # libxkbcommon is listed explicitly, not left to dependency resolution:
@@ -35,7 +36,6 @@ git
 less
 man-db
 inetutils
-whois
 socat
 jq
 unzip
@@ -66,6 +66,7 @@ omarchy-theme-power9
 ttfx
 hyprland
 hyprland-guiutils
+hyprland-preview-share-picker
 hyprpicker
 hyprsunset
 quickshell
@@ -86,7 +87,9 @@ egl-wayland
 gnome-keyring
 gum
 plymouth
+aether
 alsa-utils
+asdcontrol
 avahi
 nss-mdns
 bash-completion
@@ -108,6 +111,7 @@ btop
 libxres
 chromium
 clang
+cliamp
 cups
 cups-filters
 cups-pk-helper
@@ -136,13 +140,12 @@ grim
 gvfs-mtp
 gvfs-nfs
 gvfs-smb
+herdr
 imagemagick
 imv
 inotify-tools
 inxi
-# kdenlive -- deferred. Pulls purpose -> kaccounts-integration -> signon-ui
-# -> qt6-webengine, i.e. Chromium's engine again. Nothing else in the
-# manifest wants any of that chain. See docs/package-status.md.
+kdenlive
 kernel-modules-hook
 lazydocker
 lazygit
@@ -166,8 +169,13 @@ noto-fonts
 noto-fonts-cjk
 noto-fonts-emoji
 obs-studio
+obsidian
+omacalc
+omacut
+omawrite
 pacman-contrib
 pamixer
+pinta
 plocate
 postgresql-libs
 power-profiles-daemon
@@ -177,6 +185,7 @@ qrencode
 qt6-imageformats
 ripgrep
 ruby
+tensaku
 slurp
 starship
 sushi
@@ -185,6 +194,7 @@ tesseract
 tesseract-data-eng
 tldr
 tmux
+tobi-try
 tree-sitter-cli
 ttf-ia-writer
 ttf-jetbrains-mono-nerd-basic

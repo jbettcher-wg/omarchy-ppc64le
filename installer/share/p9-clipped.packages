@@ -48,10 +48,7 @@ broadcom-wl yt6801-dkms
 intel-ipu7-camera intel-lpmd thermald
 
 # --- no ppc64le target ---------------------------------------------------------
-obsidian                # Electron; no ppc64le build. FEX is the escape hatch.
-localsend               # Flutter; no ppc64le build
-pinta                   # needs dotnet-sdk-10; Arch POWER is on .NET 9
-dotnet-runtime          # only present for pinta
+localsend               # Flutter; the Dart VM has no ppc64le back end (a port target)
 mise-bin                # prebuilt x86_64 tarball -> replaced by `mise`, built from source
 qemu-user-static-binfmt # x86_64 user emulation is what FEX does here instead
 nvim                    # Arch POWER's package is `neovim`; `nvim` is Omarchy's own rebuild
@@ -60,10 +57,6 @@ nvim                    # Arch POWER's package is `neovim`; `nvim` is Omarchy's 
 yay-debug               # separate debug package; the design keeps *-debug out of the
                         # ISO entirely (docs/power9-distro-spin.md 6.4)
 
-# --- Omarchy's own repo, not yet built for ppc64le -----------------------------
-# These resolve only from pkgs.omarchy.org. p9-install's resolve step will name
-# them if they are left in the manifest, which is the intended way to find out
-# what still has to be built. They are held out of p9-base.packages until then.
-aether asdcontrol cliamp herdr hyprland-preview-share-picker
-omacalc omacut omawrite tensaku tobi-try ttfx
+# --- Omarchy's own repo -------------------------------------------------------
+# Omarchy's own packages are all built for ppc64le now (packages/), except:
 omarchy-keyring         # verifies signatures from pkgs.omarchy.org, which is not configured

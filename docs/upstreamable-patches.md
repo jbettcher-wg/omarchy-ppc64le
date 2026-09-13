@@ -753,3 +753,34 @@ never reset, and the global rescan/remove lock held for the remaining uptime.
   read-the-source review — it is running in `linux-power9 7.2.2-17`.
 - Ready to send. The reproduction above is worth including in the submission:
   it is a real EEH event on a Witherspoon AC922, not a synthetic injection.
+
+## Mono (dotnet/runtime): ppc64le ELFv2 small-struct returns and arguments
+
+`packages/dotnet-core/mono-ppc64le-elfv2-small-aggregates.patch` (paths relative
+to `src/runtime`, so it applies to dotnet/runtime as is).
+
+Mono's ppc64 JIT returned every struct through a hidden pointer in r3, the old
+ppc32 rule. ELFv2 returns aggregates of 16 bytes or less in r3/r4, and
+homogeneous float/double aggregates of up to 8 members in f1-f8, so every real
+argument of a P/Invoke returning a small struct landed one register late.
+`PPC_RETURN_SMALL_STRUCTS_IN_REGS` and `is_struct_returnable_via_regs()` already
+existed in `mini-ppc.c` but `get_call_info()` never used them. A second bug:
+structs under 8 bytes were loaded as a full word, so the upper half of the
+register carried stack garbage where GCC expects zero or sign extension.
+
+Any GirCore/GTK application (Pinta) dies at its first signal connect without
+it: `g_signal_connect_closure_by_id` returns `CULong`, a one-field struct.
+Present in IBM's 10.0.111 ppc64le build and in dotnet/runtime `main`; no
+upstream issue existed as of 2026-09-13. Tested against GCC 16 on 50 cases
+(integer, mixed, HFA 1-9 members, nested, packed 17-byte, callbacks): stock
+4/50, patched 50/50.
+
+Send to: dotnet/runtime (precedent for Mono ppc64le fixes: PR #98923).
+
+## Blender Cycles: CPU name from `/proc/cpuinfo` on POWER
+
+`packages/blender/cycles-power-cpu-name.patch`. `system_cpu_brand_string()`
+reads `model name`, which POWER's cpuinfo does not have, so Cycles lists
+"Unknown CPU". The patch reads the `cpu` field ("POWER9, altivec supported")
+instead. That half is a plain portability fix; the "(VSX)" kernel suffix only
+makes sense together with `cycles-vsx.patch`.

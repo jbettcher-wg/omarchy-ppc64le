@@ -15,9 +15,9 @@ LuaJIT, and `omarchy update`.
 
 | | |
 |---|---|
-| Omarchy base packages available | **136 of 147** (missing ones below) |
-| Packages in the `omarchy-power9` repo | 1,328, from 916 pkgbases |
-| Recipes maintained here | 153 |
+| Omarchy base packages available | **146 of 147** (only `localsend` is missing, below) |
+| Packages in the `omarchy-power9` repo | 1,350 |
+| Recipes maintained here | 175 |
 | Omarchy version | 4.0.3, stable channel (`omarchy` 4.0.3-3, `omarchy-settings` 4.0.3-2) |
 | Kernel | `linux-power9` 7.2.2 (4K pages) and `linux-power9-64k` |
 | Installer | ISO + `p9-install`, PowerNV and pSeries |
@@ -35,18 +35,21 @@ secondary target; see [`docs/power8-secondary-target.md`](docs/power8-secondary-
   on it.
 - **Chromium 151**, with the Debian ppc64le patch set and POWER9/POWER8 build
   modes.
+- **Electron 43** (Chromium 150, Node 24), and **Obsidian** on it.
+- **.NET 10 built from source**, with a fix to Mono's ppc64le JIT for ELFv2
+  struct returns, so GTK apps like **Pinta** run. The one-time bootstrap is
+  documented in [`docs/dotnet-ppc64le-bootstrap.md`](docs/dotnet-ppc64le-bootstrap.md).
 - **Qt 6 WebEngine**, **Blender 5.1** (VSX Cycles)
-- The full **Hyprland** stack, **quickshell**, and Omarchy's Rust/Go tooling
-  (aether, ttfx, tobi-try, mise, yay).
+- The full **Hyprland** stack, **quickshell**, and Omarchy's own apps and tools
+  (omacalc, omacut, omawrite, tensaku, herdr, cliamp, aether, ttfx, tobi-try).
+- Toolchains: **Go 1.27**, **Zig 0.16** (and 0.15 for herdr), LLVM 20/21.
 - **ROCm/HIP 7.2.4** and **llama.cpp** for Radeon compute.
 
 ### Not available yet
 
 | Package | Why |
 |---|---|
-| `obsidian`, `localsend` | Electron / Flutter, no ppc64le build |
-| `pinta` | needs .NET 10; Arch POWER has 9 |
-| `asdcontrol`, `hyprland-preview-share-picker`, `omacalc`, `omacut`, `omawrite`, `cliamp`, `herdr`, `tensaku` | no recipe yet |
+| `localsend` | Flutter app; the Dart VM has no ppc64le back end yet |
 | `limine`, `limine-snapper-sync` | not applicable; POWER boots through petitboot (below) |
 
 ## How it differs from upstream Omarchy
@@ -84,6 +87,10 @@ Server = https://repo.archlinuxpower.org/base/$arch
 A public URL is still being arranged. Packages are **not signed yet**, which is
 why `SigLevel` is `Optional TrustAll`. Signing, and restoring
 `omarchy-keyring`, is planned.
+
+Many packages here are POWER9 rebuilds of Arch POWER packages under the same
+name. If something from `[omarchy-power9]` misbehaves, report it here first
+rather than to Arch POWER.
 
 Updates work through `omarchy update` or plain `pacman -Syu`. For now
 `omarchy update` prints harmless errors from its keyring step
