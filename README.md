@@ -35,13 +35,10 @@ secondary target; see [`docs/power8-secondary-target.md`](docs/power8-secondary-
   on it.
 - **Chromium 151**, with the Debian ppc64le patch set and POWER9/POWER8 build
   modes.
-- **Qt 6 WebEngine**, **Blender 5.1** (VSX Cycles), **FreeCAD 1.1**, **Mesa
-  26.2**, **Rust 1.98**.
+- **Qt 6 WebEngine**, **Blender 5.1** (VSX Cycles)
 - The full **Hyprland** stack, **quickshell**, and Omarchy's Rust/Go tooling
   (aether, ttfx, tobi-try, mise, yay).
 - **ROCm/HIP 7.2.4** and **llama.cpp** for Radeon compute.
-- **`linux-power9`**, with fixes for AMD Promontory xHCI, powerpc syscall exit,
-  seccomp and EEH.
 
 ### Not available yet
 
