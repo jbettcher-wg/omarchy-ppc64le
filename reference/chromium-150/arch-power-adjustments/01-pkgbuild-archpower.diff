@@ -1,0 +1,122 @@
+diff --git a/PKGBUILD b/PKGBUILD
+index df6f7a7..d031e9b 100644
+--- a/PKGBUILD
++++ b/PKGBUILD
+@@ -9,10 +9,10 @@ pkgname=chromium
+ pkgver=150.0.7871.128
+ pkgrel=1
+ _launcher_ver=8
+-_manual_clone=1
++_manual_clone=0
+ _system_clang=1
+ pkgdesc="A web browser built for speed, simplicity, and security"
+-arch=('x86_64')
++arch=('x86_64' 'powerpc64le')
+ url="https://www.chromium.org/Home"
+ license=('BSD-3-Clause')
+ depends=(
+@@ -93,7 +93,9 @@ source=(https://commondatastorage.googleapis.com/chromium-browser-official/chrom
+         increase-fortify-level.patch
+         enable-widevine-arm64.patch
+         use-oauth2-client-switches-as-default.patch
+-        glibc-2.42-baud-rate-fix.patch)
++        glibc-2.42-baud-rate-fix.patch
++        chromium-ppc64le-patches-r1.tar.gz
++        swiftshader-ppc-xcoff-baseclasses.patch)
+ sha256sums=('2e2f36e3cd1ebc4ad57fd310774a5e5e9db77883d5f9374fedeaabd3c103b819'
+             '213e50f48b67feb4441078d50b0fd431df34323be15be97c55302d3fdac4483a'
+             '11a96ffa21448ec4c63dd5c8d6795a1998d8e5cd5a689d91aea4d2bdd13fb06e'
+@@ -111,7 +113,10 @@ sha256sums=('2e2f36e3cd1ebc4ad57fd310774a5e5e9db77883d5f9374fedeaabd3c103b819'
+             'd634d2ce1fc63da7ac41f432b1e84c59b7cceabf19d510848a7cff40c8025342'
+             '33d1650e183a86cc2d0e9b0fcc08a5da76c7354d25a419921e9d2dc02b8b3854'
+             '9343afa1a4308a7cfb3317229f5aff7778688debcc03c4a74a85908aa1d0cc3a'
+-            '1c1898f263eaacbc069a8e1a3e732852350350d1dad4cb1a6bba430e3b796cd0')
++            '1c1898f263eaacbc069a8e1a3e732852350350d1dad4cb1a6bba430e3b796cd0'
++            'SKIP'  # ppc64le-patches tarball
++            'SKIP') # swiftshader-ppc-xcoff-baseclasses.patch
++            # Run updpkgsums to replace the SKIPs before final submission.
+ 
+ if (( _manual_clone )); then
+   source[0]=fetch-chromium-release
+@@ -237,6 +242,44 @@ prepare() {
+   # Credit: https://github.com/ungoogled-software/ungoogled-chromium/pull/3837
+   patch -Np1 -i ../chromium-150-revert-avx-flag-change.patch
+ 
++  # Arch's gn 0.2324 doesn't recognize the newer top-level `expand_directory_allowlist`
++  # dotfile directive, so the assignment in .gn is flagged as a dead store. Drop it.
++  sed -i '/^expand_directory_allowlist = build_dotfile_settings\.expand_directory_allowlist$/d' .gn
++
++  # Same gn-version gap: `inputs =` is not recognized as a valid attribute for
++  # rust_* tool() blocks in this gn, so it errors as a dead store. Loses input
++  # tracking for the rustc wrapper (fine for one-shot builds).
++  sed -i '/inputs = rustc_wrapper_inputs$/d' build/toolchain/gcc_toolchain.gni
++
++  # Same gn-version gap: `expand_directory()` is a newer builtin used by the
++  # C++ modules build. We set `use_clang_modules=false`, but gn still evaluates
++  # the linux branch of build/modules/BUILD.gn during gen. Neutralize with [].
++  sed -i 's|system_headers += expand_directory("${sysroot}/${root_include_dir}", true)|system_headers += []|' \
++    build/modules/BUILD.gn
++
++  # swiftshader bundles a stripped LLVM 10.0. Its PPC target compiles
++  # PPCXCOFFObjectWriter.cpp and PPCMCAsmInfo.cpp, which subclass
++  # MC{XCOFFObjectTargetWriter,AsmInfoXCOFF} — but the base-class .cpp files
++  # are not in the source set, producing undefined symbols at link time.
++  # Linux ppc64le uses ELF, but the vtables still need to resolve.
++  if [[ $CARCH == powerpc64le ]]; then
++    patch -Np1 -i ../swiftshader-ppc-xcoff-baseclasses.patch
++  fi
++
++  # ppc64le patches (Raptor Engineering / Debian chromium-team, series-ordered).
++  # Applied on a Chromium version four security releases newer than Debian's
++  # baseline; expect the vast majority to apply cleanly since they touch
++  # arch-specific files upstream rarely modifies in point releases.
++  if [[ $CARCH == powerpc64le ]]; then
++    local _p
++    while IFS= read -r _p; do
++      [[ -z $_p || $_p == \#* ]] && continue
++      [[ $_p == ppc64le/* ]] || continue
++      msg2 "Applying ppc64le patch: $_p"
++      patch -Np1 -i "$srcdir/ppc64le-patches/${_p#ppc64le/}"
++    done < "$srcdir/ppc64le-patches/debian-series"
++  fi
++
+   # Link to system tools required by the build
+   mkdir -p third_party/node/linux/node-linux-x64/bin \
+            third_party/rust-toolchain/bin \
+@@ -391,8 +434,34 @@ build() {
+     CXXFLAGS="${CXXFLAGS/-march=*([^ ]) }"
+   fi
+ 
+-  gn gen out/Release --args="${_flags[*]}"
+-  ninja -C out/Release chrome chrome_sandbox chromedriver.unstripped
++  if [[ $CARCH == powerpc64le ]]; then
++    # Same rationale as aarch64/riscv64: the ppc64le patch set (esp. libvpx,
++    # skia, pffft) uses per-TU -mcpu selection; a global -mcpu/-mtune overrides
++    # those and breaks the build. Baseline is forced to POWER8 by
++    # 0001-Force-baseline-POWER8-AltiVec-VSX-CPU-features-when-.patch.
++    CFLAGS="${CFLAGS//-mcpu=*([^ ]) }"
++    CFLAGS="${CFLAGS//-mtune=*([^ ]) }"
++    CXXFLAGS="${CXXFLAGS//-mcpu=*([^ ]) }"
++    CXXFLAGS="${CXXFLAGS//-mtune=*([^ ]) }"
++  fi
++
++  # Arch's packaged gn (0.2324) is behind what Chromium 150 needs:
++  #   - top-level `expand_directory_allowlist` dotfile directive
++  #   - `expand_directory()` builtin (used by C++ modules build)
++  #   - `inputs` attribute on rust_* tool() blocks
++  #   - `c_additional_outputs` attribute on config() blocks
++  # Prefer a locally-built gn if one is provided next to the package dir.
++  local _gn=gn
++  if [[ -x "$startdir/../gn-newer/gn" ]]; then
++    _gn="$startdir/../gn-newer/gn"
++    msg2 "Using newer gn: $($_gn --version)"
++  fi
++
++  "$_gn" gen out/Release --args="${_flags[*]}"
++  # Cap parallelism to keep chromium's thinLTO link steps from OOMing.
++  # Each thinLTO link uses --thinlto-jobs=all internally, so total thread
++  # count balloons when multiple links run in parallel.
++  ninja -j "${_ninja_jobs:-64}" -C out/Release chrome chrome_sandbox chromedriver.unstripped
+ }
+ 
+ package() {
