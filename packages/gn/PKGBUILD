@@ -1,0 +1,54 @@
+# Maintainer: Jordan Bettcher <thebettcher@gmail.com>
+# Based on the Arch gn PKGBUILD by Christian Heusel <gromit@archlinux.org>
+# Contributor: Evangelos Foutras <foutrelis@archlinux.org>
+
+pkgname=gn
+# ppc64le: Arch POWER's gn (0.2324) is too old for Chromium 150/151 and
+# Electron 43, so their recipes build their own gn in prepare(). This packages
+# the gn those recipes pin: 27a549cc is what reference/chromium-150 and
+# electron43 use, and chromium 151's 1d86777e is its ancestor.
+pkgver=0.2484.27a549cc
+_commit=27a549cc1f83b223cf07e152f3e36681d5dd68fd
+pkgrel=1
+pkgdesc="Meta-build system that generates build files for Ninja"
+arch=('x86_64' 'powerpc64le')
+url="https://gn.googlesource.com/gn/"
+license=('BSD-3-Clause')
+depends=('libgcc')
+makedepends=('clang' 'ninja' 'python' 'git')
+source=(git+https://gn.googlesource.com/gn#commit=$_commit)
+sha256sums=('SKIP')
+
+pkgver() {
+  cd $pkgname
+  echo 0.$(git rev-list --count initial-commit..).$(git rev-parse --short=8 HEAD)
+}
+
+build() {
+  cd $pkgname
+  # ppc64le: build with clang, as Arch does (makedepends=clang). bq's makepkg
+  # environment otherwise hands build/gen.py GCC, and gn's -Werror then trips on
+  # GCC-only warnings (-Werror=format-security without -Wformat, -Wcomment).
+  export CC=clang CXX=clang++ AR=ar
+  ./build/gen.py
+  ninja -C out
+}
+
+check() {
+  cd $pkgname
+  ./out/gn_unittests
+}
+
+package() {
+  cd $pkgname
+  install -D out/gn "$pkgdir/usr/bin/gn"
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" docs/*
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE
+
+  mkdir -p "$pkgdir/usr/share/vim/vimfiles"
+  cp -r misc/vim/{autoload,ftdetect,ftplugin,syntax} \
+    "$pkgdir/usr/share/vim/vimfiles/"
+  install -Dm644 -t "$pkgdir/usr/share/emacs/site-lisp" misc/emacs/gn-mode.el
+}
+
+# vim:set ts=2 sw=2 et:
