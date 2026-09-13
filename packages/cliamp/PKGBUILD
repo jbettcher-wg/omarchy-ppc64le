@@ -11,15 +11,12 @@
 #
 # - arch=(powerpc64le).  Go and every cgo dependency here (alsa-lib through
 #   oto) build natively; no architecture-specific code.
-# - go.mod at v2.0.1 declares `go 1.26.6`; the system go is 1.26.5.  With the
-#   default GOTOOLCHAIN=auto, go resolves that by silently downloading a
-#   prebuilt go1.26.6 from proxy.golang.org and building with it instead of the
-#   repo's toolchain.  So GOTOOLCHAIN=local, and prepare() lowers the directive
-#   to the system go's version.  A patch release carries no language or
-#   standard-library API changes, so this is safe.  Local workaround, not an
-#   upstream fix; drop it once the system go reaches 1.26.6.  The sed matches
-#   the exact line, so a future go.mod bump fails loudly instead of being
-#   silently rewritten.
+# - GOTOOLCHAIN=local.  go.mod at v2.0.1 declares `go 1.26.6`; with the default
+#   GOTOOLCHAIN=auto, a go older than that silently downloads a prebuilt
+#   toolchain from proxy.golang.org and builds with it instead of the repo's.
+#   `local` makes an old go fail loudly instead.  pkgrel 1 also lowered the
+#   go.mod directive to build on go 1.26.5; pkgrel 2 drops that, because the
+#   repo's go is 1.27.1 (packages/go).
 # - GOPATH and GOCACHE under $srcdir, so the build writes nothing into $HOME.
 # - Arch Go packaging flags (CGO_*FLAGS from makepkg, -mod=readonly,
 #   -modcacherw, external link with makepkg's LDFLAGS) instead of the AUR's
@@ -27,7 +24,7 @@
 
 pkgname=cliamp
 pkgver=2.0.1
-pkgrel=1
+pkgrel=2
 pkgdesc='A retro terminal music player inspired by Winamp 2.x'
 arch=(powerpc64le)
 url='https://github.com/bjarneo/cliamp'
@@ -35,7 +32,7 @@ license=(MIT)
 depends=(alsa-lib flac libvorbis libogg mpg123 ffmpeg yt-dlp)
 optdepends=('pipewire-alsa: audio output on PipeWire systems'
             'pulseaudio-alsa: audio output on PulseAudio systems')
-makedepends=(go)
+makedepends=('go>=2:1.26.6')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('2c5885665dba5ed2e8dc156bce64751199a92efed7f63959c65e985759b73732')
 
@@ -54,15 +51,6 @@ _goenv() {
 prepare() {
   cd "$pkgname-$pkgver"
   _goenv
-  local sysgo
-  sysgo=$(go env GOVERSION | sed 's/^go//; s/-.*//')
-  if [[ $(vercmp "$sysgo" 1.26.6) -lt 0 ]]; then
-    sed -i "s/^go 1\.26\.6\$/go $sysgo/" go.mod
-    grep -qx "go $sysgo" go.mod || {
-      error "go.mod no longer says 'go 1.26.6' -- revisit the toolchain workaround"
-      return 1
-    }
-  fi
   go mod download
 }
 
