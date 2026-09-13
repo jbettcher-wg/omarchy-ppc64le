@@ -316,6 +316,55 @@ Only meaningful together with the OIDN port (#7): upstream OIDN has no POWER
 CPU device, so upstream Blender is right to say no until that lands. Send
 both, in that order.
 
+## Reports that belong to Omarchy upstream
+
+### 13. `omarchy-nvim` declares `arch=any` while vendoring two x86-64 binaries
+
+`packages/omarchy-nvim/PKGBUILD`
+
+`omarchy-nvim` is published as `arch=any`. It is not. Of the 7,934 files in
+upstream's `2026.8.13-1` package (63 MB unpacked), all but two are shell, Lua,
+TOML, JSON, desktop entries and images — and those two are ELF `x86-64`
+executables, installed into every user's home through `/etc/skel`:
+
+```
+etc/skel/.local/share/nvim/mason/packages/shfmt/shfmt_v3.13.1_linux_amd64
+etc/skel/.local/share/nvim/mason/packages/stylua/stylua
+```
+
+They are mason's vendored copies of `shfmt` and `stylua`. On any non-x86-64
+machine the package installs cleanly, and then the two formatters fail at
+runtime with `Exec format error` — the failure lands on the user, at the point
+of use, rather than on the package manager at install time, which is precisely
+what `arch=` exists to prevent.
+
+Both tools are packaged natively for every architecture Arch and Arch POWER
+build. So the fix does not require a port and does not require per-arch
+packages:
+
+1. Drop the two vendored binaries from the tree.
+2. Add `shfmt` and `stylua` to `depends=()`.
+3. Point mason's `bin/` symlinks at `/usr/bin/shfmt` and `/usr/bin/stylua`,
+   which keeps mason's own receipts consistent with what actually runs.
+
+The package is then genuinely `arch=any`, and the architecture dependence lives
+where it belongs — in `depends=()`, resolved by pacman. This is what
+`packages/omarchy-nvim/PKGBUILD` does here, and its `check()` fails the build if
+a third ELF ever appears, rather than shipping a foreign one.
+
+A second, related point for the same package: mason's registry has **no ppc64le
+assets at all**, so its automatic installs cannot succeed here. We ship a
+drop-in (`no-mason-downloads.lua`) that disables them and lets every tool
+resolve from `$PATH`. On x86-64 that is a preference; on any other architecture
+it is the only configuration that works. Worth upstreaming as an arch-conditional
+default rather than a ppc64le patch.
+
+Send to: <https://github.com/basecamp/omarchy>. Note that upstream publishes
+built packages only — `pkgs.omarchy.org` carries no PKGBUILD — so there is no
+recipe in the tree to patch. Fixing this properly means the build recipe has to
+exist somewhere a second architecture can build from, which is the same
+structural change an official ppc64le arch needs anyway.
+
 ## Reports that belong to Arch POWER, not upstream
 
 ### `libheif` is built against a newer `libde265` than the repo ships
