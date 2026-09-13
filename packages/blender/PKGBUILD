@@ -133,7 +133,8 @@ prepare() {
   patch -Np1 -i "$srcdir"/oidn-ppc64le-supported.patch
 
   # Cycles lists the CPU as "Unknown CPU": it reads "model name" from
-  # /proc/cpuinfo, which POWER lacks.  Name it "IBM POWER9 (VSX)".
+  # /proc/cpuinfo, which POWER lacks.  Read the "cpu" field instead, so the
+  # name follows the machine ("IBM POWER9 (VSX)", "IBM POWER8 (VSX)", ...).
   patch -Np1 -i "$srcdir"/cycles-power-cpu-name.patch
 
   # TODO Dirty hack / workaround to fix faulty manpage generation.. arguably an upstream issue.
