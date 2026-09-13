@@ -1,4 +1,4 @@
-# Maintainer: Jeremy Bettcher <thebettcher@gmail.com>
+# Maintainer: Jordan Bettcher <thebettcher@gmail.com>
 #
 # Omarchy 4's settings package, repackaged for ppc64le.
 #
@@ -27,8 +27,8 @@
 # arch=(any) was correct as it stood.  No architecture change was needed.
 
 pkgname=omarchy-settings
-pkgver=4.0.2
-# pkgrel 2 marks this as locally modified: upstream's own build is 4.0.2-1.
+pkgver=4.0.3
+# pkgrel 2 marks this as locally modified: upstream's own build is 4.0.3-1.
 pkgrel=2
 pkgdesc='Omarchy user defaults, /etc/skel content, fonts, plymouth theme, and support helpers (ppc64le: no destructive /etc overrides, no mkinitcpio drop-in)'
 arch=(any)
@@ -59,14 +59,24 @@ conflicts=(omarchy-settings-dev)
 
 install="${pkgname}.install"
 
-source=("https://pkgs.omarchy.org/x86_64/${pkgname}-${pkgver}-1-any.pkg.tar.zst"
+# Upstream's published artifact. From 4.0.3 upstream labels it arch=x86_64
+# (4.0.2 shipped as -any), but the content did not change class: verified for
+# 4.0.3-1 -- sha256 matches omarchy.db, 426 files, zero ELF or object files,
+# identical depends -- and the upstream tree has no packaging or compiled-source
+# change between v4.0.2 and v4.0.3. The relabel is in their build pipeline, not
+# the source. check() keeps enforcing zero machine code, so this stays arch=(any);
+# if upstream ever ships a real binary here, the build fails instead of trusting
+# the label.
+_upstream_arch=x86_64
+_srcpkg="${pkgname}-${pkgver}-1-${_upstream_arch}.pkg.tar.zst"
+source=("https://pkgs.omarchy.org/x86_64/${_srcpkg}"
         "${pkgname}.install")
-noextract=("${pkgname}-${pkgver}-1-any.pkg.tar.zst")
-sha256sums=('8f594aabc9d96cf136bd1192d65e7e2437901b7525f4a3cbf280125e6e6a6869'
+noextract=("${_srcpkg}")
+sha256sums=('bd30d7320a1bb8ee158a2c86608a599522ac56f06d5e5bebc5c55b8918ea95cf'
             'SKIP')
 
 _unpack() {
-  bsdtar -xf "${srcdir}/${pkgname}-${pkgver}-1-any.pkg.tar.zst" -C "$1" \
+  bsdtar -xf "${srcdir}/${_srcpkg}" -C "$1" \
     --no-same-owner \
     --exclude .PKGINFO --exclude .BUILDINFO --exclude .MTREE --exclude .INSTALL
 }

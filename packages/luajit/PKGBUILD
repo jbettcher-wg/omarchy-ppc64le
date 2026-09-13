@@ -31,13 +31,15 @@ depends=(glibc libgcc)
 makedepends=(git)
 provides=(libluajit-5.1.so)
 
-# TODO: point at a published fork once the branch is pushed.  Building from the
-# local checkout is deliberate while the port is still moving.  Note that the
-# clone must keep its .git directory: src/Makefile derives the rolling release
-# number from `git show -s --format=%ct`, and without it (and without a .relver
-# file) the build silently emits a binary that references
-# luaJIT_version_2_1_ROLLING and dies at startup with an undefined symbol.
-source=("${_srcdir}::git+file:///home/jbettcher/Development/luajit-ppc64le#branch=${_branch}"
+# Our fork: github.com/jbettcher-wg/luajit-ppc64le, branch ${_branch}, pinned
+# to a commit so a rebuild packages exactly what was tested.  To update, set
+# _commit to the new tip; pkgver follows it.  Note that the clone must keep its
+# .git directory: src/Makefile derives the rolling release number from
+# `git show -s --format=%ct`, and without it (and without a .relver file) the
+# build silently emits a binary that references luaJIT_version_2_1_ROLLING and
+# dies at startup with an undefined symbol.
+_commit=6c8168d7f1406fece00820b964ac0102eb47335d
+source=("${_srcdir}::git+https://github.com/jbettcher-wg/luajit-ppc64le.git#commit=${_commit}"
         nvcr-probe.c)
 sha256sums=('SKIP'
             'SKIP')
@@ -116,7 +118,7 @@ check() {
   # caches `flags & DOCMD_EXCRESET` in CR3 across thousands of instructions.
   # A Lua-only test suite cannot see a CR clobber, so this probe calls into
   # the VM from C and checks the fields afterwards.  It is the regression
-  # test for the ELFv2 CR save-slot fix (committed as 17567257).
+  # test for the ELFv2 CR save-slot fix (committed as bd931f25).
   gcc $CFLAGS -o "$srcdir/nvcr-probe" "$srcdir/nvcr-probe.c" \
     -I. -L. -lluajit-5.1 -lm
   LD_LIBRARY_PATH="$srcdir/ljcheck" "$srcdir/nvcr-probe"

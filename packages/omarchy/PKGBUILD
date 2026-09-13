@@ -1,13 +1,15 @@
-# Maintainer: Jeremy Bettcher <thebettcher@gmail.com>
+# Maintainer: Jordan Bettcher <thebettcher@gmail.com>
 #
 # Omarchy 4's base package, repackaged for ppc64le.
 #
-# There is no port here.  Upstream declares arch=any and -- unlike omarchy-nvim,
-# which declared any while vendoring two x86-64 ELF binaries -- this one is
-# telling the truth: all 1561 shipped files are shell, Lua, TOML, desktop
-# entries and PNGs, with zero machine code.  check() below enforces that, so if
-# upstream ever starts vendoring a binary the build fails instead of shipping a
-# foreign one.
+# There is no port here.  The content is architecture-independent: as of 4.0.3
+# all 1,169 shipped files are shell, Lua, TOML, desktop entries and PNGs, with
+# zero machine code (4.0.2 had 1,561).  Upstream labelled 4.0.2 arch=any and
+# relabelled 4.0.3 arch=x86_64 without changing that -- see the note at source=.
+# Unlike omarchy-nvim, which declared any while vendoring two x86-64 ELF
+# binaries, the content here is honest even where the label is not.  check()
+# below enforces zero machine code, so if upstream ever starts vendoring a binary
+# the build fails instead of shipping a foreign one.
 #
 # What this package needs instead is dependency surgery, and it is not
 # cosmetic.  Upstream depends on limine, limine-mkinitcpio-hook,
@@ -27,8 +29,8 @@
 # arch=(any) was correct as it stood.  No architecture change was needed.
 
 pkgname=omarchy
-pkgver=4.0.2
-# pkgrel 2 marks this as locally modified: upstream's own build is 4.0.2-1.
+pkgver=4.0.3
+# pkgrel above 1 marks this as locally modified: upstream's own build is 4.0.3-1.
 pkgrel=3
 pkgdesc='Beautiful, modern, and opinionated Arch Linux by DHH (ppc64le: limine and update-guard removed)'
 arch=(any)
@@ -88,16 +90,23 @@ optdepends=(
 
 conflicts=(omarchy-dev)
 
-source=("https://pkgs.omarchy.org/x86_64/${pkgname}-${pkgver}-1-any.pkg.tar.zst")
-noextract=("${pkgname}-${pkgver}-1-any.pkg.tar.zst")
+# Upstream's published artifact. From 4.0.3 upstream labels it arch=x86_64
+# (4.0.2 shipped as -any), but the content did not change class: verified for
+# 4.0.3-1 -- sha256 matches omarchy.db, 1,169 files, zero ELF or object files,
+# identical depends -- and the upstream tree has no packaging or compiled-source
+# change between v4.0.2 and v4.0.3. The relabel is in their build pipeline, not
+# the source. check() keeps enforcing zero machine code, so this stays arch=(any);
+# if upstream ever ships a real binary here, the build fails instead of trusting
+# the label.
+_upstream_arch=x86_64
+_srcpkg="${pkgname}-${pkgver}-1-${_upstream_arch}.pkg.tar.zst"
+source=("https://pkgs.omarchy.org/x86_64/${_srcpkg}")
+noextract=("${_srcpkg}")
 # From %SHA256SUM% in the upstream omarchy.db, not computed from a local copy.
-sha256sums=('cb24bb99a4b890fed643b4c92ab729daf353b6c632c29634d8cac09827ce5863')
-
-# The x86_64 path in the URL is where upstream publishes; the artifact itself is
-# the arch-independent "-any" build, which is why it is usable here unmodified.
+sha256sums=('665e0a63d2fa4943c20dac70f71a7e9f8c315e8f2f321797880bf822428522a5')
 
 _unpack() {
-  bsdtar -xf "${srcdir}/${pkgname}-${pkgver}-1-any.pkg.tar.zst" -C "$1" \
+  bsdtar -xf "${srcdir}/${_srcpkg}" -C "$1" \
     --no-same-owner \
     --exclude .PKGINFO --exclude .BUILDINFO --exclude .MTREE --exclude .INSTALL
 }
@@ -190,4 +199,28 @@ package() {
     's#^mkdir -p "\$(dirname "\$agent_file")"#if [[ $agent == claude ]]; then\n  _cc=$(mise where "$agent_package" 2>/dev/null) \&\& [[ -d $_cc/vendor/ripgrep ]] \&\&\n    mkdir -p "$_cc/vendor/ripgrep/ppc64-linux" \&\&\n    ln -sf "$(command -v rg)" "$_cc/vendor/ripgrep/ppc64-linux/rg"\nfi\nmkdir -p "$(dirname "$agent_file")"#' \
     "${pkgdir}/usr/bin/omarchy-default-agent"
 
+  # ppc64le: report the omarchy-power* repo as the stable channel.
+  #
+  # omarchy-version-channel (the channel line under OS in fastfetch) only
+  # recognises omarchy.org mirror and pkgs URLs, so a system installed from
+  # [omarchy-power9] reports "unknown". Until these packages are served from
+  # Omarchy's own URLs, a pacman.conf that enables our repo is the stable
+  # channel. Upstreamable form: match the repo section by name, not the URL.
+  # The real script is usr/bin; usr/share/omarchy/bin/ holds an absolute symlink
+  # to it (as for all 441 entries there), which must stay a symlink.
+  local _ch="${pkgdir}/usr/bin/omarchy-version-channel"
+  [ -f "$_ch" ] && [ ! -L "$_ch" ] ||
+    { echo "omarchy: usr/bin/omarchy-version-channel is not a regular file" >&2; return 1; }
+  local _anchor='if [[ $mirror == $pkgs ]]; then'
+  grep -qxF "$_anchor" "$_ch" ||
+    { echo "omarchy: omarchy-version-channel changed upstream; redo the stable override" >&2; return 1; }
+  _OVERRIDE='if grep -qE "^\[omarchy-power[0-9]+\]" /etc/pacman.conf; then
+  mirror="stable"
+  pkgs="stable"
+fi
+' awk -v anchor="$_anchor" '$0 == anchor { print ENVIRON["_OVERRIDE"] } { print }' "$_ch" > "${srcdir}/omarchy-version-channel"
+  install -m "$(stat -c %a "$_ch")" "${srcdir}/omarchy-version-channel" "$_ch"
+  bash -n "$_ch"
+  grep -qF '[omarchy-power[0-9]+' "$_ch" ||
+    { echo "omarchy: stable channel override did not apply" >&2; return 1; }
 }

@@ -1,4 +1,4 @@
-From: Jeremy Bettcher <thebettcher@gmail.com>
+From: Jordan Bettcher <thebettcher@gmail.com>
 Subject: [PATCH] PPC64: save the caller's CR in the caller's CR save word, not 8(sp)
 
 Portability fix, upstreamable: this is a straight ELFv2 ABI conformance bug
