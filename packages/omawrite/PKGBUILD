@@ -1,0 +1,58 @@
+# Maintainer: Jordan Bettcher <thebettcher@gmail.com>
+# Contributor: ImFenyx <imfenyxdev@protonmail.com>
+#
+# omawrite -- Omarchy's Qt Quick Markdown writer.  Started from the AUR
+# `omawrite` recipe at 0.5.0 (aur.git 2437bc29).  0.5.0 is also the version
+# Omarchy ships (omarchy.db omawrite 0.5.0-1).
+#
+# ppc64le: adding powerpc64le to arch=() was the only change needed.  Plain
+# Qt 6 C++/QML, nothing architecture-specific.  It builds against our Qt
+# 6.11.2 set (qt6-base 6.11.2-4, qt6-declarative 6.11.2-1); every qt6-* module
+# must stay at one version (docs/build-queue.md, version-locked sets).
+#
+# Packaging differences from the AUR recipe: qmake is handed makepkg's
+# CFLAGS/CXXFLAGS/LDFLAGS; qt6-base and qt6-declarative are listed as
+# makedepends as Omarchy's package does; and check() runs upstream's
+# bin/test suite offscreen.
+
+pkgname=omawrite
+pkgver=0.5.0
+pkgrel=1
+pkgdesc='Dead-simple Markdown writing app built with Qt Quick'
+arch=(powerpc64le)
+url='https://github.com/omacom-io/omawrite'
+license=(MIT OFL-1.1)
+depends=(hicolor-icon-theme qt6-base qt6-declarative xdg-desktop-portal)
+makedepends=(gcc make qt6-base qt6-declarative)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('b57e418212f9bde0b8a12cff2424a43f15829a56a58fdc49542a0393a430f938')
+
+_qmake() {
+  qmake6 "$@" \
+    QMAKE_CFLAGS_RELEASE="$CFLAGS" \
+    QMAKE_CXXFLAGS_RELEASE="$CXXFLAGS" \
+    QMAKE_LFLAGS_RELEASE="$LDFLAGS"
+}
+
+build() {
+  mkdir -p build
+  cd build
+  _qmake "$srcdir/$pkgname-$pkgver/omawrite.pro"
+  make
+}
+
+check() {
+  mkdir -p build-tests
+  cd build-tests
+  _qmake "$srcdir/$pkgname-$pkgver/tests/tests.pro"
+  make
+  QT_QPA_PLATFORM=offscreen ./tst_omawrite
+}
+
+package() {
+  install -Dm755 build/omawrite "$pkgdir/usr/bin/omawrite"
+  install -Dm644 "$pkgname-$pkgver/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$pkgname-$pkgver/fonts/OFL.txt" "$pkgdir/usr/share/licenses/$pkgname/OFL.txt"
+  install -Dm644 "$pkgname-$pkgver/pkgbuild/omawrite.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/omawrite.svg"
+  install -Dm644 "$pkgname-$pkgver/pkgbuild/omawrite.desktop" "$pkgdir/usr/share/applications/omawrite.desktop"
+}
