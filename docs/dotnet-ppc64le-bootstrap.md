@@ -63,6 +63,29 @@ Consequences worth knowing:
   `dotnet new console` app runs both through `dotnet run` and as
   `bin/Debug/net10.0/<name>`.
 
+### Mono's ppc64 JIT and native structs (patch needed)
+
+Stock Mono (at least through dotnet/runtime `main` in September 2026) gets two
+ELFv2 rules wrong on ppc64le, and IBM's builds carry the same code:
+
+- **Small aggregate returns.** Every struct return goes through a hidden
+  pointer in r3. ELFv2 returns structs of 16 bytes or less in r3/r4, and
+  homogeneous float/double aggregates of up to 8 members in f1..f8. Any
+  P/Invoke or `[UnmanagedCallersOnly]` callback returning such a struct gets
+  every argument shifted one register. A `CULong` return counts, since `CULong`
+  is a struct.
+- **Small struct arguments.** A struct of under 8 bytes is loaded as a whole
+  doubleword, so the bytes after it land in the register. GCC callees rely on
+  64-bit extension of narrow integers, and bindings wrap C scalars in one-field
+  structs.
+
+GirCore-based GTK apps (pinta) die at startup on both, with "Could not connect to
+event OnStartup" and then "... OnActivate". The fix is
+`packages/dotnet-core/mono-ppc64le-elfv2-small-aggregates.patch`. It applies to
+dotnet/runtime `src/mono` as well as to the VMR's `src/runtime`, is written to be
+sent upstream, and its header lists the rules and the GCC-checked test matrix.
+Apply it on any ppc64le source-build of .NET 10.
+
 ## Where the seed comes from: IBM
 
 IBM builds .NET for s390x **and ppc64le** and publishes each release at
@@ -213,6 +236,14 @@ picks self-hosting. Against the real 10.0.112 output of the first build
 it hard-errors for tag `v10.0.112` and names 10.0.111. That's the right answer
 for rebuilding this version, and the same files are what `auto` will find
 when building `v10.0.113`.
+
+**Rebuilding the same version** (a `pkgrel` bump) is therefore always a
+`_bootstrap=1` build once that version's SDK exists anywhere `auto` can see it.
+That includes build sandboxes. This repo's `tools/bq.py` restages every package
+in `repo/` into its sysroot overlay, so the first 10.0.12 package makes
+`/usr/share/dotnet/sdk/10.0.112/` visible to the next 10.0.12 build. The
+pkgrel-2 rebuild here stopped with exactly the hard error above and was rerun as
+`_bootstrap=1`. A source-build cannot seed itself from its own version.
 
 Because `auto` reads the host, `source=()` and `makedepends=()`, and therefore
 `.SRCINFO`, differ between machines. Generate a `.SRCINFO` on a machine without
