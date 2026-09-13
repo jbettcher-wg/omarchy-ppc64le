@@ -1231,7 +1231,8 @@ def mem_available_gib():
 
 
 def rehydrate_sysroot(st, order, args):
-    """Re-stage everything this queue has already built into the sysroot.
+    """Re-stage everything this queue has already built, and everything in
+    repo/, into the sysroot.
 
     Resumption is not just "skip what is done".  The sysroot lives under the
     buildroot and a resumed run starts with an empty one, so a package whose
@@ -1239,10 +1240,15 @@ def rehydrate_sysroot(st, order, args):
     the queue would be resumable in bookkeeping and broken in fact.  Restaging
     from the repo is cheap (tar extraction) and makes a resumed run identical
     to an uninterrupted one.
+
+    This used to return early when no package of *this run's* queue was
+    already `ok`, which skipped the repo/ restage below as well -- so a fresh
+    BQ_STATE, and any run whose targets were all new, built against only what
+    stage-deps pulled in, with the host's copy of everything else even where
+    repo/ carries a deliberate rebuild.  Found 2026-09-13; that was every
+    targeted bq run that day.  The repo/ restage must not depend on the queue.
     """
     done = [t for t in order if st["packages"].get(t, {}).get("status") == "ok"]
-    if not done:
-        return
     names, staged = [], set(st.get("staged", []))
     for t in done:
         for f in st["packages"][t].get("packages", []):

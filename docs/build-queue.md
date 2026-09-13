@@ -210,6 +210,50 @@ this mechanism can decide.
 Marks persist in a sysroot. After a host upgrade that moves files between
 packages, delete `<buildroot>/sysroot*`; bq rebuilds it on the next run.
 
+### repo/ is restaged on every run
+
+`rehydrate_sysroot()` stages two things into the base sysroot before any job
+starts: packages this queue already built, and **everything in `repo/`**. The
+second half is what makes a deliberate rebuild outrank the host copy for
+packages nothing in the queue names directly (libheif needing our libde265,
+above).
+
+Until 2026-09-13 the function returned early when no package *of the current
+run's queue* was already `ok` in the state file, and that early return skipped
+the `repo/` restage too. It keyed on the queue, not on the state file being
+new, so it fired for any fresh `BQ_STATE` and for any run whose targets were
+all new -- which is every targeted `bq build <pkg>`. Those runs built against
+only what stage-deps pulled in (declared deps, plus the `repo/` closure of our
+own packages) and the host's copy of everything else.
+
+Runs on 2026-09-13 that took that path, read from their state files:
+
+| state file | builds | restaged repo/? |
+|---|---|---|
+| `/var/tmp/bq-state-toolchain.json` (new that day) | fzf, lld21, go, zig, llvm20, compiler-rt20, lld20, clang20, zig0.15, herdr | never: 10 builds, 12 names in `staged` |
+| `.bq-state.json` (long-lived, 791 `ok`) | asdcontrol, cliamp, hyprland-preview-share-picker, omacalc, omacut, omawrite, tensaku | no: all seven targets were new, so the queue had nothing `ok` |
+| a throwaway state for cliamp 2.0.1-2 | cliamp | no |
+| `/var/tmp/bq-state-dotnet.json` (new that day) | pinta, marksman, dotnet-core | pinta no (first `ok` record); a later run in that state did, since `staged` holds 1,344 names; marksman undetermined |
+| `/var/tmp/bq-state-electron.json` (new that day) | electron43 | no: 0 `ok`, 0 `staged` |
+
+Checked whether it changed any artifact, without rebuilding:
+
+- `repo/` against the host: of 1,346 packages, 870 are installed at the same
+  version *and* the same build date, 474 are not installed at all, and two
+  differ: `marksman` (repo 20260208-5, host -4) and `btop` (repo 1.4.7-1,
+  host 1.4.7-2 -- `repo/` is the older one). No same-version rebuilds.
+- The 27 packages built that day: no ELF has a `DT_NEEDED` whose provider
+  differs between host and `repo/`. Every `repo/`-only provider they link
+  (libLLVM-20, libclang-cpp, liblld for zig and zig0.15) was a declared
+  dependency that stage-deps did stage.
+- 63 build logs under `/var/tmp` (toolchain, .NET, Electron): no "not found"
+  configure line names anything only a `repo/`-only package provides.
+
+So the host happened to match `repo/` closely enough that nothing differs. It
+would not have on a host that lags the repo, which is exactly the case the
+restage exists for. Note that with the fix bq stages `repo/`'s older btop over
+the host's newer one.
+
 ### Temp files stay in the buildroot
 
 A build's scratch files follow two variables that bq now sets, both under the
