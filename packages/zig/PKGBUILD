@@ -1,0 +1,100 @@
+# ppc64le changes (local packaging, nothing to send upstream):
+#  * arch=() gains powerpc64le.
+#  * lib32-glibc is an x86_64-only checkdepend (32-bit x86 test targets); moved
+#    to checkdepends_x86_64. It does not exist on ppc64le.
+#  * ZIG_TARGET_MCPU is the CPU the zig executable itself is compiled for, not
+#    what zig emits by default (that is `native`, detected at run time). On
+#    powerpc64le it follows makepkg.conf's -mcpu=powerN, so this repo gets
+#    pwr9 like its C (-mcpu=power9) and Rust (target-cpu=pwr9), and a POWER8
+#    build gets pwr8 without editing the recipe. x86_64 keeps baseline.
+#  * CMAKE_PREFIX_PATH=/usr/lib/llvm21 as a cache variable. cmake/Findclang
+#    and Findlld look for headers and libraries with HINTS ${LLVM_INCLUDE_DIRS},
+#    and CMake searches the CMAKE_PREFIX_PATH environment variable before
+#    HINTS. bq exports CMAKE_PREFIX_PATH=/usr, where the host has clang 22 and
+#    lld 22, so zig would compile against LLVM 21 and clang/lld 22 headers.
+#    The cache variable is searched before the environment. Same trap as
+#    packages/lld21.
+#  * ZIG_GLOBAL_CACHE_DIR / ZIG_LOCAL_CACHE_DIR under $srcdir. CMake runs
+#    `zig2 build` for stage3 without a cache-dir argument, so the build (and
+#    check()) otherwise writes ~/.cache/zig.
+#
+# Maintainer: Daurnimator <daurnimator@archlinux.org>
+# Contributor: Marc Tiehuis <marctiehuis@gmail.com>
+
+pkgname=zig
+pkgver=0.16.0
+pkgrel=1
+pkgdesc='a general-purpose programming language and toolchain for maintaining robust, optimal, and reusable software'
+arch=('x86_64' 'powerpc64le')
+url='https://ziglang.org/'
+license=('MIT')
+options=('!lto')
+depends=('clang21' 'lld21' 'llvm21-libs')
+makedepends=('cmake' 'llvm21')
+checkdepends_x86_64=('lib32-glibc')
+source=("https://ziglang.org/download/$pkgver/zig-$pkgver.tar.xz"
+        "https://codeberg.org/ziglang/zig/commit/9df02121d0d87c17173f79d55692bed9cb65722c.patch"
+        "skip-futex2-test.patch")
+sha256sums=('43186959edc87d5c7a1be7b7d2a25efffd22ce5807c7af99067f86f99641bfdf'
+            'cc513105cd250a107fcdefa6fed1147040f3cac4d377d545617840bd830da8d3'
+            'eb30e0eb00e6ced4c99383f0658a0351f42882e303300ed1828d162d27171cd0')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+
+    patch -p1 -i ../9df02121d0d87c17173f79d55692bed9cb65722c.patch
+    patch -p1 -i ../skip-futex2-test.patch
+}
+
+_zigcache() {
+    export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-global-cache"
+    export ZIG_LOCAL_CACHE_DIR="$srcdir/zig-local-cache"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    _zigcache
+
+    local _mcpu=baseline
+    if [[ $CARCH == powerpc64le && $CFLAGS =~ -mcpu=power([0-9]+) ]]; then
+        _mcpu=pwr${BASH_REMATCH[1]}
+    fi
+
+    local cmake_vars=(
+        CMAKE_INSTALL_PREFIX=/usr
+        CMAKE_PREFIX_PATH=/usr/lib/llvm21
+
+        # The zig CMakeLists uses build type Debug if not set
+        # override it back to None so makepkg env vars are respected
+        CMAKE_BUILD_TYPE=None
+
+        ZIG_PIE=ON
+        ZIG_SHARED_LLVM=ON
+        ZIG_USE_LLVM_CONFIG=ON
+
+        ZIG_TARGET_TRIPLE=native-linux.6.6-gnu.2.40
+        ZIG_TARGET_MCPU=$_mcpu
+    )
+    cmake -B build "${cmake_vars[@]/#/-D}" .
+    cmake --build build
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    _zigcache
+    # ugly workaround until test target is provided
+    # https://github.com/ziglang/zig/issues/14240
+    DESTDIR="./testinstall" cmake --install build
+    ./testinstall/usr/bin/zig build test -Dconfig_h=build/config.h \
+      -Dstatic-llvm=false \
+      -Denable-llvm=true \
+      -Dskip-non-native=true
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    DESTDIR="$pkgdir" cmake --install build
+}
