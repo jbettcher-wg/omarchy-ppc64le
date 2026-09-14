@@ -116,9 +116,12 @@ Build the ISO (needs root for `mkarchiso`, plus the
 [kth5/archiso](https://github.com/kth5/archiso) fork at `../archiso-power`):
 
 ```sh
-iso/build.sh                 # embeds repo/ in the image for an offline install
-iso/build.sh --no-repo --repo-server <URL>
+iso/build.sh                 # installs from https://omappc64le.download/omarchy-power9
+iso/build.sh --bundle-repo   # also embeds repo/, to test packages not yet published
 ```
+
+The install needs a network connection: packages come from `[omarchy-power9]`
+and Arch POWER.
 
 Output goes to `iso/out/omarchy-p9-YYYY.MM.DD-ppc64le.iso`. Booting it starts
 `p9-configurator`, which asks for keyboard, user, disk and timezone, and shows a

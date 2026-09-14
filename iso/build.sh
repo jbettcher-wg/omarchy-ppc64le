@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Omarchy ppc64le live/install ISO.
 #
-#   ./iso/build.sh [-o OUTDIR] [-w WORKDIR]
+#   ./iso/build.sh [-o OUTDIR] [-w WORKDIR] [--repo-server URL]... [--bundle-repo]
 #
 # Two things this does that a plain mkarchiso run does not:
 #
@@ -12,12 +12,12 @@
 #      ppc64le image no matter what profiledef.sh says. The fork is not packaged
 #      anywhere; it has to be a checkout.
 #
-#   2. It injects repo/ onto the medium at p9repo/omarchy-power9/. That path is not
-#      decorative: p9-install defaults to
-#          P9_REPO_SERVER=file:///run/archiso/bootmnt/p9repo/omarchy-power9
-#      i.e. the repo is read off the boot medium, no network. This mirrors what
-#      upstream Omarchy's ISO does -- "the installer reads this mirror straight
-#      from the ISO during installation".
+#   2. It bakes the repo servers into the installer. By default that is only
+#      the public repo, https://omappc64le.download/omarchy-power9: the image
+#      carries what the live system needs and the install downloads the rest,
+#      as it already has to for Arch POWER [base]. --bundle-repo also injects
+#      repo/ onto the medium at p9repo/omarchy-power9/, read ahead of the
+#      network servers -- for testing packages that are not published yet.
 #
 #      archiso has no mechanism for putting arbitrary files in the ISO
 #      filesystem (airootfs goes *inside* the squashfs, which is the wrong side
@@ -43,18 +43,20 @@ ARCHISO="${ARCHISO:-$_home/Development/archiso-power}"
 PROFILE="$HERE/profile"
 OUTDIR="$HERE/out"
 WORKDIR="${TMPDIR:-/var/tmp}/omarchy-iso-work"
-# The bundled repo is 4.3G of a 5.2G image. archiso boots copytoram, so that
-# whole 4.3G is read off the medium into RAM and then thrown away when the
-# medium is unmounted -- the install pays for it twice and gets to keep none of
-# it. --no-repo drops it and installs over the network instead; the image lands
-# near 1G and copytoram becomes cheap.
-BUNDLE_REPO=1
+# Network install by default. A bundled repo makes the image the size of repo/
+# (12G by 2026-09), and archiso boots copytoram, so all of it is read off the
+# medium into RAM and thrown away when the medium is unmounted -- the install
+# pays for it twice and keeps none of it. --no-repo is still accepted; it is
+# the default now.
+DEFAULT_REPO_SERVER="https://omappc64le.download/omarchy-power9"
+BUNDLE_REPO=0
 REPO_SERVERS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) OUTDIR="$2"; shift 2 ;;
     -w) WORKDIR="$2"; shift 2 ;;
+    --bundle-repo) BUNDLE_REPO=1; shift ;;
     --no-repo) BUNDLE_REPO=0; shift ;;
     --repo-server) REPO_SERVERS+=("$2"); shift 2 ;;
     *)  echo "unknown option: $1" >&2; exit 2 ;;
@@ -62,15 +64,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 # What p9-install will use when the operator names no --repo-server. A bundled
-# repo goes first so the install reads it at local speed; anything given with
-# --repo-server follows, and is all there is under --no-repo.
+# repo goes first so the install reads it at local speed; the network servers
+# follow, and are all there is without --bundle-repo. With no --repo-server
+# they are the public repo, bundled or not, so an installed system always
+# keeps a server it can reach after reboot.
+((${#REPO_SERVERS[@]})) || REPO_SERVERS=("$DEFAULT_REPO_SERVER")
 _servers=()
 ((BUNDLE_REPO)) && _servers+=("file:///run/archiso/bootmnt/p9repo/omarchy-power9")
-_servers+=("${REPO_SERVERS[@]:-}")
-if ((!BUNDLE_REPO)) && ((!${#REPO_SERVERS[@]})); then
-  echo "--no-repo with no --repo-server: the ISO would have nowhere to install from" >&2
-  exit 2
-fi
+_servers+=("${REPO_SERVERS[@]}")
 
 MKARCHISO="$ARCHISO/archiso/mkarchiso"
 [[ -x $MKARCHISO ]] || { echo "no mkarchiso at $MKARCHISO -- clone https://github.com/kth5/archiso" >&2; exit 1; }
@@ -182,7 +183,7 @@ iso=$(find "$OUTDIR" -maxdepth 1 -name 'omarchy-p9-*.iso' -newer "$PROFILE/profi
 echo "==> built $iso"
 
 if ((!BUNDLE_REPO)); then
-  echo "==> --no-repo: not injecting $PROJECT/repo"
+  echo "==> network install: not injecting $PROJECT/repo (--bundle-repo embeds it)"
   echo "==> done: $iso"
   ls -la "$iso"
   exit 0
