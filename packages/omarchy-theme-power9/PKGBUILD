@@ -1,7 +1,7 @@
 # Maintainer: Jordan Bettcher <thebettcher@gmail.com>
 pkgname=omarchy-theme-power9
 pkgver=1.0
-pkgrel=2
+pkgrel=3
 pkgdesc='POWER9 theme for Omarchy: IBM Blue 60 and POWER9 green, with ppc64le branding'
 arch=('any')
 url='https://omarchy.org'
