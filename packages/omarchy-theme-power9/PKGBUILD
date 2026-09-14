@@ -26,11 +26,12 @@ sha256sums=('SKIP')
 #               /etc/fastfetch/config.jsonc (from omarchy-settings) hardcodes
 #               the logo as ~/.config/omarchy/branding/about.txt, so a theme
 #               cannot supply one. See branding/ below for what actually works.
-#   branding/   about.txt and screensaver.txt, sized to the slots Omarchy
-#               reads. about.txt is the OpenPOWER cube with the Omarchy swirl
-#               through it; screensaver.txt is the ANSI wordmark. Applied to
-#               accounts p9-install creates; an account that already exists
-#               applies them with omarchy-theme-power9-branding.
+#   branding/   about.txt, sized to the slot Omarchy reads: the OpenPOWER cube
+#               with the Omarchy swirl on every face. Applied to accounts
+#               p9-install creates; an account that already exists applies it
+#               with omarchy-theme-power9-branding. No screensaver.txt: the
+#               screensaver keeps Omarchy's own logo (1.0-3 dropped the POWER9
+#               wordmark there).
 #
 # Both are installed under the theme directory so `omarchy theme set power9`
 # keeps them together with the colours they match, and so a user can find them.
@@ -54,16 +55,14 @@ package() {
   install -Dm644 "$pkgdir/usr/share/omarchy/themes/power9/ascii/banner.txt" \
     "$pkgdir/usr/share/doc/$pkgname/banner.txt"
 
-  # Branding, sized to the two slots Omarchy actually reads.
+  # Branding, sized to the slot Omarchy reads.
   #
   #   about.txt       26 rows x 54 cols budget -- omarchy-launch-about measures
   #                   the logo and sizes the window to it, so an oversized file
   #                   does not crop, it opens a window wider than the screen.
   #                   die.txt is 12x44.
-  #   screensaver.txt 10 rows x 81 cols budget (Omarchy's own logo.txt).
-  #                   banner-ansi.txt is 6x72.
   #
-  # fastfetch/logo-cube.txt is 32x111 and fits neither; it stays a splash asset.
+  # fastfetch/logo-cube.txt is 32x111 and does not fit; it stays a splash asset.
   # btop.theme is kept. omarchy-theme-set-templates only renders a template
   # when the theme does not already ship that file (`[[ ! -f $output_path ]]`),
   # so this hand-written btop theme wins over btop.theme.tpl, and it survives
@@ -92,7 +91,6 @@ package() {
   # art that has no colour of its own. Measure this file with the escapes
   # stripped; raw `wc -L` reports 105 and is meaningless here.
   install -m644 "$themedir/fastfetch/logo-cube-50.txt" "$themedir/branding/about.txt"
-  install -m644 "$themedir/ascii/banner-ansi.txt" "$themedir/branding/screensaver.txt"
 
   # For accounts that already exist; p9-install handles the ones it creates.
   install -Dm755 "$srcdir/omarchy-theme-power9-branding" \

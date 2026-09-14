@@ -8,12 +8,9 @@ OMARCHY_RUNTIME_PACKAGE="${OMARCHY_RUNTIME_PACKAGE:-omarchy}"
 OMARCHY_SETTINGS_PACKAGE="${OMARCHY_SETTINGS_PACKAGE:-omarchy-settings}"
 
 # The greeter draws this and measures the whole layout against its widest
-# line, so it must be plain text at a fixed width. Prefer the power9
-# theme's POWER9 wordmark (51 columns) when it is on the medium, and fall
-# back to Omarchy's own logo when it is not -- the ISO can be built
-# without the theme package.
-LOGO_PATH="${P9_LOGO:-/usr/share/omarchy/themes/power9/ascii/banner.txt}"
-[[ -r $LOGO_PATH ]] || LOGO_PATH="$OMARCHY_PATH/logo.txt"
+# line, so it must be plain text at a fixed width. Omarchy's own logo, as
+# upstream's ISO draws it; P9_LOGO overrides for testing.
+LOGO_PATH="${P9_LOGO:-$OMARCHY_PATH/logo.txt}"
 
 # The setup form — keyboard, account, hostname, and timezone questions, plus the
 # rules their answers are checked against — shared verbatim with the first-boot
@@ -576,7 +573,6 @@ p9_confirm_and_install() {
   local dashboard=/usr/local/bin/omarchy-install-dashboard
   if [[ -x $dashboard ]]; then
     export OMARCHY_DASHBOARD_TTY="$(tty)"
-    export OMARCHY_DASHBOARD_LOGO="$LOGO_PATH"
     export P9_STATE_FILE=/run/omarchy-install/state.json
     export OMARCHY_EXPECTED_PACKAGES_FILE=/run/omarchy-install/expected-packages
     export P9_LOG_FILE=/var/log/p9-install.log

@@ -336,12 +336,14 @@ apply_theme_branding() {
 
   step "Seeding POWER9 branding into /etc/skel"
   if ((P9_DRY_RUN)); then
-    printf '  would copy %s/{about,screensaver}.txt -> %s/\n' "$src" "$dst" >&2
+    printf '  would copy %s/about.txt -> %s/\n' "$src" "$dst" >&2
     return 0
   fi
 
+  # about.txt only. The screensaver keeps Omarchy's own logo, which
+  # omarchy-settings already seeds in /etc/skel.
   local f
-  for f in about screensaver; do
+  for f in about; do
     if [[ -r $src/$f.txt ]]; then
       install -Dm644 "$src/$f.txt" "$dst/$f.txt"
       log "branding: $f.txt <- themes/power9"

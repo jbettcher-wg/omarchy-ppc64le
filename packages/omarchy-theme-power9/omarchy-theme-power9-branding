@@ -16,7 +16,9 @@ dst="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/branding"
 [[ -d $src ]] || { echo "omarchy-theme-power9 is not installed" >&2; exit 1; }
 mkdir -p "$dst"
 
-for f in about screensaver; do
+# about.txt only; the screensaver keeps Omarchy's own logo
+# (omarchy branding screensaver reset restores it).
+for f in about; do
   if [[ -r $src/$f.txt ]]; then
     cp "$src/$f.txt" "$dst/$f.txt"
     printf 'applied %s.txt\n' "$f"

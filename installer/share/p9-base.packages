@@ -50,12 +50,10 @@ omarchy
 omarchy-settings
 omarchy-nvim
 # The theme is listed in iso/profile/packages.ppc64le too, but that is the LIVE
-# medium -- it is there so p9-configurator can draw the POWER9 banner from
-# themes/power9/ascii/banner.txt during the install. Listing it there does
-# nothing for the installed system, and no package depends on it (the omarchy
-# package ships upstream's 20 themes; power9 is only ours). Without this line a
-# fresh install shows the branding while installing and then boots into stock
-# Omarchy theming, which is the wrong way round.
+# medium. Listing it there does nothing for the installed system, and no
+# package depends on it (the omarchy package ships upstream's 20 themes; power9
+# is only ours). Without this line a fresh install boots into stock Omarchy
+# theming instead of the POWER9 theme.
 omarchy-theme-power9
 # The screensaver's animation engine. omarchy-launch-screensaver opens with
 # `omarchy-cmd-missing ttfx && exit 1`, so without it the idle screensaver at

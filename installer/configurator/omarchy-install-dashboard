@@ -22,9 +22,7 @@ shift
 INSTALL_CMD=("$@")
 
 TTY_PATH="${OMARCHY_DASHBOARD_TTY:-/dev/tty}"
-# ppc64le: OMARCHY_DASHBOARD_LOGO lets p9-configurator hand over the same
-# POWER9 wordmark its greeter drew, so the install screen matches it.
-LOGO_PATH="${OMARCHY_DASHBOARD_LOGO:-${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt}"
+LOGO_PATH="${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt"
 
 # Autoinstall has no one at the keyboard, and every prompt this dashboard owns
 # reads from the TTY, so each would hang forever. Suppress them here rather than
@@ -152,10 +150,7 @@ LOGO_WIDTH="$(logo_width)"
 LOGO_HEIGHT="$(logo_height)"
 (( LOGO_WIDTH > 0 )) || LOGO_WIDTH=81
 (( LOGO_HEIGHT > 0 )) || LOGO_HEIGHT=1
-# ppc64le: never narrower than upstream's 81-column logo. The POWER9 wordmark
-# is 51 columns, and centering the tips against that pushes the long ones
-# several columns right of the logo.
-CONTENT_WIDTH=$(( LOGO_WIDTH > 81 ? LOGO_WIDTH : 81 ))
+CONTENT_WIDTH="$LOGO_WIDTH"
 # Rows the progress screen occupies: logo, blank, title, blank, bar, blank, tip.
 PROGRESS_HEIGHT=$((LOGO_HEIGHT + 6))
 TOP_ROW=1
