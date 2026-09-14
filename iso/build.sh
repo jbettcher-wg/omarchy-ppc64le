@@ -157,6 +157,23 @@ if grep -q "@P9_REPO_DIR@" "$rendered/pacman.conf"; then
 fi
 echo "==> repo for the build: $PROJECT/repo"
 
+# mkarchiso copies airootfs with --no-preserve=mode and then restores only the
+# modes profiledef.sh lists in file_permissions, so any other script reaches the
+# image as 0644. omarchy-install-dashboard shipped that way: the configurator's
+# -x check failed, and the install ran with no progress screen and no Reboot Now
+# prompt while looking otherwise fine. Refuse to build rather than find out on
+# the next install. customize_airootfs.sh is skipped: archiso no longer runs it.
+_unlisted=$(cd "$rendered/airootfs" &&
+  find . -type f -perm -u+x ! -path ./root/customize_airootfs.sh | sed 's#^\.##' | sort |
+  while read -r f; do grep -qF "[\"$f\"]" "$PROFILE/profiledef.sh" || echo "$f"; done)
+if [[ -n $_unlisted ]]; then
+  echo "build.sh: executables with no file_permissions entry in profiledef.sh;" >&2
+  echo "mkarchiso would ship them 0644:" >&2
+  printf '  %s\n' $_unlisted >&2
+  exit 1
+fi
+echo "==> every airootfs executable has a file_permissions entry"
+
 echo "==> mkarchiso ($MKARCHISO)"
 sudo "$MKARCHISO" -v -w "$WORKDIR" -o "$OUTDIR" "$rendered"
 
