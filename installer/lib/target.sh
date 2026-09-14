@@ -371,6 +371,25 @@ configure_users() {
 
   apply_theme_branding "$mnt"
 
+  # Omarchy's shell setup reaches new accounts through /etc/skel/.bashrc, which
+  # omarchy-settings only ships as an override (etc-overrides/dot.bashrc) that
+  # first boot applies. An account created here, before first boot, copied
+  # bash's stock 3-line skel instead and never got Omarchy's environment --
+  # found on the POWER8 builder. Deferred installs were fine: their account is
+  # created at first boot, after the override. Put it in place now; first boot
+  # installs the same file again, which changes nothing.
+  local bashrc_override="$mnt/usr/share/omarchy/etc-overrides/dot.bashrc"
+  if [[ -f $bashrc_override ]]; then
+    if ((P9_DRY_RUN)); then
+      printf '  would install %s -> %s/etc/skel/.bashrc\n' "$bashrc_override" "$mnt" >&2
+    else
+      install -Dm644 "$bashrc_override" "$mnt/etc/skel/.bashrc"
+      log "skel: Omarchy .bashrc in place before creating accounts"
+    fi
+  else
+    warn "no $bashrc_override; new accounts get bash's stock .bashrc"
+  fi
+
   if [[ -z $P9_USER ]]; then
     step "Deferring account creation to the target's first boot"
     if ((P9_DRY_RUN)); then
