@@ -825,6 +825,15 @@ def bwrap_prefix(sysroot):
     bottom-to-top order.  See Slot.
     """
     layers = [sysroot] if isinstance(sysroot, str) else list(sysroot)
+    # The topmost layer is the one this build stages into. On a fresh buildroot
+    # with an empty package pool nothing has been staged yet, so its usr/ does
+    # not exist -- and a missing usr/ used to mean no overlay at all: the build
+    # ran bare, with the -isystem/-L fallback in build_env(). Found on the POWER8
+    # builder (repo-power8 starts empty): 7zip got "-isystem A:-isystem B" and
+    # failed, alsa-lib's configure could not link, bash baked the sysroot into
+    # Makefile.inc. An empty upper layer is a valid overlay source; create it.
+    if layers:
+        os.makedirs(os.path.join(layers[-1], "usr"), exist_ok=True)
     layers = [l for l in layers if os.path.isdir(os.path.join(l, "usr"))]
     if not shutil.which("bwrap") or not layers:
         return []
@@ -856,7 +865,12 @@ def build_env(sysroot, bwrapped):
     sus = [os.path.join(l, "usr") for l in layers]   # bottom layer first
     su = sus[-1]                                     # topmost
     def pre(var, val):
-        e[var] = val + (":" + e[var] if e.get(var) else "")
+        # CPPFLAGS/LDFLAGS are word lists; everything else here is a ':' path
+        # list. Joining flags with ':' turned two layers' "-isystem A" and
+        # "-isystem B" into "-isystem A:-isystem B", so B reached cc as a bare
+        # "linker input file".
+        sep = " " if var in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") else ":"
+        e[var] = val + (sep + e[var] if e.get(var) else "")
     # Same split as CMAKE_PREFIX_PATH below. Under the overlay the staged .pc
     # files are already at /usr/lib/pkgconfig, and pointing at the raw sysroot
     # instead makes pkg-config answer every query with -I<sysroot>/usr/include
