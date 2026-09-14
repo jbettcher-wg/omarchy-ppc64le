@@ -817,3 +817,26 @@ raw `sc` and raw `scv` callers. Full write-up:
 Send to: the Debian chromium-team ppc64le series
 (<https://salsa.debian.org/chromium-team/chromium>, `debian/patches/ppc64le/`),
 and Chromium upstream if the ppc64 sandbox code is carried there.
+
+## Mono (dotnet/runtime): static virtual methods constrained to an interface
+
+`packages/dotnet-core/mono-static-virtual-interface-constraint.patch`
+
+When generic code calls a static virtual method through a type parameter that
+is itself an interface (`TSender.GetGType()` where `TSender` is an interface
+implementing a base interface's static abstract member), Mono's
+`get_method_constrained()` and the matching shortcut in generic sharing
+resolve to the base declaration, which has no body. CoreCLR resolves to the
+interface's implementation. Depending on sharing, Mono asserts in
+`mini-generic-sharing.c`, throws `BadImageFormatException` ("Method has no
+body"), or silently calls the wrong override.
+
+Not ppc64le-specific: every architecture running Mono is affected. It is the
+bug behind Pinta (GirCore) failing silently while building its main window, so
+New, Open and dialogs did nothing. Reported upstream as dotnet/runtime #82217,
+which was closed as a duplicate of #79331 (a different, still-open reflection
+issue); `main` is unchanged. Tested: 9 static-virtual cases correct (stock Mono
+fails all of them), no regression in the 50-case ELFv2 suite, and Pinta's New,
+Open and About all work.
+
+Send to: dotnet/runtime, referencing #82217.
