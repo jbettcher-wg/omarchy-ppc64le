@@ -133,8 +133,14 @@ Asked for by a Talos II tester with an RTX 3070.
   `nvidia/<chip>/gsp/*-570.144.bin`, which `linux-firmware-nvidia` ships), but
   `drm-nova` only offers GETPARAM/GEM_CREATE/GEM_INFO: no modesetting, no
   display. **Nouveau is what drives a screen**; Nova is there to test.
-- Both are modules and claim the same PCI IDs, so only one binds; pick with
-  `modprobe.blacklist=`.
+- Both are modules and claim the same NVIDIA GPUs, so udev would load both
+  and whichever probed first would win at random. The package ships
+  `/usr/lib/modprobe.d/<pkgbase>-nvidia.conf` with **`blacklist nouveau`**:
+  nova-core binds by default. To get a display from Nouveau instead, copy
+  that file to `/etc/modprobe.d/`, swap the line for `blacklist nova_core`,
+  and `mkinitcpio -P` (the `modconf` hook puts modprobe.d in the
+  initramfs). The file is named per pkgbase so the 4K and 64K kernels
+  install side by side.
 
 ### `btrfs` is built in
 

@@ -199,6 +199,28 @@ _package() {
 
   # remove build link, it is part of -headers
   rm -f "$modulesdir/build"
+
+  # nova-core claims every NVIDIA VGA/3D controller and nouveau every NVIDIA
+  # display-class device, so with both built udev loads both for one GPU and
+  # whichever probes first wins -- at random. Nova is why these kernels build
+  # Rust; blacklist nouveau so nova-core binds, and leave nouveau one line away
+  # for anyone who needs a display (nova has no modesetting in 7.2). Named per
+  # pkgbase so the 4K and 64K kernels install side by side. mkinitcpio's
+  # modconf hook copies modprobe.d into the initramfs, so it holds there too.
+  echo "Installing modprobe.d nouveau blacklist..."
+  install -Dm644 /dev/stdin "$pkgdir/usr/lib/modprobe.d/$pkgbase-nvidia.conf" <<'EOF'
+# Installed by the linux-power9 kernel package.
+#
+# nova-core (Rust, GSP) and nouveau both claim NVIDIA GPUs; only one can bind.
+# nova-core is the default on this kernel. It boots the GPU's GSP firmware but
+# has no display output yet (drm-nova has no modesetting in 7.2).
+#
+# For a working display on an NVIDIA card instead, override this file:
+#   cp /usr/lib/modprobe.d/<this file> /etc/modprobe.d/  and remove the line
+#   below there, then add  blacklist nova_core  and rebuild the initramfs
+#   (mkinitcpio -P). Or boot once with  module_blacklist=nova_core nouveau.modeset=1
+blacklist nouveau
+EOF
 }
 
 _package-headers() {
