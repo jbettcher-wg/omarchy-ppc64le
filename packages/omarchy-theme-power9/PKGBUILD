@@ -1,7 +1,7 @@
 # Maintainer: Jordan Bettcher <thebettcher@gmail.com>
 pkgname=omarchy-theme-power9
 pkgver=1.0
-pkgrel=1
+pkgrel=2
 pkgdesc='POWER9 theme for Omarchy: IBM Blue 60 and POWER9 green, with ppc64le branding'
 arch=('any')
 url='https://omarchy.org'
@@ -64,11 +64,20 @@ package() {
   #                   banner-ansi.txt is 6x72.
   #
   # fastfetch/logo-cube.txt is 32x111 and fits neither; it stays a splash asset.
-  # btop.theme is dropped: $OMARCHY_PATH/default/themed/btop.theme.tpl generates
-  # btop's theme from colors.toml on every `omarchy theme set`, so a file shipped
-  # here is overwritten the first time the theme is applied. Colours for btop
-  # belong in colors.toml, where they actually take effect.
-  rm -f "$themedir/btop.theme"
+  # btop.theme is kept. omarchy-theme-set-templates only renders a template
+  # when the theme does not already ship that file (`[[ ! -f $output_path ]]`),
+  # so this hand-written btop theme wins over btop.theme.tpl, and it survives
+  # `omarchy theme install` from git too. (1.0-1 deleted it on the wrong belief
+  # that the generator overwrites it.)
+
+  # obsidian/ is an optional standalone Obsidian theme, not part of the Omarchy
+  # theme spec: Omarchy already generates Obsidian colours from colors.toml via
+  # obsidian.css.tpl. Ship it as documentation to copy into a vault by hand.
+  if [ -d "$themedir/obsidian" ]; then
+    install -dm755 "$pkgdir/usr/share/doc/$pkgname/obsidian"
+    cp -a "$themedir/obsidian/." "$pkgdir/usr/share/doc/$pkgname/obsidian/"
+    rm -rf "$themedir/obsidian"
+  fi
 
   install -dm755 "$themedir/branding"
   # The OpenPOWER cube with the Omarchy swirl through it, drawn for this slot:

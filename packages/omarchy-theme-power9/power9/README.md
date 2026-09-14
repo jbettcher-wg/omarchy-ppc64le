@@ -22,7 +22,8 @@ as unrestricted and keeps every file. Cycle wallpapers with
 | `colors.toml` | The only colour source. Omarchy generates alacritty, btop, hyprland, neovim, kitty, ghostty, foot, helix, chromium, vscode and `shell.toml` from it via `$OMARCHY_PATH/default/themed/*.tpl`. |
 | `backgrounds/` | Three 3840×2160 wallpapers: cube mark, flat swirl, ASCII field. |
 | `unlock.png` | Lock screen background (omarchy mark version). |
-| `preview.png` | Thumbnail in `omarchy theme` picker. |
+| `preview.png` | Thumbnail in the `omarchy theme` picker. |
+| `preview-unlock.png` | Lock-screen preview in the theme switcher. |
 | `shell.lock.toml` | Optional override for the lock password field. Delete it to use the generated default. |
 | `icons.theme` | GTK icon set. |
 | `extras/unlock-openpower.png` | Alternate lock background using the OpenPOWER wordmark. Swap over `unlock.png` if you prefer it. |
@@ -52,9 +53,20 @@ ln -sf ~/.config/omarchy/themes/power9/fastfetch/config.jsonc \
        ~/.config/fastfetch/config.jsonc
 ```
 
-`logo-swirl.txt` is the face-on swirl at 40 columns (default).
-`logo-cube.txt` is the isometric cube at 56 columns — point `logo.source` at
-it instead if you want the bigger mark.
+Available logos, all pre-coloured:
+
+| File | Size | Notes |
+|---|---|---|
+| `logo-swirl.txt` | 40 × 20 | Face-on swirl. Default. |
+| `logo-cube.txt` | 56 × 30 | Isometric cube, half-blocks. |
+| `logo-cube-50.txt` | 50 × 20 | Cube + centered wordmark, half-blocks. Squashed to fit. |
+| `logo-cube-braille-50.txt` | 50 × 20 | Cube + wordmark in braille dots. 8× the sample density. |
+| `logo-cube-braille-52.txt` | 52 × 30 | Braille at true isometric proportion. Sharpest of the set. |
+
+Braille packs 2 × 4 dots into each cell, so it resolves the spiral far better
+than half-blocks at the same width. Two caveats: your font needs U+2800–28FF
+coverage (most Nerd Fonts have it), and a few terminals render braille cells
+slightly narrow, which shears the cube. Check with `cat` before committing to it.
 
 Quick check without installing:
 
@@ -116,6 +128,113 @@ cp ~/.config/omarchy/themes/power9/btop.theme ~/.config/omarchy/themed/btop.them
 
 Then swap the literal hexes back to `{{ blue }}`, `{{ green }}`,
 `{{ bright_blue }}` and so on, so each theme fills in its own palette.
+
+## Obsidian (`obsidian/`)
+
+**Read this first:** Omarchy 4 already generates Obsidian theming from
+`colors.toml`, so you may not need this at all. Run `omarchy theme set power9`
+and check Obsidian before installing anything here.
+
+What the generated output gives you is the palette. What this folder adds is
+structural CSS the template cannot express — squared corners, the heading
+colour ladder, the gradient blockquote rail, bordered inline code. Install it
+only if you want those.
+
+It is a standalone Obsidian theme, installed the Obsidian way:
+
+```bash
+mkdir -p /path/to/vault/.obsidian/themes/power9
+cp /usr/share/doc/omarchy-theme-power9/obsidian/* /path/to/vault/.obsidian/themes/power9/
+```
+
+Then Settings → Appearance → Themes → **power9**. Per-vault, so repeat it for
+each vault.
+
+Colours come straight from `colors.toml`. Editorial choices worth knowing:
+
+- Headings step blue → green as they get deeper (h1 white, h2 `#78a9ff`, h3 `#9fe870`)
+- Internal links green, external links blue — so you can tell them apart at a glance
+- Inline code green, matching how strings read in the terminal
+- Corners squared (`--radius-*: 0`) to match the rest of the theme
+- Graph view: nodes blue, focused node green
+- Syntax keeps magenta for keywords and red for errors — a two-colour code
+  view is unreadable
+
+If you would rather layer on top of your current theme than replace it, use it
+as a snippet instead:
+
+```bash
+cp /usr/share/doc/omarchy-theme-power9/obsidian/theme.css /path/to/vault/.obsidian/snippets/power9.css
+```
+
+Enable under Settings → Appearance → CSS snippets.
+
+## Distributing it
+
+If you push this as a public repo, name it `omarchy-power9-theme` — Omarchy
+strips the `omarchy-` prefix and `-theme` suffix, so it appears as **power9**
+in the theme menu. Others install it with:
+
+```bash
+omarchy theme install https://github.com/<you>/omarchy-power9-theme
+```
+
+A cloned theme is filtered at staging: Omarchy drops anything that can execute
+code — `*.lua`, `alacritty.toml`, `foot.ini`, `ghostty.conf`, `kitty.conf`,
+`vscode.json`, and symlinks at any depth — and regenerates those from its own
+templates instead. Dropped files are named on stderr.
+
+This theme ships none of those, so it survives cloning intact. `btop.theme`
+is explicitly on the kept list ("everything a cloned theme ships that is
+colour is kept"), which is why the hand-written btop override works for other
+people and not just for you.
+
+Move `ascii/` and `obsidian/` out before publishing if you want the repo to be
+pure theme — neither is part of the spec, and the theme gallery only checks for
+`colors.toml` plus a README with a screenshot.
+
+## Hiding the minimize button
+
+Short answer: not from the theme, and no Omarchy theme does it — there is
+nothing in the theme spec for window controls.
+
+Where it actually lives depends on the app:
+
+**Hyprland itself** draws no titlebars at all. There is no server-side
+minimize button to hide, and Hyprland has no minimize concept — `special`
+workspaces are the closest thing.
+
+**GTK apps** (Nautilus, GNOME Text Editor, etc.) draw their own client-side
+decorations, and the button set is a GTK setting, not a theme file:
+
+```bash
+gsettings set org.gnome.desktop.wm.preferences button-layout ':close'
+```
+
+That leaves only close on the right. `':'` alone removes all of them. To make
+it stick across reboots, add it to `~/.config/gtk-3.0/settings.ini`:
+
+```ini
+[Settings]
+gtk-decoration-layout=:close
+```
+
+and the same key in `~/.config/gtk-4.0/settings.ini`.
+
+**Electron apps** (Obsidian, VS Code, Discord) draw their own title bars, and
+there is no theme or GTK setting that hides just the minimize button there.
+Obsidian's own title bar (the default, **Native frame** off) always shows
+minimize, maximize and close. Under Hyprland, pressing minimize leaves the
+window frozen on screen, because Hyprland has no minimize state to return
+from. Avoid the button until Electron treats minimize as a no-op on
+compositors that don't advertise it.
+
+Checked against Omarchy's theming docs: there is no window-control key in the
+theme spec at any level. The full list a theme may ship is `colors.toml`,
+hand-written config overrides, `backgrounds/`, `preview.png`,
+`preview-unlock.png`, `icons.theme`, `keyboard.rgb`, `unlock.png` and a
+`light.mode` marker. Window buttons are not in it, so this stays a GTK-level
+change regardless of theme.
 
 ## Palette
 
