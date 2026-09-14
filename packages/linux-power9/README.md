@@ -5,12 +5,17 @@ this distro ships:
 
 | `_pagesize` | pkgbase | pkgver | splits |
 |---|---|---|---|
-| `4k` (default) | `linux-power9` | `7.2.2` | `-headers`, `-api-headers` |
-| `64k` | `linux-power9-64k` | `7.2.2_64k` | `-headers` |
+| `4k` (default) | `linux-power9` | `7.2.6` | `-headers`, `-api-headers` |
+| `64k` | `linux-power9-64k` | `7.2.6_64k` | `-headers` |
 
 Everything it is made of is a tracked file in this directory: mainline
-`linux-7.2.2.tar.xz` from kernel.org (by sha256), seven patches, and the two
+`linux-7.2.6.tar.xz` from kernel.org (by sha256), eight patches, and the two
 configs. Nothing is taken from a working tree any more.
+
+7.2.6 (pkgrel 1) moved from 7.2.2 and turned on **Rust** for the first time on
+powerpc, for NVIDIA's `nova-core`/`drm-nova`; see patch `0008` and
+"Rust, Nova and Nouveau" below. The history section that follows describes
+the 7.2.2 move into this recipe and is kept as written.
 
 ## What changed, and why
 
@@ -32,7 +37,7 @@ against a patched pristine extract shows nothing but `scripts/Makefile.package`,
 which is the CARCH patch), and the `.config` each one carried is byte-identical
 to `config.4k` / `config.64k` here.
 
-## The seven patches
+## The patches
 
 Applied in the order they are listed in `source=()`; 0003 edits the block 0001
 adds, and 0005 edits the function 0002 changes, so the order is load-bearing.
@@ -46,6 +51,10 @@ adds, and 0005 edits the function 0002 changes, so the order is load-bearing.
 | `0005` | Clear `exit_flags` in `arch_interrupt_exit_prepare()` rather than in `interrupt_exit_user_prepare()`, so flags set by the exit work `irqentry_exit()` runs (`arch_do_signal_or_restart()` → `_TIF_RESTOREALL`) survive to be read. Mirrors `syscall_exit_prepare()`. Pairs with 0002. | powerpc bug, upstreamable |
 | `0006` | `eeh_rmv_device()` takes `pci_rescan_remove_lock`, but every caller already holds it since 1010b4c012b0. The first PE reset involving a device whose driver has no EEH error handlers (xhci_hcd, ahci, …) deadlocks `eehd` against itself, and because the global lock is never released all later PCI hotplug/rescan/remove blocks too. | mainline bug since 6.17, upstreamable |
 | `0007` | `add_pages()` grows `max_pfn` for ZONE_DEVICE ranges, which are not RAM. `dma_direct_get_required_mask()` reads `max_pfn`, so once amdgpu registers device-private memory for KFD SVM, `dma_go_direct()` starts refusing the powernv pseudo-bypass and mappings silently go through a software `iommu_table` the hardware is no longer consulting — DMA to unrelated RAM, no fault. Only reachable with 64K pages (with 4K the registration fails on the linear-map range), so this is what makes **ROCm safe on the 64K kernel**. | mm/powerpc bug, upstreamable |
+
+| `0008` | Enables Rust on 64-bit little-endian powerpc. Mainline 7.2 selects `HAVE_RUST` only on arm, arm64, loongarch, riscv, s390, um and x86, so `CONFIG_RUST` -- and with it `NOVA_CORE` and `DRM_NOVA` -- is not even offered. Like x86_64 it generates `scripts/target.json`: rustc's own `powerpc64le-unknown-linux-gnu` data layout and ELFv2 ABI with `-altivec,-vsx,-hard-float`, matching the C side's `-msoft-float -mno-altivec -mno-vsx`; `-Ccode-model=large` for modules to match `-mcmodel=large`; `BINDGEN_TARGET_powerpc` and the GCC-only powerpc flags libclang rejects. Written for 7.2.6 by `~/Development/kernel-rust-ppc64le.py`. | enablement, upstreamable once proven |
+
+All seven 7.2.2 patches apply unchanged to 7.2.6 (0003 needs 0001 first, as listed).
 
 `0006` was regenerated against pristine 7.2.2 while writing this recipe: the
 loose copy applied with `fuzz 1` because its hunk header undercounted the
@@ -62,8 +71,9 @@ the reasoning lives in this file instead.
 **not** `oldconfig` (prompts) and never a bare hand edit: `olddefconfig` is what
 regenerates `include/config/auto.conf`. Builds 14 and 16 shipped without
 `HSA_AMD` because a hand-edited `.config` was built against a stale `auto.conf`.
-Both configs are already fully resolved against 7.2.2, so `olddefconfig`
-currently reports "No change to .config" for both.
+The 7.2.6 configs were made from the 7.2.2 ones: `olddefconfig` against the
+7.2.6 tree with the patches applied, the additions below set with
+`scripts/config`, and `olddefconfig` again, then copied here verbatim.
 
 Options in there that are not obvious and must survive any refresh:
 
@@ -80,9 +90,25 @@ Options in there that are not obvious and must survive any refresh:
   `NETFILTER_XTABLES_LEGACY`, `IP_NF_IPTABLES_LEGACY` and 137 `XT_`/`NFT_`/
   `IP_NF_`/`IP6_NF_` modules. Without these **ufw and docker do not work**.
 - **`CONFIG_LOCALVERSION`** — `""` for 4K, `"-64k"` for 64K. This is what makes
-  the module directory `/usr/lib/modules/7.2.2-64k` and the pkgver `7.2.2_64k`.
+  the module directory `/usr/lib/modules/7.2.6-64k` and the pkgver `7.2.6_64k`.
   `prepare()` asserts `make -s kernelrelease` still matches `pkgver`, so an
   accidental edit fails the build instead of silently renaming the package.
+- **`CONFIG_RUST=y`, `NOVA_CORE=m`, `DRM_NOVA=m`** -- see below.
+- **`CONFIG_MODVERSIONS` is off.** `RUST` depends on `!MODVERSIONS ||
+  GENDWARFKSYMS`, and `GENDWARFKSYMS` needs DWARF debug info, which these
+  kernels do not build (`DEBUG_INFO_NONE=y`). The cost: out-of-tree modules
+  lose symbol-CRC checking.
+- **`DRM_NOUVEAU=m`** -- a working display on NVIDIA cards today (Turing and
+  newer via GSP firmware from `linux-firmware-nvidia`).
+- **`VFIO=m`, `VFIO_PCI=m`, `VFIO_IOMMU_SPAPR_TCE=m`** -- PCI passthrough; the
+  sPAPR TCE backend is the one POWER uses.
+- **`VSOCKETS=m`, `VHOST_VSOCK=m`** -- host/guest sockets for KVM.
+- **Network and Wi-Fi drivers, as modules**, so installs on other POWER
+  machines find their NIC: Intel `E1000E IGB IGC IXGBE I40E ICE`, Broadcom
+  `BNXT TIGON3 BNX2X`, Mellanox `MLX4_EN MLX5_CORE`, Realtek `R8169`, Aquantia
+  `AQTION`; Wi-Fi `IWLWIFI/IWLMVM`, MediaTek `MT7921E/U MT7925E MT76x2U`,
+  Qualcomm `ATH9K ATH10K_PCI ATH11K_PCI`, Realtek `RTW88_8822CE RTW89_8852BE`,
+  Broadcom `BRCMFMAC` (PCIe and USB).
 
 The two configs differ only in the page-size block and what kconfig derives
 from it: `PPC_64K_PAGES`/`PAGE_SHIFT=16`, `ARCH_FORCE_MAX_ORDER` 12 → 8, the
@@ -90,6 +116,25 @@ from it: `PPC_64K_PAGES`/`PAGE_SHIFT=16`, `ARCH_FORCE_MAX_ORDER` 12 → 8, the
 (`PPC_VAS=y`, `CRYPTO_DEV_NX_COMPRESS_{PSERIES,POWERNV}=m`). They are kept as
 two whole files rather than a base plus a fragment because a kernel config is
 not safely composable by text.
+
+## Rust, Nova and Nouveau
+
+Asked for by a Talos II tester with an RTX 3070.
+
+- **Toolchain.** `makedepends` gains `rust`, `rust-src`, `rust-bindgen` (kernel
+  minimum bindgen 0.71.1; ours is 0.72.1) and `clang` (bindgen needs libclang).
+  `make rustavailable` passes on .24 with rustc 1.98.1.
+- **The trap.** `olddefconfig` re-evaluates `RUST_IS_AVAILABLE`; if any of those
+  is missing from the build environment, `CONFIG_RUST` -- and every Rust
+  driver -- is dropped without an error. `prepare()` therefore fails the build
+  when `.config` no longer has `CONFIG_RUST=y`.
+- **What Nova is in 7.2.6.** ~13.7k lines: it identifies Turing, Ampere, Ada,
+  Hopper and Blackwell GPUs and boots the GSP firmware (it asks for
+  `nvidia/<chip>/gsp/*-570.144.bin`, which `linux-firmware-nvidia` ships), but
+  `drm-nova` only offers GETPARAM/GEM_CREATE/GEM_INFO: no modesetting, no
+  display. **Nouveau is what drives a screen**; Nova is there to test.
+- Both are modules and claim the same PCI IDs, so only one binds; pick with
+  `modprobe.blacklist=`.
 
 ### `btrfs` is built in
 
