@@ -187,3 +187,5 @@ are upstreamable or a local workaround.
 - [kth5/archiso](https://github.com/kth5/archiso) (OpenPOWER boot support)
 
 Maintained by Jordan Bettcher.
+
+![The power9 theme wallpaper, with cliamp](docs/images/theme-cliamp.png)
