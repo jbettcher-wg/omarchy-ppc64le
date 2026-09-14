@@ -5,8 +5,8 @@
 pkgname=llama.cpp-hip
 _pkgname="${pkgname%-hip}"
 pkgver=b10705
-pkgrel=1
-pkgdesc="LLM inference in C/C++ (AMD ROCm/HIP backend, gfx1100)"
+pkgrel=2
+pkgdesc="LLM inference in C/C++ (AMD ROCm/HIP backend: Vega 10/20, RX 5000-9000, Pro V620)"
 arch=('x86_64' 'powerpc64le')
 url='https://github.com/ggml-org/llama.cpp'
 license=('MIT')
@@ -58,7 +58,10 @@ build() {
     -DGGML_HIP=ON
     -DGGML_HIP_GRAPHS=ON
     # One GPU target, same scope decision as ../rocblas.
-    -DGPU_TARGETS=gfx1100
+    # Same GPU families as rocblas (see its PKGBUILD for the table), without
+    # the :xnack- qualifier CMake's HIP architecture check doesn't take.
+    # LLAMA_GPU_TARGETS overrides it.
+    -DGPU_TARGETS="${LLAMA_GPU_TARGETS:-gfx900;gfx906;gfx1010;gfx1012;gfx1030;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201}"
     # Deterministic POWER9 code for the CPU backend instead of the
     # /proc/cpuinfo sniff GGML_NATIVE does (which would emit power10 code on
     # a POWER10 build host).  The project builds -mcpu=power9 everywhere.
