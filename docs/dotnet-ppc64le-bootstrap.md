@@ -86,6 +86,29 @@ dotnet/runtime `src/mono` as well as to the VMR's `src/runtime`, is written to b
 sent upstream, and its header lists the rules and the GCC-checked test matrix.
 Apply it on any ppc64le source-build of .NET 10.
 
+### Mono and static virtual members implemented by interfaces (all architectures)
+
+With the ELFv2 patch, pinta starts but New, Open and About do nothing. The
+cause is not ppc64le-specific. GirCore makes binding interfaces implement a
+static member of another interface: `Gtk.SelectionModel` implements
+`GObject.GTypeProvider.GetGType()`. `Signal<TSender, …>.GetId()` then calls
+`TSender.GetGType()` with `TSender` set to that interface.
+
+Mono resolves a constrained call whose type argument is an interface to the
+declaration, which for a static abstract member has no body:
+
+- `BadImageFormatException: Method has no body` in non-shared code
+- an assertion abort in `mini_instantiate_gshared_info` in shared generic code
+- silently the base body when a static virtual default is overridden
+
+Pinta hits the first one while building its main window, before it creates its
+action handlers, and no error dialog exists yet to report it. This is
+dotnet/runtime #82217, closed as a duplicate of the still-open #79331 and
+unfixed in `main`.
+`packages/dotnet-core/mono-static-virtual-interface-constraint.patch` resolves
+the implementation from the constraining interface's MethodImpls. Any Mono-based
+.NET (Android, iOS, wasm, s390x, ppc64le) running GirCore apps needs it.
+
 ## Where the seed comes from: IBM
 
 IBM builds .NET for s390x **and ppc64le** and publishes each release at
