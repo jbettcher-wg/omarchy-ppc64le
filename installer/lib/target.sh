@@ -199,6 +199,19 @@ configure_initramfs() {
     rm -f "$mnt/etc/mkinitcpio.conf.d/omarchy_hooks.conf"
   fi
 
+  # The plymouth hook bakes the *active* theme into the initramfs, and until
+  # first boot applies omarchy-settings' /etc overrides that is plymouth's own
+  # default (bgrt). Put Omarchy's plymouthd.conf (Theme=omarchy) in place first,
+  # or the splash stays wrong until something else rebuilds the initramfs.
+  # etc-overrides.sh installs the same file again at first boot; that is a no-op.
+  local plymouth_override="$mnt/usr/share/omarchy/etc-overrides/plymouth-plymouthd.conf"
+  if [[ -f $plymouth_override ]]; then
+    install -Dm644 "$plymouth_override" "$mnt/etc/plymouth/plymouthd.conf"
+    log "plymouth: Theme=omarchy set before building the initramfs"
+  else
+    warn "no $plymouth_override; the initramfs gets plymouth's default theme"
+  fi
+
   run_loud arch-chroot "$mnt" mkinitcpio -P ||
     die "mkinitcpio failed in the target -- see $P9_LOG_FILE. Nothing will boot until this is fixed."
 
