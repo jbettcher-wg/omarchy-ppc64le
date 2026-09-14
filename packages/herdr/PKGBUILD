@@ -25,16 +25,22 @@
 # - CARGO_HOME and the zig caches under $srcdir, so the build writes nothing
 #   into $HOME.  The repo's rust (1:1.98.1) builds it; upstream's
 #   rust-toolchain.toml pin (1.96.1) is inert without rustup.
+# - pkgrel 2: rebuilt with zig0.15 0.15.2-2 (makedepends pinned to it). 0.8.2-1's
+#   libghostty-vt came from a zig that lowered by-value C structs wrongly on
+#   ELFv2, so the herdr server segfaulted in ghostty_terminal_grid_ref(): rustc
+#   passed the 24-byte GhosttyPoint in r4-r6 and out_ref in r7, zig read the
+#   point from r9 and out_ref from the stack.  See
+#   packages/zig0.15/zig-ppc64le-elfv2-c-abi.patch.
 
 pkgname=herdr
 pkgver=0.8.2
-pkgrel=1
+pkgrel=2
 pkgdesc='Herdr terminal workspace manager for AI coding agents'
 arch=(powerpc64le)
 url='https://github.com/herdrdev/herdr'
 license=(Apache-2.0)
 depends=(gcc-libs glibc)
-makedepends=(cargo git zig0.15)
+makedepends=(cargo git 'zig0.15>=0.15.2-2')
 conflicts=(omarchy-herdr)
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
         herdr-build-rs-powerpc64le.patch)
