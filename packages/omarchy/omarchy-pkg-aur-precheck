@@ -1,0 +1,234 @@
+#!/bin/bash
+
+# omarchy:summary=Check AUR packages for prebuilt binaries and unbuildable dependencies before installing.
+
+# ppc64le: omarchy-pkg-aur-install hands the picked names straight to
+# `yay -S --noconfirm`. On a machine whose architecture most AUR packages don't
+# list, that goes wrong in two quiet ways:
+#
+#   * Binary repacks install anyway. yay passes --ignorearch for an unsupported
+#     arch, makepkg stamps the result with this machine's architecture, and the
+#     x86 binaries inside only run because FEX is registered with binfmt. AUR
+#     `openarena` did exactly that: the release zip's .x86_64 binaries, labelled
+#     powerpc64le.
+#   * yay builds AUR dependencies recursively, but stops with "Unable to find the
+#     following packages" when a dependency is an official Arch package that has
+#     not been built for POWER yet -- those are deliberately not on the AUR.
+#
+# This looks before yay builds anything: .SRCINFO and PKGBUILD from the AUR,
+# dependency resolution against the local sync databases. It never installs.
+#
+# Usage: omarchy-pkg-aur-precheck [--report] <package>...
+#   --report   print findings and exit without prompting (1 if anything was found)
+# Exit status: 0 to go ahead, 1 to stop.
+
+set -uo pipefail
+
+AUR=https://aur.archlinux.org
+REPORT=0
+[[ ${1:-} == --report ]] && { REPORT=1; shift; }
+(($#)) || { echo "usage: omarchy-pkg-aur-precheck [--report] <package>..." >&2; exit 2; }
+
+# makepkg's architecture name (powerpc64le), not uname's (ppc64le).
+CARCH=$(source /etc/makepkg.conf 2>/dev/null; echo "${CARCH:-$(uname -m)}")
+
+RED=$'\e[31m' YELLOW=$'\e[33m' GREEN=$'\e[32m' DIM=$'\e[2m' RESET=$'\e[0m'
+
+aur_info() { # name -> JSON object or empty
+  curl -sfG --max-time 15 "$AUR/rpc/v5/info" --data-urlencode "arg[]=$1" |
+    jq -c '.results[0] // empty' 2>/dev/null
+}
+
+aur_provider() { # name -> first AUR package that provides it, or empty
+  curl -sf --max-time 15 "$AUR/rpc/v5/search/$1?by=provides" |
+    jq -r '.results[0].Name // empty' 2>/dev/null
+}
+
+arch_official() { # name -> "repo" if Arch itself packages it, else empty
+  curl -sf --max-time 15 "https://archlinux.org/packages/search/json/?name=$1" |
+    jq -r '.results[0].repo // empty' 2>/dev/null
+}
+
+aur_file() { # pkgbase file -> contents
+  curl -sfG --max-time 15 "$AUR/cgit/aur.git/plain/$2" --data-urlencode "h=$1"
+}
+
+# A dependency is fine if it is installed or pacman can resolve it (provides and
+# version constraints included) from the sync databases. -Sp reads the existing
+# databases and needs no root.
+in_repos() {
+  pacman -T -- "$1" >/dev/null 2>&1 && return 0
+  pacman -Sp --print-format '%n' -- "$1" >/dev/null 2>&1
+}
+
+binary_findings=()   # "pkg: reason"
+arch_notes=()        # "pkg: note"
+missing_deps=()      # "dep (needed by pkg)"
+aur_deps=()          # AUR packages yay will build along the way
+suggestions=()
+declare -A seen
+
+check_binary() { # name base
+  local name=$1 base=$2 srcinfo pkgbuild arches reasons=()
+  srcinfo=$(aur_file "$base" .SRCINFO) || srcinfo=""
+  pkgbuild=$(aur_file "$base" PKGBUILD) || pkgbuild=""
+
+  arches=$(sed -nE 's/^\s*arch = (.*)$/\1/p' <<<"$srcinfo" | sort -u | tr '\n' ' ')
+
+  [[ $name == *-bin ]] &&
+    reasons+=("named -bin: prebuilt by AUR convention")
+  grep -qE '^\s*source_(x86_64|i686|aarch64|armv7h) = ' <<<"$srcinfo" &&
+    reasons+=("downloads per-architecture sources (source_x86_64...)")
+  grep -qiE '^\s*source(_[a-z0-9_]+)? = .*\.(deb|rpm|appimage|snap)(\s|$)' <<<"$srcinfo" &&
+    reasons+=("repackages a .deb, .rpm or AppImage")
+
+  local declared=0
+  [[ " $arches" == *" $CARCH "* || " $arches" == *" any "* ]] && declared=1
+  local desc_says_binary=0 desc=""
+  if ((!declared)); then
+    local line
+    desc=$(sed -nE '0,/^\s*pkgdesc = /s/^\s*pkgdesc = (.*)$/\1/p' <<<"$srcinfo")
+    grep -qiE 'binary (package|release|version|build|distribution)|\(binary\)|pre-?built|pre-?compiled' <<<"$desc" &&
+      desc_says_binary=1
+
+    if [[ -n $pkgbuild ]] && ! grep -qE '^\s*build\s*\(\)' <<<"$pkgbuild"; then
+      reasons+=("no build() step and arch=(${arches% }) lacks $CARCH: installs files as downloaded")
+    fi
+
+    # Installing files literally named for x86, e.g. openarena's
+    # `chmod 755 .../*.{i386,x86_64}`. A source build names its output through
+    # $(uname -m) or $CARCH instead (openarena-git), and only rm's the bundled ones.
+    line=$(grep -E '^\s*(install|chmod|cp|mv|ln)\s.*(\{[^}]*(i386|x86_64|amd64)[^}]*\}|[._-](x86_64|i386|amd64|x64)\b)' <<<"$pkgbuild" |
+      grep -vE 'uname|CARCH' | head -1)
+    [[ -n $line ]] && reasons+=("installs files named for x86: ${line#"${line%%[![:space:]]*}"}")
+  fi
+
+  # The description alone is not evidence: openarena-git kept the "(binary
+  # package)" pkgdesc of the package it was forked from while compiling the
+  # engine from source. It only adds weight to a finding the PKGBUILD supports.
+  if ((desc_says_binary)); then
+    if ((${#reasons[@]})); then
+      reasons+=("description says so: \"$desc\"")
+    else
+      arch_notes+=("$name: description says binary (\"$desc\") but the PKGBUILD looks like a source build")
+    fi
+  fi
+
+  if ((${#reasons[@]})); then
+    local r
+    for r in "${reasons[@]}"; do binary_findings+=("$name: $r"); done
+    # A source variant, if the AUR has one.
+    local stem=${name%-bin} alt
+    for alt in "$stem-git" "$stem"; do
+      [[ $alt == "$name" ]] && continue
+      [[ -n $(aur_info "$alt") ]] && { suggestions+=("$name -> try $alt"); break; }
+    done
+  elif ((!declared)); then
+    arch_notes+=("$name: arch=(${arches% }) doesn't list $CARCH; a source build usually still works")
+  fi
+}
+
+check_deps() { # name json depth
+  local name=$1 info=$2 depth=$3 d bare provider pinfo
+  mapfile -t deps < <(jq -r '(.Depends // []) + (.MakeDepends // []) + (.CheckDepends // []) | .[]' <<<"$info")
+  for d in "${deps[@]}"; do
+    bare=${d%%[<>=]*}
+    [[ -n ${seen[$bare]:-} ]] && continue
+    seen[$bare]=1
+    in_repos "$d" && continue
+
+    if in_repos "$bare"; then
+      missing_deps+=("$d (needed by $name; the repos have an older $bare)")
+      continue
+    fi
+
+    # An official Arch package is the answer here, not an AUR stand-in: yay
+    # would otherwise take the first AUR provider (freeciv21's libertinus-font
+    # became otf-libertinus-git and a 35-package font toolchain).
+    local official
+    official=$(arch_official "$bare")
+    if [[ -n $official ]]; then
+      missing_deps+=("$d (needed by $name): official Arch package in [$official], not built for $CARCH yet")
+      continue
+    fi
+
+    pinfo=$(aur_info "$bare")
+    if [[ -z $pinfo ]]; then
+      provider=$(aur_provider "$bare")
+      if [[ -n $provider ]]; then
+        # The Arch API cannot search provides, so a virtual dependency like
+        # libertinus-font only surfaces through its AUR provider
+        # (otf-libertinus-git). If the provider's stem is an official package
+        # (otf-libertinus), that is the one to build, not the -git stand-in.
+        local stem=${provider%-git}
+        stem=${stem%-bin}
+        if [[ $stem != "$provider" ]]; then
+          official=$(arch_official "$stem")
+          if [[ -n $official ]]; then
+            missing_deps+=("$d (needed by $name): provided by official Arch package $stem in [$official], not built for $CARCH yet")
+            continue
+          fi
+        fi
+        pinfo=$(aur_info "$provider")
+      fi
+    fi
+    if [[ -z $pinfo ]]; then
+      missing_deps+=("$d (needed by $name)")
+      continue
+    fi
+
+    local pname
+    pname=$(jq -r .Name <<<"$pinfo")
+    aur_deps+=("$pname")
+    check_binary "$pname" "$(jq -r .PackageBase <<<"$pinfo")"
+    ((depth < 4)) && check_deps "$pname" "$pinfo" $((depth + 1))
+  done
+}
+
+for pkg in "$@"; do
+  seen[$pkg]=1
+  info=$(aur_info "$pkg")
+  if [[ -z $info ]]; then
+    missing_deps+=("$pkg (not found on the AUR)")
+    continue
+  fi
+  check_binary "$pkg" "$(jq -r .PackageBase <<<"$info")"
+  check_deps "$pkg" "$info" 1
+done
+
+found=0
+if ((${#binary_findings[@]})); then
+  found=1
+  echo "${RED}Likely prebuilt binaries, not a $CARCH build:${RESET}"
+  printf '  %s\n' "${binary_findings[@]}"
+  ((${#suggestions[@]})) && printf "  ${GREEN}%s${RESET}\n" "${suggestions[@]}"
+  echo "  ${DIM}Binaries for another architecture only run through emulation (FEX), if at all.${RESET}"
+  echo
+fi
+if ((${#missing_deps[@]})); then
+  found=1
+  echo "${RED}Dependencies nothing can provide on $CARCH yet:${RESET}"
+  printf '  %s\n' "${missing_deps[@]}"
+  echo "  ${DIM}yay will stop on these. Usually an official Arch package not yet built for POWER.${RESET}"
+  echo
+fi
+if ((${#arch_notes[@]})); then
+  echo "${YELLOW}Not declared for $CARCH (fine for most source builds):${RESET}"
+  printf '  %s\n' "${arch_notes[@]}"
+  echo
+fi
+if ((${#aur_deps[@]})); then
+  echo "${DIM}AUR dependencies yay will build too: ${aur_deps[*]}${RESET}"
+  echo
+fi
+
+((found)) || { echo "${GREEN}No problems found for: $*${RESET}"; exit 0; }
+((REPORT)) && exit 1
+
+if command -v gum >/dev/null 2>&1; then
+  gum confirm --default=false "Install anyway?" && exit 0
+else
+  read -r -p "Install anyway? [y/N] " reply </dev/tty
+  [[ $reply == [yY] ]] && exit 0
+fi
+exit 1
