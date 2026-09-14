@@ -310,7 +310,16 @@ def read_recipe(recipedir):
     si = os.path.join(recipedir, ".SRCINFO")
     if os.path.isfile(si):
         info = _from_srcinfo(si)
-        if info["pkgname"]:
+        # Arch POWER's tree carries Arch's own .SRCINFO beside a PKGBUILD it has
+        # edited, and does not regenerate it: acl's PKGBUILD says
+        # arch=(x86_64 powerpc64le ...) while its .SRCINFO still says only
+        # x86_64. Trusting that sent valid recipes to the arch gate at 0s (acl,
+        # bison, cfitsio ... on the POWER8 builder) -- and a stale arch list
+        # means the dependency lists in it are just as suspect. A .SRCINFO that
+        # does not name this architecture is stale for our purposes: read the
+        # PKGBUILD instead, which is what makepkg will actually build.
+        if info["pkgname"] and (not info["arch"] or CARCH in info["arch"]
+                                or "any" in info["arch"]):
             return info
     return _from_pkgbuild(os.path.join(recipedir, "PKGBUILD"))
 
