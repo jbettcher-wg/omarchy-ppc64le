@@ -26,6 +26,14 @@
 #    block that builds zig1/zig2 with -ffunction-sections -fdata-sections on
 #    powerpc/arm hosts (plus -fno-strict-aliasing). Portability fix already
 #    upstream in 0.16; see the patch header.
+#  * zig-ppc64le-elfv2-c-abi.patch: the LLVM backend had no powerpc64le
+#    (ELFv2) case in its C calling-convention lowering, so by-value structs
+#    and unions crossing a C boundary went in different registers than clang,
+#    GCC and rustc put them; herdr's libghostty-vt segfaulted under Rust.
+#    Adds the ELFv2 classification clang uses and enables the powerpc64 C ABI
+#    tests. Unlike the rest, this one is meant for upstream (zig master has
+#    the same gap); rules, gaps and test evidence are in the patch header.
+#    Same change as packages/zig.
 #
 # Maintainer: Jordan Bettcher <thebettcher@gmail.com>
 # Arch zig recipe: Daurnimator <daurnimator@archlinux.org>
@@ -34,7 +42,7 @@
 pkgname=zig0.15
 _zigname=zig
 pkgver=0.15.2
-pkgrel=1
+pkgrel=2
 pkgdesc='a general-purpose programming language and toolchain (version 0.15, installed as zig-0.15)'
 arch=('x86_64' 'powerpc64le')
 url='https://ziglang.org/'
@@ -46,11 +54,13 @@ checkdepends_x86_64=('lib32-glibc')
 source=("https://ziglang.org/download/$pkgver/$_zigname-$pkgver.tar.xz"
         "skip-localhost-test.patch"
         "skip-futex2-test.patch"
-        "zig2-function-sections-powerpc.patch")
+        "zig2-function-sections-powerpc.patch"
+        "zig-ppc64le-elfv2-c-abi.patch")
 sha256sums=('d9b30c7aa983fcff5eed2084d54ae83eaafe7ff3a84d8fb754d854165a6e521c'
             'eeb5f0f72035c52bf558ffc77a171a3ddf93eac7d663ef0c82826007763717a8'
             'eb30e0eb00e6ced4c99383f0658a0351f42882e303300ed1828d162d27171cd0'
-            '58836f0bcf1dfc76f67d7abb7e8a65d7625c2afbc2e042f32994cf418f844f41')
+            '58836f0bcf1dfc76f67d7abb7e8a65d7625c2afbc2e042f32994cf418f844f41'
+            'c598f92f41dc848cd56a64cad7db29508e59c3941950042316ef303bc41155af')
 
 _prefix=/usr/lib/zig0.15
 
@@ -65,6 +75,7 @@ prepare() {
     patch -p1 -i ../skip-localhost-test.patch
     patch -p1 -i ../skip-futex2-test.patch
     patch -p1 -i ../zig2-function-sections-powerpc.patch
+    patch -p1 -i ../zig-ppc64le-elfv2-c-abi.patch
 }
 
 build() {

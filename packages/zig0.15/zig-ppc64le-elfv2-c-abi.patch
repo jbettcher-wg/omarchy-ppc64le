@@ -1,0 +1,730 @@
+[Zig][powerpc64le] LLVM backend: ELFv2 C calling convention for aggregates
+
+Upstreamable: yes. A portability fix for the LLVM backend, not a local
+workaround. Upstream master still has no powerpc64_elf_v2 case in these
+switches (related: ziglang/zig#17898).
+
+Against zig 0.15.2. packages/zig carries the same change for zig 0.16.0,
+where the code moved to src/codegen/llvm/FuncGen.zig.
+
+What it fixes
+=============
+ParamTypeIterator, firstParamSRet and lowerFnRetTy had C ABI cases for
+x86_64 SysV and Win64, aarch64, arm, mips o32, riscv and wasm only. The
+powerpc64le C calling convention (powerpc64_elf_v2) fell to the generic
+`else`, which passes and returns extern structs and unions as LLVM
+first-class aggregates. clang lowers them in its frontend (PPC64_SVR4_ABIInfo)
+and LLVM's PPC64 backend does not re-derive that: given a first-class
+aggregate it spends one parameter word per element, so any function exported
+to or called from C, Rust or Go with a by-value aggregate parameter or return
+value disagreed with every other compiler on the machine.
+
+Seen as: herdr 0.8.2 (Rust) linking libghostty-vt (Zig) segfaults at once.
+ghostty_terminal_grid_ref(GhosttyTerminal, GhosttyPoint, GhosttyGridRef *)
+takes a 24-byte GhosttyPoint (int tag, then a union of a coordinate and
+uint64_t[2]). rustc, like clang and GCC, passes it in r4-r6 and out_ref in r7.
+Zig lowered it as { i32, [4 x i8], union }, so the callee read the tag from
+r4, one register per padding byte, the coordinate from r9, and out_ref from
+parameter save area word 8, past all eight GPRs; it then wrote its result
+through that stack garbage.
+
+Rules implemented
+=================
+64-bit ELF V2 ABI, as clang's PPC64_SVR4_ABIInfo implements it (ELFv2 kind),
+in src/codegen/powerpc/abi.zig. GCC 16 was checked to agree on every tested
+shape.
+
+  Homogeneous aggregates: a struct, union or array whose members, flattened
+  through nested structs, unions and arrays, are all float, all double, all
+  f128, or all 128-bit vectors; no padding (member size x count = aggregate
+  size); 1 to 8 members; zero-bit fields are skipped; union member count is
+  the largest field's.
+
+  Parameters
+  - integers, enums, bools, floats, pointers, packed structs/unions: their own
+    type, as before (sign/zero extension to 64 bits was already implemented
+    in ccAbiPromoteInt);
+  - integers wider than 128 bits: copied to the parameter save area (byval);
+  - homogeneous aggregate: [n x base], so members go in f1-f13 (v2-v13 for
+    vectors) and the ELFv2 rules for GPR shadowing and stack spill apply
+    (a single-float struct is the n = 1 case);
+  - other aggregate of at most 8 bytes: an integer of its size (i8..i64);
+  - other aggregate of 9 to 64 bytes: [n x i64], or [n x i128] when it is
+    aligned to 16 bytes or more; words go in r3-r10 in order and may split
+    between the last GPRs and the stack;
+  - other aggregate over 64 bytes: copied to the parameter save area (byval);
+  - vectors: 128 bits in a vector register, narrower ones as an integer of
+    their size, wider ones by reference to a copy.
+
+  Return values
+  - homogeneous aggregate: [n x base], in f1-f8 (v2-v9);
+  - other aggregate of at most 8 bytes: an integer of its size, in r3;
+  - other aggregate of 9 to 16 bytes: r3 and r4, lowered as { i64, iN }
+    (clang: { i64, i64 }; same registers, and the narrower second word keeps
+    the conversion from the aggregate in bounds);
+  - anything larger: hidden pointer in r3 (sret);
+  - vectors: as for parameters, wider than 128 bits via sret.
+
+Code changes
+============
+- src/codegen/powerpc/abi.zig: the classifier.
+- ParamTypeIterator: a powerpc64_elf_v2 case, and a new `int_array`
+  lowering: an integer array that may be larger than the parameter type. The
+  caller copies the argument into a temporary of the array type before loading
+  it (the existing i32_array/i64_array lowering loads the array straight from
+  the argument, which reads past the end of, say, a 12-byte struct passed as
+  [2 x i64]); the callee stores the array into a temporary aligned for both.
+- firstParamSRet and lowerFnRetTy: powerpc64_elf_v2 cases.
+- float_array lowerings take their element type from the target's classifier
+  (aarch64's getFloatArrayType does not know vector members).
+
+Not covered
+===========
+- powerpc64 ELFv1 (big-endian) keeps the generic lowering.
+- Soft-float ELFv2: clang disables homogeneous aggregates; not special-cased.
+- long double: this patch treats every f128 member as one register (clang's
+  __float128). clang counts an IEEE `long double` member as two, so an
+  aggregate of 5-8 long doubles differs. Zig's c_longdouble is f128 while
+  GCC and clang on powerpc64le-linux default to IBM double-double here, which
+  is a separate, pre-existing mismatch.
+- Aggregates over 64 bytes aligned to more than 16 bytes: clang caps the byval
+  alignment at 16; this passes the type's own alignment.
+- Vectors wider than 128 bits are implemented but untested: GCC and clang
+  disagree on their layout (clang aligns a 256-bit generic vector to 32 bytes,
+  GCC to 16).
+- @cVaArg of aggregates in Zig variadic functions is unchanged.
+
+Verification
+============
+Native powerpc64le (POWER9), zig 0.15.2 against LLVM 20.1.8.
+
+test/c_abi (main.zig + cfuncs.c; Debug, ReleaseSafe and ReleaseFast all give
+the same counts):
+  unpatched, as shipped:                  27 passed, 40 skipped, 0 failed
+  unpatched, powerpc64 skips removed:     29 passed, 12 failed, 16 crashed,
+                                          10 skipped (other targets)
+  patched, original main.zig:             27 passed, 40 skipped, 0 failed
+  patched, with this patch's main.zig:    56 passed, 11 skipped, 0 failed
+This patch removes the powerpc64 skips from 29 tests; "C ABI long double"
+stays skipped on powerpc (see Not covered).
+
+A generated ELFv2 conformance suite, checked against clang: 70 shapes, each
+passed as two arguments, after 7 integer words (split between r10 and the
+stack), after 8 (wholly on the stack), after 12 doubles (f13 and the stack),
+between i8/double/i16 scalars, and returned; 840 functions, 8680 checked
+lines. Every callee prints what it received field by field and every caller
+prints what came back. Shapes: integer aggregates of 1-8, 12, 16, 17, 24, 40,
+64, 65, 72 and 100 bytes; libghostty-vt's GhosttyPoint (int tag, then a union
+of a coordinate and uint64_t[2]) and GhosttyGridRef; __int128-aligned
+aggregates of 16, 32, 48 and 80 bytes; float and double HFAs of 1-9 members;
+mixed int/float; nested structs; arrays of floats and of structs; HFA and
+non-HFA unions; 64- and 128-bit generic vectors and a vector HFA.
+  oracle: everything built by clang 22.1.8 -O2 -mcpu=power9. GCC 16.1.1
+  gives identical output built alone, as caller of clang, and as callee of
+  clang: 70/70 shapes each.
+  unpatched zig: 24/70 shapes identical, in every pairing.
+  patched zig: 70/70 in every pairing: clang calls Zig, GCC calls Zig, Zig
+  calls clang, Zig calls Zig; Debug and ReleaseFast; the Zig side built as
+  objects and as shared libraries.
+
+herdr 0.8.2 (Rust) linking libghostty-vt built by this zig: server and client
+run in a pty, a pane spawns, renders and takes input, and both exit cleanly.
+ghostty_terminal_grid_ref() called directly from C returns the right cells
+and rejects an out-of-range point; the same program linked against the
+libghostty-vt.a from the unpatched zig segfaults.
+
+--- a/src/codegen/llvm.zig
++++ b/src/codegen/llvm.zig
+@@ -27,6 +27,7 @@
+ const arm_c_abi = @import("arm/abi.zig");
+ const riscv_c_abi = @import("../arch/riscv64/abi.zig");
+ const mips_c_abi = @import("mips/abi.zig");
++const powerpc_c_abi = @import("powerpc/abi.zig");
+ const dev = @import("../dev.zig");
+ 
+ const target_util = @import("../target.zig");
+@@ -1420,6 +1421,22 @@
+                         else
+                             try wip.load(.normal, param_llvm_ty, arg_ptr, alignment, ""));
+                     },
++                    .int_array => |arr| {
++                        const param_ty = Type.fromInterned(fn_info.param_types.get(ip)[it.zig_index - 1]);
++                        const param_llvm_ty = try o.lowerType(pt, param_ty);
++                        const param = wip.arg(llvm_arg_i);
++                        llvm_arg_i += 1;
++
++                        // The array can be larger than the parameter type.
++                        const alignment = param_ty.abiAlignment(zcu).max(.fromByteUnits(arr.bits / 8)).toLlvm();
++                        const arg_ptr = try buildAllocaInner(&wip, param.typeOfWip(&wip), alignment, target);
++                        _ = try wip.store(.normal, param, arg_ptr, alignment);
++
++                        args.appendAssumeCapacity(if (isByRef(param_ty, zcu))
++                            arg_ptr
++                        else
++                            try wip.load(.normal, param_llvm_ty, arg_ptr, alignment, ""));
++                    },
+                     .i32_array, .i64_array => {
+                         const param_ty = Type.fromInterned(fn_info.param_types.get(ip)[it.zig_index - 1]);
+                         const param_llvm_ty = try o.lowerType(pt, param_ty);
+@@ -2869,6 +2886,7 @@
+                 .float_array,
+                 .i32_array,
+                 .i64_array,
++                .int_array,
+                 => continue,
+ 
+                 .slice => unreachable, // extern functions do not support slice types.
+@@ -3548,9 +3566,12 @@
+             },
+             .float_array => |count| {
+                 const param_ty = Type.fromInterned(fn_info.param_types.get(ip)[it.zig_index - 1]);
+-                const float_ty = try o.lowerType(pt, aarch64_c_abi.getFloatArrayType(param_ty, zcu).?);
++                const float_ty = try o.lowerType(pt, floatArrayElemType(fn_info.cc, param_ty, zcu));
+                 try llvm_params.append(o.gpa, try o.builder.arrayType(count, float_ty));
+             },
++            .int_array => |arr| {
++                try llvm_params.append(o.gpa, try o.builder.arrayType(arr.len, try o.builder.intType(arr.bits)));
++            },
+             .i32_array, .i64_array => |arr_len| {
+                 try llvm_params.append(o.gpa, try o.builder.arrayType(arr_len, switch (lowering) {
+                     .i32_array => .i32,
+@@ -5393,12 +5414,37 @@
+                     llvm_arg = ptr;
+                 }
+ 
+-                const float_ty = try o.lowerType(pt, aarch64_c_abi.getFloatArrayType(arg_ty, zcu).?);
++                const float_ty = try o.lowerType(pt, floatArrayElemType(fn_info.cc, arg_ty, zcu));
+                 const array_ty = try o.builder.arrayType(count, float_ty);
+ 
+                 const loaded = try self.wip.load(.normal, array_ty, llvm_arg, alignment, "");
+                 try llvm_args.append(loaded);
+             },
++            .int_array => |arr| {
++                const arg = args[it.zig_index - 1];
++                const arg_ty = self.typeOf(arg);
++                const llvm_arg = try self.resolveInst(arg);
++                const array_ty = try o.builder.arrayType(arr.len, try o.builder.intType(arr.bits));
++                const arg_alignment = arg_ty.abiAlignment(zcu);
++                const alignment = arg_alignment.max(.fromByteUnits(arr.bits / 8)).toLlvm();
++                // Loading the array straight from the argument would read past
++                // its end when its size is not a multiple of the element size.
++                const tmp = try self.buildAlloca(array_ty, alignment);
++                if (isByRef(arg_ty, zcu)) {
++                    _ = try self.wip.callMemCpy(
++                        tmp,
++                        alignment,
++                        llvm_arg,
++                        arg_alignment.toLlvm(),
++                        try o.builder.intValue(try o.lowerType(pt, Type.usize), arg_ty.abiSize(zcu)),
++                        .normal,
++                        self.disable_intrinsics,
++                    );
++                } else {
++                    _ = try self.wip.store(.normal, llvm_arg, tmp, alignment);
++                }
++                try llvm_args.append(try self.wip.load(.normal, array_ty, tmp, alignment, ""));
++            },
+             .i32_array, .i64_array => |arr_len| {
+                 const elem_size: u8 = if (lowering == .i32_array) 32 else 64;
+                 const arg = args[it.zig_index - 1];
+@@ -5446,6 +5492,7 @@
+                 .float_array,
+                 .i32_array,
+                 .i64_array,
++                .int_array,
+                 => continue,
+ 
+                 .slice => {
+@@ -12171,10 +12218,19 @@
+             .memory, .i32_array => true,
+             .byval => false,
+         },
++        .powerpc64_elf_v2 => powerpc_c_abi.classifyType(return_type, zcu, .ret) == .memory,
+         else => false, // TODO: investigate other targets/callconvs
+     };
+ }
+ 
++/// The element type of a `float_array` lowering.
++fn floatArrayElemType(cc: std.builtin.CallingConvention, ty: Type, zcu: *Zcu) Type {
++    return switch (cc) {
++        .powerpc64_elf_v2 => powerpc_c_abi.homogeneousAggregate(ty, zcu).?.base,
++        else => aarch64_c_abi.getFloatArrayType(ty, zcu).?,
++    };
++}
++
+ fn firstParamSRetSystemV(ty: Type, zcu: *Zcu, target: *const std.Target) bool {
+     const class = x86_64_abi.classifySystemV(ty, zcu, target, .ret);
+     if (class[0] == .memory) return true;
+@@ -12247,6 +12303,22 @@
+             .direct => |scalar_ty| return o.lowerType(pt, scalar_ty),
+             .indirect => return .void,
+         },
++        .powerpc64_elf_v2 => switch (powerpc_c_abi.classifyType(return_type, zcu, .ret)) {
++            .memory => return .void,
++            .byval => return o.lowerType(pt, return_type),
++            .abi_sized_int => return o.builder.intType(@intCast(return_type.abiSize(zcu) * 8)),
++            // r3 and r4. Clang uses { i64, i64 }; narrowing the second word to
++            // the bytes the aggregate has keeps the conversion in bounds.
++            .double_integer => return o.builder.structType(.normal, &.{
++                .i64,
++                try o.builder.intType(@intCast((return_type.abiSize(zcu) - 8) * 8)),
++            }),
++            .float_array => |len| return o.builder.arrayType(
++                len,
++                try o.lowerType(pt, powerpc_c_abi.homogeneousAggregate(return_type, zcu).?.base),
++            ),
++            .int_array, .memory_byval => unreachable,
++        },
+         // TODO investigate other callconvs
+         else => return o.lowerType(pt, return_type),
+     }
+@@ -12358,8 +12430,13 @@
+         float_array: u8,
+         i32_array: u8,
+         i64_array: u8,
++        /// An array of integers that can be larger than the parameter type;
++        /// callers copy the argument into a temporary of the array type.
++        int_array: IntArray,
+     };
+ 
++    const IntArray = struct { len: u8, bits: u8 };
++
+     pub fn next(it: *ParamTypeIterator) Allocator.Error!?Lowering {
+         if (it.zig_index >= it.fn_info.param_types.len) return null;
+         const ip = &it.pt.zcu.intern_pool;
+@@ -12515,6 +12592,22 @@
+                     return .byref;
+                 },
+             },
++            .powerpc64_elf_v2 => {
++                it.zig_index += 1;
++                it.llvm_index += 1;
++                switch (powerpc_c_abi.classifyType(ty, zcu, .arg)) {
++                    .byval => return .byval,
++                    .abi_sized_int => return .abi_sized_int,
++                    .float_array => |len| return .{ .float_array = len },
++                    .int_array => |arr| return .{ .int_array = .{ .len = arr.len, .bits = arr.bits } },
++                    .memory_byval => {
++                        it.byval_attr = true;
++                        return .byref;
++                    },
++                    .memory => return .byref_mut,
++                    .double_integer => unreachable,
++                }
++            },
+             // TODO investigate other callconvs
+             else => {
+                 it.zig_index += 1;
+--- /dev/null
++++ b/src/codegen/powerpc/abi.zig
+@@ -0,0 +1,161 @@
++//! C calling convention classification for the 64-bit PowerPC ELF V2 ABI
++//! (powerpc64le-linux). Follows clang's PPC64_SVR4_ABIInfo for the ELFv2 kind
++//! (clang/lib/CodeGen/Targets/PPC.cpp), which is what GCC and rustc also do.
++
++const std = @import("std");
++const assert = std.debug.assert;
++const Type = @import("../../Type.zig");
++const Zcu = @import("../../Zcu.zig");
++
++pub const Context = enum { ret, arg };
++
++pub const Class = union(enum) {
++    /// Passed or returned as its own LLVM type: integers up to 128 bits, floats,
++    /// pointers, enums, packed containers and 128-bit vectors.
++    byval,
++    /// An integer as wide as the type: aggregates of at most 8 bytes, and
++    /// vectors narrower than 128 bits.
++    abi_sized_int,
++    /// Homogeneous floating-point or vector aggregate with this many members,
++    /// lowered as `[n x base]` (see `homogeneousAggregate`). Arguments go in
++    /// f1-f13 or v2-v13, return values in f1-f8 or v2-v9.
++    float_array: u8,
++    /// Argument only: an aggregate of 9 to 64 bytes, lowered as an array of
++    /// `len` integers of `bits` bits (64, or 128 when the aggregate is aligned
++    /// to 16 bytes or more). The array may be larger than the aggregate.
++    int_array: IntArray,
++    /// Return value only: an aggregate of 9 to 16 bytes, in r3 and r4.
++    double_integer,
++    /// Argument only: an aggregate larger than 64 bytes or an integer wider
++    /// than 128 bits, copied into the parameter save area (LLVM `byval`).
++    memory_byval,
++    /// Argument: a vector wider than 128 bits, passed as a pointer to a copy.
++    /// Return value: anything returned through a hidden pointer in r3.
++    memory,
++};
++
++pub const IntArray = struct { len: u8, bits: u8 };
++
++/// Most members a homogeneous aggregate may have; each member takes one
++/// floating-point or vector register.
++const max_hfa_members = 8;
++
++pub fn classifyType(ty: Type, zcu: *Zcu, ctx: Context) Class {
++    assert(ty.hasRuntimeBitsIgnoreComptime(zcu));
++    switch (ty.zigTypeTag(zcu)) {
++        .int, .@"enum" => {
++            if (ty.intInfo(zcu).bits > 128) return switch (ctx) {
++                .arg => .memory_byval,
++                .ret => .memory,
++            };
++            return .byval;
++        },
++        .bool, .error_set, .float, .pointer, .optional => return .byval,
++        .vector => {
++            const bits = ty.bitSize(zcu);
++            if (bits > 128) return .memory;
++            if (bits == 128 or ty.childType(zcu).zigTypeTag(zcu) == .bool) return .byval;
++            if (ty.abiSize(zcu) * 8 != bits) return .byval;
++            return .abi_sized_int;
++        },
++        .@"struct", .@"union" => {
++            if (ty.containerLayout(zcu) == .@"packed") return .byval;
++            return classifyAggregate(ty, zcu, ctx);
++        },
++        .array => return classifyAggregate(ty, zcu, ctx),
++        else => unreachable,
++    }
++}
++
++fn classifyAggregate(ty: Type, zcu: *Zcu, ctx: Context) Class {
++    if (homogeneousAggregate(ty, zcu)) |hfa| return .{ .float_array = hfa.count };
++    const size = ty.abiSize(zcu);
++    if (size <= 8) return .abi_sized_int;
++    switch (ctx) {
++        .ret => return if (size <= 16) .double_integer else .memory,
++        .arg => {
++            if (size > 64) return .memory_byval;
++            // Aggregates aligned to 16 bytes or more are passed as 128-bit
++            // words, which LLVM aligns to an even parameter word.
++            const word_bytes: u64 = if (ty.abiAlignment(zcu).compare(.gte, .@"16")) 16 else 8;
++            return .{ .int_array = .{
++                .len = @intCast(std.math.divCeil(u64, size, word_bytes) catch unreachable),
++                .bits = @intCast(word_bytes * 8),
++            } };
++        },
++    }
++}
++
++pub const HomogeneousAggregate = struct {
++    /// `f32`, `f64`, `f128` or a 128-bit vector type.
++    base: Type,
++    count: u8,
++};
++
++/// A struct, union or array whose members, after flattening nested structs,
++/// unions and arrays, all have the same floating-point type, or are all
++/// 128-bit vectors, with no padding and at most 8 members.
++pub fn homogeneousAggregate(ty: Type, zcu: *Zcu) ?HomogeneousAggregate {
++    var base: ?Type = null;
++    const count = countMembers(ty, zcu, &base) orelse return null;
++    const base_ty = base orelse return null;
++    if (count == 0 or count > max_hfa_members) return null;
++    if (base_ty.abiSize(zcu) * count != ty.abiSize(zcu)) return null;
++    return .{ .base = base_ty, .count = @intCast(count) };
++}
++
++fn countMembers(ty: Type, zcu: *Zcu, base: *?Type) ?u64 {
++    const ip = &zcu.intern_pool;
++    switch (ty.zigTypeTag(zcu)) {
++        .@"struct" => {
++            if (ty.containerLayout(zcu) == .@"packed") return null;
++            var count: u64 = 0;
++            for (0..ty.structFieldCount(zcu)) |field_index| {
++                const field_ty = ty.fieldType(field_index, zcu);
++                if (!field_ty.hasRuntimeBitsIgnoreComptime(zcu)) continue;
++                count += countMembers(field_ty, zcu, base) orelse return null;
++                if (count > max_hfa_members) return null;
++            }
++            return count;
++        },
++        .@"union" => {
++            if (ty.containerLayout(zcu) == .@"packed") return null;
++            const union_obj = zcu.typeToUnion(ty).?;
++            var count: u64 = 0;
++            for (union_obj.field_types.get(ip)) |field_ty_index| {
++                const field_ty: Type = .fromInterned(field_ty_index);
++                if (!field_ty.hasRuntimeBitsIgnoreComptime(zcu)) continue;
++                count = @max(count, countMembers(field_ty, zcu, base) orelse return null);
++            }
++            return count;
++        },
++        .array => {
++            const len = ty.arrayLen(zcu);
++            if (len == 0) return null;
++            const elem_count = countMembers(ty.childType(zcu), zcu, base) orelse return null;
++            return std.math.mul(u64, elem_count, len) catch null;
++        },
++        .float => switch (ty.floatBits(zcu.getTarget())) {
++            32, 64, 128 => return matchBase(ty, zcu, base),
++            else => return null,
++        },
++        .vector => {
++            if (ty.bitSize(zcu) != 128 or ty.childType(zcu).zigTypeTag(zcu) == .bool) return null;
++            return matchBase(ty, zcu, base);
++        },
++        else => return null,
++    }
++}
++
++/// Floating-point members must all be the same type. Vector members only need
++/// the same size (clang treats all 128-bit vectors as one base type).
++fn matchBase(ty: Type, zcu: *Zcu, base: *?Type) ?u64 {
++    const base_ty = base.* orelse {
++        base.* = ty;
++        return 1;
++    };
++    const is_vector = ty.zigTypeTag(zcu) == .vector;
++    if ((base_ty.zigTypeTag(zcu) == .vector) != is_vector) return null;
++    if (base_ty.abiSize(zcu) != ty.abiSize(zcu)) return null;
++    return 1;
++}
+--- a/test/c_abi/main.zig
++++ b/test/c_abi/main.zig
+@@ -483,7 +483,7 @@
+ 
+ test "C ABI struct{u32,union{u32,struct{u32,u32}}}" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     const s = c_ret_struct_u32_union_u32_u32u32();
+@@ -502,7 +502,7 @@
+ 
+ test "C ABI struct i32 i32" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch == .riscv32) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+@@ -534,7 +534,7 @@
+ 
+ test "C ABI big struct" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     const s = BigStruct{
+@@ -595,7 +595,7 @@
+ 
+ test "C ABI medium struct of ints and floats" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     const s = MedStructMixed{
+@@ -628,7 +628,7 @@
+ test "C ABI small struct of ints" {
+     if (builtin.cpu.arch == .x86) return error.SkipZigTest;
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch == .aarch64_be) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+@@ -663,7 +663,7 @@
+ 
+ test "C ABI medium struct of ints" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     const s = MedStructInts{
+@@ -742,7 +742,7 @@
+ test "C ABI split struct of ints" {
+     if (builtin.cpu.arch == .x86) return error.SkipZigTest;
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     const s = SplitStructInt{
+@@ -770,7 +770,7 @@
+ test "C ABI split struct of ints and floats" {
+     if (builtin.cpu.arch == .x86) return error.SkipZigTest;
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     const s = SplitStructMixed{
+@@ -798,7 +798,7 @@
+ 
+ test "C ABI sret and byval together" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     const s = BigStruct{
+@@ -851,7 +851,7 @@
+ 
+ test "C ABI structs of floats as parameter" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     const v3 = Vector3{
+@@ -891,7 +891,7 @@
+ }
+ 
+ test "C ABI structs of ints as multiple parameters" {
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+ 
+@@ -1044,7 +1044,7 @@
+ test "Struct with array as padding." {
+     if (builtin.cpu.arch == .x86) return error.SkipZigTest;
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     c_struct_with_array(.{ .a = 1, .padding = undefined, .b = 2 });
+@@ -1098,7 +1098,6 @@
+ 
+ test "small simd vector" {
+     if (builtin.cpu.arch == .x86) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC64()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     c_small_vec(.{ 1, 2 });
+@@ -1115,7 +1114,6 @@
+ 
+ test "medium simd vector" {
+     if (builtin.zig_backend == .stage2_x86_64 and !comptime builtin.cpu.has(.x86, .avx)) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC64()) return error.SkipZigTest;
+ 
+     c_medium_vec(.{ 1, 2, 3, 4 });
+ 
+@@ -1135,7 +1133,6 @@
+     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
+ 
+     if (builtin.cpu.arch.isMIPS64() and builtin.mode != .Debug) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC64()) return error.SkipZigTest;
+     if (builtin.zig_backend == .stage2_llvm and builtin.cpu.arch == .x86_64 and builtin.os.tag == .macos and builtin.mode != .Debug) return error.SkipZigTest;
+ 
+     c_big_vec(.{ 1, 2, 3, 4, 5, 6, 7, 8 });
+@@ -1161,7 +1158,7 @@
+ extern fn c_ret_vector_4_float() Vector4Float;
+ 
+ test "float simd vectors" {
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     {
+@@ -5469,28 +5466,28 @@
+ test "DC: Zig passes to C" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isRISCV()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectOk(c_assert_DC(.{ .v1 = -0.25, .v2 = 15 }));
+ }
+ test "DC: Zig returns to C" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isRISCV()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectOk(c_assert_ret_DC());
+ }
+ test "DC: C passes to Zig" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isRISCV()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectOk(c_send_DC());
+ }
+ test "DC: C returns to Zig" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isRISCV()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectEqual(DC{ .v1 = -0.25, .v2 = 15 }, c_ret_DC());
+ }
+@@ -5516,13 +5513,13 @@
+ test "CFF: Zig passes to C" {
+     if (builtin.target.cpu.arch == .x86) return error.SkipZigTest;
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectOk(c_assert_CFF(.{ .v1 = 39, .v2 = 0.875, .v3 = 1.0 }));
+ }
+ test "CFF: Zig returns to C" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectOk(c_assert_ret_CFF());
+ }
+@@ -5531,7 +5528,7 @@
+     if (builtin.cpu.arch.isRISCV() and builtin.mode != .Debug) return error.SkipZigTest;
+     if (builtin.cpu.arch == .aarch64 and builtin.mode != .Debug) return error.SkipZigTest;
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
+     try expectOk(c_send_CFF());
+@@ -5540,7 +5537,7 @@
+     if (builtin.cpu.arch == .aarch64 and builtin.mode != .Debug) return error.SkipZigTest;
+     if (builtin.cpu.arch.isRISCV() and builtin.mode != .Debug) return error.SkipZigTest;
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectEqual(CFF{ .v1 = 39, .v2 = 0.875, .v3 = 1.0 }, c_ret_CFF());
+ }
+@@ -5565,25 +5562,25 @@
+ 
+ test "PD: Zig passes to C" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectOk(c_assert_PD(.{ .v1 = null, .v2 = 0.5 }));
+ }
+ test "PD: Zig returns to C" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectOk(c_assert_ret_PD());
+ }
+ test "PD: C passes to Zig" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectOk(c_send_PD());
+ }
+ test "PD: C returns to Zig" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+     try expectEqual(PD{ .v1 = null, .v2 = 0.5 }, c_ret_PD());
+ }
+@@ -5778,7 +5775,7 @@
+ extern fn stdcall_coord2(Coord2, Coord2, Coord2) callconv(stdcall_callconv) Coord2;
+ test "Stdcall ABI structs" {
+     if (builtin.cpu.arch.isMIPS64()) return error.SkipZigTest;
+-    if (builtin.cpu.arch.isPowerPC()) return error.SkipZigTest;
++    if (builtin.cpu.arch.isPowerPC32()) return error.SkipZigTest;
+     if (builtin.cpu.arch == .aarch64_be) return error.SkipZigTest;
+     if (builtin.cpu.arch.isLoongArch()) return error.SkipZigTest;
+ 
