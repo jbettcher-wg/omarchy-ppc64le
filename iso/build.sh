@@ -101,7 +101,12 @@ rm -rf "$inst"; mkdir -p "$inst" "$rendered/airootfs/usr/local/bin"
 cp -a "$PROJECT"/installer/{p9-install,lib,bin,share,firstboot} "$inst/"
 ln -sf ../share/omarchy-p9/p9-install "$rendered/airootfs/usr/local/bin/p9-install"
 cp -a "$PROJECT/installer/configurator/p9-configurator" "$rendered/airootfs/root/p9-configurator"
-chmod 755 "$rendered/airootfs/root/p9-configurator" "$inst/p9-install"
+# Omarchy's install dashboard: p9-configurator runs p9-install under it, so the
+# install shows upstream's centered progress screen and Reboot Now prompt
+# instead of raw pacstrap output.
+cp -a "$PROJECT/installer/configurator/omarchy-install-dashboard" "$rendered/airootfs/usr/local/bin/omarchy-install-dashboard"
+chmod 755 "$rendered/airootfs/root/p9-configurator" "$inst/p9-install" \
+  "$rendered/airootfs/usr/local/bin/omarchy-install-dashboard"
 # Into share/, not $inst: p9-install reads $P9_SHARE/repo-servers.conf and
 # P9_SHARE is $P9_ROOT/share. Written one level up it is simply never found,
 # and the installer silently falls back to its built-in default.

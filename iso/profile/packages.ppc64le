@@ -129,6 +129,11 @@ omarchy
 # omarchy-theme-power9  the POWER9 wordmark the greeter draws, plus the
 #                       colours and wallpapers for the installed system.
 omarchy-theme-power9
+# jq, ttfx  omarchy-install-dashboard, which p9-configurator runs
+#           p9-install under: jq reads the install state file, ttfx
+#           animates the logo on the finish screen.
+jq
+ttfx
 # tzdata -- setup-form.sh asks the timezone with
 #           `timedatectl list-timezones | gum choose`, which enumerates
 #           /usr/share/zoneinfo. Without it the list is empty and the

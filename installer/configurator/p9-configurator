@@ -554,6 +554,32 @@ p9_confirm_and_install() {
   # one; virtio disks without a serial= are the common case in a VM.
   [[ -n $serial ]] && args+=(--serial "$serial")
 
+  # Run p9-install under Omarchy's install dashboard, the way upstream's
+  # .automated_script.sh runs omarchy-iso-install: the installer becomes a
+  # non-interactive child whose output goes to a log, and the console shows the
+  # centered progress screen and, at the end, the Reboot Now prompt.
+  #
+  # Two logs. The dashboard's holds what p9-install prints; p9-install's own
+  # also holds every run() command's output, so that is the tail worth showing
+  # when something fails.
+  local dashboard=/usr/local/bin/omarchy-install-dashboard
+  if [[ -x $dashboard ]]; then
+    export OMARCHY_DASHBOARD_TTY="$(tty)"
+    export OMARCHY_DASHBOARD_LOGO="$LOGO_PATH"
+    export P9_STATE_FILE=/run/omarchy-install/state.json
+    export OMARCHY_EXPECTED_PACKAGES_FILE=/run/omarchy-install/expected-packages
+    export P9_LOG_FILE=/var/log/p9-install.log
+    export OMARCHY_FAILURE_TAIL_LOG="$P9_LOG_FILE"
+    # Deferred installs have no owner at the keyboard to celebrate with: the
+    # dashboard skips the finish screen and reboots straight into first-boot
+    # setup, as upstream does.
+    if $defer_provisioning; then export OMARCHY_UI_DEFER_PROVISIONING=yes; fi
+    mkdir -p /run/omarchy-install
+    rm -f "$P9_STATE_FILE" "$OMARCHY_EXPECTED_PACKAGES_FILE"
+    exec "$dashboard" /var/log/omarchy-install.log "$P9_STATE_FILE" -- \
+      "$P9_INSTALL" "${args[@]}"
+  fi
+
   exec "$P9_INSTALL" "${args[@]}"
 }
 

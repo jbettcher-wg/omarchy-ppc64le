@@ -22,7 +22,9 @@ shift
 INSTALL_CMD=("$@")
 
 TTY_PATH="${OMARCHY_DASHBOARD_TTY:-/dev/tty}"
-LOGO_PATH="${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt"
+# ppc64le: OMARCHY_DASHBOARD_LOGO lets p9-configurator hand over the same
+# POWER9 wordmark its greeter drew, so the install screen matches it.
+LOGO_PATH="${OMARCHY_DASHBOARD_LOGO:-${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt}"
 
 # Autoinstall has no one at the keyboard, and every prompt this dashboard owns
 # reads from the TTY, so each would hang forever. Suppress them here rather than
@@ -150,7 +152,10 @@ LOGO_WIDTH="$(logo_width)"
 LOGO_HEIGHT="$(logo_height)"
 (( LOGO_WIDTH > 0 )) || LOGO_WIDTH=81
 (( LOGO_HEIGHT > 0 )) || LOGO_HEIGHT=1
-CONTENT_WIDTH="$LOGO_WIDTH"
+# ppc64le: never narrower than upstream's 81-column logo. The POWER9 wordmark
+# is 51 columns, and centering the tips against that pushes the long ones
+# several columns right of the logo.
+CONTENT_WIDTH=$(( LOGO_WIDTH > 81 ? LOGO_WIDTH : 81 ))
 # Rows the progress screen occupies: logo, blank, title, blank, bar, blank, tip.
 PROGRESS_HEIGHT=$((LOGO_HEIGHT + 6))
 TOP_ROW=1
@@ -182,12 +187,20 @@ FINISH_TOP_ROW=2
 # finishes the band.
 EXPECTED_PACKAGES_FILE="${OMARCHY_EXPECTED_PACKAGES_FILE:-/usr/share/omarchy-iso/expected-packages}"
 PKG_TOTAL=0
-if [[ -r $EXPECTED_PACKAGES_FILE ]]; then
-  read -r PKG_TOTAL _ <"$EXPECTED_PACKAGES_FILE" 2>/dev/null || PKG_TOTAL=0
-fi
-[[ $PKG_TOTAL =~ ^[0-9]+$ ]] || PKG_TOTAL=0
-# A wrong denominator is worse than none: it never triggers the fallback.
-(( PKG_TOTAL < 300 || PKG_TOTAL > 5000 )) && PKG_TOTAL=0
+# ppc64le: a function, re-read at each phase change while still unknown.
+# p9-install writes the file after resolving the package set, which is after
+# this process has started.
+load_pkg_total() {
+  PKG_TOTAL=0
+  if [[ -r $EXPECTED_PACKAGES_FILE ]]; then
+    read -r PKG_TOTAL _ <"$EXPECTED_PACKAGES_FILE" 2>/dev/null || PKG_TOTAL=0
+  fi
+  [[ $PKG_TOTAL =~ ^[0-9]+$ ]] || PKG_TOTAL=0
+  # A wrong denominator is worse than none: it never triggers the fallback.
+  (( PKG_TOTAL < 300 || PKG_TOTAL > 5000 )) && PKG_TOTAL=0
+  return 0
+}
+load_pkg_total
 
 PKG_BONUS_MAX_PM=100   # cap on how far the bar may run ahead of the count
 PKG_TAIL_PM=40         # band held back so a stalled bar has somewhere to go
@@ -327,6 +340,7 @@ install_progress() {
     PKG_SEEN=0
     PKG_BONUS=0
     PKG_LAST_CHANGE=$NOW
+    (( PKG_TOTAL > 0 )) || load_pkg_total
   fi
 
   # Bands in per-mille, plus tau. The tail bands are wide relative to what they

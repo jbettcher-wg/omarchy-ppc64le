@@ -227,6 +227,7 @@ if ! (: 2>/dev/null >>"$P9_LOG_FILE"); then
 fi
 
 # ------------------------------------------------------------- preflight -----
+phase "Starting installation"
 step "Preflight"
 ((P9_DRY_RUN)) || require_root
 require_tools lsblk blkid findmnt awk sed pacman
@@ -302,6 +303,7 @@ if [[ $P9_REPO_SIGLEVEL == *TrustAll* ]]; then
 fi
 
 # ------------------------------------------------- pacman.conf + manifest ----
+phase "Preparing live environment"
 step "Resolving the package set"
 render_pacman_conf "$P9_WORKDIR/pacman.conf" 1
 # --pacstrap-conf lets the ISO install from its own offline mirror; the file
@@ -317,8 +319,15 @@ P9_PACKAGES+=("$P9_KERNEL_PKG")
 # install finished with no bootloader and a disk SLOF could not boot.
 [[ $P9_PLATFORM == pseries ]] && P9_PACKAGES+=(grub)
 resolve_packages "$P9_PACSTRAP_CONF" "${P9_PACKAGES[@]}"
+# The dashboard's package bar needs the number pacstrap will actually install,
+# dependencies included. resolved.txt is exactly that list, so hand it over
+# rather than keeping a second count in the ISO that drifts from the repo.
+if [[ -n ${OMARCHY_EXPECTED_PACKAGES_FILE:-} && -r $P9_WORKDIR/resolved.txt ]]; then
+  wc -l <"$P9_WORKDIR/resolved.txt" >"$OMARCHY_EXPECTED_PACKAGES_FILE" 2>/dev/null || true
+fi
 
 # -------------------------------------------------------------- the disk -----
+phase "Preparing install target"
 step "Target: $P9_DISK"
 # The guard reads and never writes, so it runs under --dry-run too -- checking
 # "would this device be refused?" is most of what a dry run is for. The cost is
@@ -336,6 +345,7 @@ read_back_uuids
 mount_target "$P9_MNT"
 
 # --------------------------------------------------------------- pacstrap ----
+phase "Installing Arch + Omarchy"
 step "pacstrap"
 run_loud pacstrap -C "$P9_PACSTRAP_CONF" -K "$P9_MNT" "${P9_PACKAGES[@]}" ||
   die "pacstrap failed -- see $P9_LOG_FILE"
@@ -347,12 +357,14 @@ if ((!P9_DRY_RUN)); then
 fi
 
 # keep the configuration the install actually used
+phase "Configuring system"
 render_pacman_conf "$P9_MNT/etc/pacman.conf" 0 1
 
 write_fstab "$P9_MNT"
 configure_system "$P9_MNT"
 configure_initramfs "$P9_MNT"
 configure_boot "$P9_MNT"
+phase "Finalizing user"
 configure_users "$P9_MNT"
 if ((P9_STAGE_FIRSTBOOT)); then stage_firstboot "$P9_MNT"; fi
 
@@ -375,6 +387,9 @@ First boot runs, in order:
   omarchy-provision-owner.service Omarchy's own account wizard on tty1
 EOF
   umount_target "$P9_MNT"
+  # finished_at is what tells the dashboard to fill the bar, show the install
+  # time and ask "Reboot Now"; it owns the reboot from here.
+  phase "Installation complete" "$(date +%s)"
   if ((P9_REBOOT)); then
     log "rebooting"
     systemctl reboot

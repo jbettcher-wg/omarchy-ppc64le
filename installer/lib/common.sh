@@ -14,6 +14,53 @@ step() {
   printf '\n[%s] == %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "$P9_LOG_FILE" >&2
 }
 
+# Omarchy's install dashboard (configurator/omarchy-install-dashboard) draws
+# its progress bar from a JSON state file, the same one upstream's orchestrator
+# writes. p9-install only writes it when the configurator hands it a path: a
+# dry run on the build host has no dashboard and no /run/omarchy-install.
+#
+# The names are the dashboard's own phase names, so each lands in the band the
+# dashboard already allots it -- "Installing Arch + Omarchy" is the one it
+# drives from the package count rather than the clock.
+P9_STATE_FILE="${P9_STATE_FILE:-}"
+P9_PHASES=(
+  "Starting installation"
+  "Preparing live environment"
+  "Preparing install target"
+  "Installing Arch + Omarchy"
+  "Configuring system"
+  "Finalizing user"
+)
+P9_STARTED_AT=$(date +%s)
+
+phase() {
+  local name="$1" finished="${2:-null}" i index=-1
+  [[ -n $P9_STATE_FILE ]] && command -v jq >/dev/null 2>&1 || return 0
+  for i in "${!P9_PHASES[@]}"; do
+    [[ ${P9_PHASES[$i]} == "$name" ]] && index=$i
+  done
+  mkdir -p "$(dirname "$P9_STATE_FILE")" 2>/dev/null || return 0
+  # Written aside and renamed, so the dashboard's 0.5s poll never reads half.
+  jq -n \
+    --argjson started_at "$P9_STARTED_AT" \
+    --argjson phase_started_at "$(date +%s)" \
+    --arg current_phase "$name" \
+    --arg target "$P9_MNT" \
+    --argjson current_index "$index" \
+    --argjson total_phases "${#P9_PHASES[@]}" \
+    --argjson finished_at "$finished" \
+    '{
+      started_at: $started_at,
+      phase_started_at: $phase_started_at,
+      current_phase: $current_phase,
+      target: $target,
+      current_index: $current_index,
+      total_phases: $total_phases
+    } + if $finished_at == null then {} else {finished_at: $finished_at} end' \
+    >"$P9_STATE_FILE.tmp" 2>/dev/null &&
+    mv -f "$P9_STATE_FILE.tmp" "$P9_STATE_FILE" || true
+}
+
 warn() {
   printf '[%s] WARNING: %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "$P9_LOG_FILE" >&2
 }
