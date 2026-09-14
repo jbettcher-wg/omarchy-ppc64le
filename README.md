@@ -188,4 +188,4 @@ are upstreamable or a local workaround.
 
 Maintained by Jordan Bettcher.
 
-![The power9 theme wallpaper, with cliamp](docs/images/theme-cliamp.png)
+![The power9 theme wallpaper, with cliamp playing Omarchy Radio](docs/images/theme-cliamp.png)
