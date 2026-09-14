@@ -18,7 +18,7 @@ kernels; upstreamable once proven.
  	select HAVE_SETUP_PER_CPU_AREA		if PPC64
 --- a/scripts/generate_rust_target.rs
 +++ b/scripts/generate_rust_target.rs
-@@ -262,6 +262,27 @@
+@@ -262,6 +262,31 @@
          panic!("loongarch uses the builtin rustc loongarch64-unknown-none-softfloat target");
      } else if cfg.has("S390") {
          panic!("s390 uses the builtin rustc s390x-unknown-none-softfloat target");
@@ -32,6 +32,10 @@ kernels; upstreamable once proven.
 +            "data-layout",
 +            "e-m:e-Fn32-i64:64-i128:128-n32:64-S128-v256:256:256-v512:512:512",
 +        );
++        // rustc checks that the LLVM ABI name and cfg(target_abi) agree for
++        // powerpc64le ("invalid PowerPC64 little-endian ABI name and
++        // `cfg(target_abi)` combination"); its own builtin target sets both.
++        ts.push("abi", "elfv2");
 +        ts.push("llvm-abiname", "elfv2");
 +        // Kernel C is built -msoft-float -mno-altivec -mno-vsx; Rust must not
 +        // touch FP or vector state either.
