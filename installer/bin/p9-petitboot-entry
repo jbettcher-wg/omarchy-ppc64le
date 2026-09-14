@@ -121,7 +121,13 @@ emit_entry() {
   printf '}\n'
 }
 
-block=""
+# GRUB's own menu has no timeout unless the config sets one: with none, a
+# pSeries guest (SLOF -> GRUB from the PReP partition) waits at the menu
+# forever for a keypress on hvc0, and the virtio display never comes up. Found
+# on the POWER8 builder VM. Petitboot on PowerNV applies its own timeout, so
+# these lines change nothing there. Inside the marker block, so every
+# regeneration carries them. P9_GRUB_TIMEOUT overrides (seconds).
+block="set timeout=${P9_GRUB_TIMEOUT:-5}"$'\n'"set default=0"$'\n'
 found=0
 for pkgbase_file in /usr/lib/modules/*/pkgbase; do
   [[ -r $pkgbase_file ]] || continue
