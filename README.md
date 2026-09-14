@@ -141,8 +141,6 @@ tools/repo-publish.sh              # dry run: what would change in omarchy-power
 tools/repo-publish.sh --commit     # write the published DB
 ```
 
-![All 176 threads of the AC922 building packages (left), and the second POWER9 box (right)](docs/images/building.png)
-
 Recipe sources are tried in order: `packages/` here, then Arch POWER, then
 Arch's GitLab, then optionally the AUR (`--sources`). Packages that build
 unmodified from Arch POWER or Arch recipes have no directory here. Every
