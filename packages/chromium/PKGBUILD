@@ -19,7 +19,7 @@
 
 pkgname=chromium
 pkgver=151.0.7922.108
-pkgrel=2
+pkgrel=3
 _launcher_ver=8
 _manual_clone=0
 _system_clang=1
@@ -124,6 +124,7 @@ source=(https://commondatastorage.googleapis.com/chromium-browser-official/chrom
         chromium-ppc64le-patches-r2.tar.gz
         swiftshader-ppc-xcoff-baseclasses.patch
         chromium-151-dawn-cipd-add-ppc64le.patch
+        ppc64le-seccomp-scv-return-abi.patch
         git+https://gn.googlesource.com/gn#commit=1d86777e7f2562a86ecea77d1809ac4f82bb5bfe)
 sha256sums=('3f13338d12db5c6e17464b3be28eca2a07d64c7c58634268fa76924e3c5243aa'
             '213e50f48b67feb4441078d50b0fd431df34323be15be97c55302d3fdac4483a'
@@ -145,6 +146,7 @@ sha256sums=('3f13338d12db5c6e17464b3be28eca2a07d64c7c58634268fa76924e3c5243aa'
             '3276d4bf11881a4bff4c01898ad9bfb629900a4c83de50751424ad14e2912a88'
             '389faf07f2fc7f0180998c78417ca23b7c8fa37d3ddd2f5ab569334834c3a955'
             'bb2dcfbdd0246b1a8be0c02db3915ad00a791eb835346eee8bee2f4774dd0aff'
+            '81bef974e96a0b0395720f49c059a9b6d473d8d79e702d366d73d4c00e8f3d15'
             'SKIP')  # pinned via #commit= — git verifies
 
 if (( _manual_clone )); then
@@ -338,6 +340,14 @@ EOF
       awk '/^Index: /{skip = ($0 ~ /v8\/BUILD\.gn/)} !skip' \
         "$srcdir/ppc64le-patches/core/baseline-isa-3-0.patch" | patch -Np1
     fi
+
+    # Debian/Raptor's ppc64 seccomp-bpf support writes emulated syscall results
+    # back with the sc convention only. glibc uses scv on POWER9, so a denied
+    # broker call reads back as success (e.g. -ENOENT as fd 2), which crashes
+    # the GPU process on --disable-gpu. Standalone so it reads and upstreams
+    # cleanly; see docs/chromium-software-raster-crash.md.
+    msg2 "Applying ppc64le patch: ppc64le-seccomp-scv-return-abi.patch"
+    patch -Np1 -i "$srcdir/ppc64le-seccomp-scv-return-abi.patch"
 
     # skia-vsx-instructions.patch hardcodes -mcpu=power9 -mtune=power9 into
     # skia's config("default") -- all of skia, not just the vsx TU. Undo that
