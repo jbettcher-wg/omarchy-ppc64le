@@ -1,0 +1,281 @@
+Nettle >= 4.0 compatibility for tigervnc 1.16.2.
+
+Backport of upstream be6e25fc ("Add compat for Nettle >= 4.0"). It does not
+apply to 1.16.2 as-is because b7803f74 replaced the literal digest sizes
+first; the rejected call sites are adapted here. Nettle 4 only. Upstreamable:
+no (already upstream after 1.16.2); drop on the next tigervnc release.
+
+diff --git i/common/rdr/AESInStream.cxx w/common/rdr/AESInStream.cxx
+index b10a214..90025fe 100644
+--- i/common/rdr/AESInStream.cxx
++++ w/common/rdr/AESInStream.cxx
+@@ -27,6 +27,9 @@
+ #include <rdr/AESInStream.h>
+ 
+ #ifdef HAVE_NETTLE
++
++#include <nettle/version.h>
++
+ using namespace rdr;
+ 
+ AESInStream::AESInStream(InStream* _in, const uint8_t* key,
+@@ -62,12 +65,12 @@ bool AESInStream::fillBuffer()
+     EAX_SET_NONCE(&eaxCtx128, aes128_encrypt, 16, counter);
+     EAX_UPDATE(&eaxCtx128, aes128_encrypt, 2, ad);
+     EAX_DECRYPT(&eaxCtx128, aes128_encrypt, length, (uint8_t*)end, data);
+-    EAX_DIGEST(&eaxCtx128, aes128_encrypt, 16, macComputed);
++    EAX_DIGEST(&eaxCtx128, aes128_encrypt, macComputed);
+   } else {
+     EAX_SET_NONCE(&eaxCtx256, aes256_encrypt, 16, counter);
+     EAX_UPDATE(&eaxCtx256, aes256_encrypt, 2, ad);
+     EAX_DECRYPT(&eaxCtx256, aes256_encrypt, length, (uint8_t*)end, data);
+-    EAX_DIGEST(&eaxCtx256, aes256_encrypt, 16, macComputed);
++    EAX_DIGEST(&eaxCtx256, aes256_encrypt, macComputed);
+   }
+   if (memcmp(mac, macComputed, 16) != 0)
+     throw std::runtime_error("AESInStream: Failed to authenticate message");
+diff --git i/common/rdr/AESOutStream.cxx w/common/rdr/AESOutStream.cxx
+index 1ec38b5..364db2f 100644
+--- i/common/rdr/AESOutStream.cxx
++++ w/common/rdr/AESOutStream.cxx
+@@ -27,6 +27,9 @@
+ #include <rdr/AESOutStream.h>
+ 
+ #ifdef HAVE_NETTLE
++
++#include <nettle/version.h>
++
+ using namespace rdr;
+ 
+ const int MaxMessageSize = 8192;
+@@ -83,12 +86,12 @@ void AESOutStream::writeMessage(const uint8_t* data, size_t length)
+     EAX_SET_NONCE(&eaxCtx128, aes128_encrypt, 16, counter);
+     EAX_UPDATE(&eaxCtx128, aes128_encrypt, 2, msg);
+     EAX_ENCRYPT(&eaxCtx128, aes128_encrypt, length, msg + 2, data);
+-    EAX_DIGEST(&eaxCtx128, aes128_encrypt, 16, msg + 2 + length);
++    EAX_DIGEST(&eaxCtx128, aes128_encrypt, msg + 2 + length);
+   } else {
+     EAX_SET_NONCE(&eaxCtx256, aes256_encrypt, 16, counter);
+     EAX_UPDATE(&eaxCtx256, aes256_encrypt, 2, msg);
+     EAX_ENCRYPT(&eaxCtx256, aes256_encrypt, length, msg + 2, data);
+-    EAX_DIGEST(&eaxCtx256, aes256_encrypt, 16, msg + 2 + length);
++    EAX_DIGEST(&eaxCtx256, aes256_encrypt, msg + 2 + length);
+   }
+   out->writeBytes(msg, 2 + length + 16);
+   out->flush();
+diff --git i/common/rfb/CSecurityDH.cxx w/common/rfb/CSecurityDH.cxx
+index 93cf6b2..c0cc1ba 100644
+--- i/common/rfb/CSecurityDH.cxx
++++ w/common/rfb/CSecurityDH.cxx
+@@ -34,6 +34,7 @@
+ #include <nettle/aes.h>
+ #include <nettle/md5.h>
+ #include <nettle/bignum.h>
++#include <nettle/version.h>
+ #include <rfb/CSecurityDH.h>
+ #include <rfb/CConnection.h>
+ #include <rdr/InStream.h>
+@@ -125,7 +126,7 @@ void CSecurityDH::writeCredentials()
+   struct md5_ctx md5Ctx;
+   md5_init(&md5Ctx);
+   md5_update(&md5Ctx, sharedSecret.size(), sharedSecret.data());
+-  md5_digest(&md5Ctx, 16, key);
++  md5_digest(&md5Ctx, key);
+   struct aes128_ctx aesCtx;
+   aes128_set_encrypt_key(&aesCtx, key);
+ 
+diff --git i/common/rfb/CSecurityRSAAES.cxx w/common/rfb/CSecurityRSAAES.cxx
+index 513d560..5014bb6 100644
+--- i/common/rfb/CSecurityRSAAES.cxx
++++ w/common/rfb/CSecurityRSAAES.cxx
+@@ -34,6 +34,7 @@
+ #include <nettle/bignum.h>
+ #include <nettle/sha1.h>
+ #include <nettle/sha2.h>
++#include <nettle/version.h>
+ 
+ #include <core/LogWriter.h>
+ #include <core/string.h>
+@@ -227,7 +228,7 @@ void CSecurityRSAAES::verifyServer()
+   sha1_update(&ctx, 4, lenServerKey);
+   sha1_update(&ctx, serverKey.size, serverKeyN);
+   sha1_update(&ctx, serverKey.size, serverKeyE);
+-  sha1_digest(&ctx, sizeof(f), f);
++  sha1_digest(&ctx, f);
+   const char *title = "Server key fingerprint";
+   std::string text = core::format(
+     "The server has provided the following identifying information:\n"
+@@ -305,24 +306,24 @@ void CSecurityRSAAES::setCipher()
+     sha1_init(&ctx);
+     sha1_update(&ctx, 16, clientRandom);
+     sha1_update(&ctx, 16, serverRandom);
+-    sha1_digest(&ctx, 16, key);
++    sha1_digest(&ctx, key);
+     rais = new rdr::AESInStream(rawis, key, 128);
+     sha1_init(&ctx);
+     sha1_update(&ctx, 16, serverRandom);
+     sha1_update(&ctx, 16, clientRandom);
+-    sha1_digest(&ctx, 16, key);
++    sha1_digest(&ctx, key);
+     raos = new rdr::AESOutStream(rawos, key, 128);
+   } else {
+     struct sha256_ctx ctx;
+     sha256_init(&ctx);
+     sha256_update(&ctx, 32, clientRandom);
+     sha256_update(&ctx, 32, serverRandom);
+-    sha256_digest(&ctx, 32, key);
++    sha256_digest(&ctx, key);
+     rais = new rdr::AESInStream(rawis, key, 256);
+     sha256_init(&ctx);
+     sha256_update(&ctx, 32, serverRandom);
+     sha256_update(&ctx, 32, clientRandom);
+-    sha256_digest(&ctx, 32, key);
++    sha256_digest(&ctx, key);
+     raos = new rdr::AESOutStream(rawos, key, 256);
+   }
+   if (isAllEncrypted)
+@@ -357,7 +358,11 @@ void CSecurityRSAAES::writeHash()
+     sha1_update(&ctx, 4, lenServerKey);
+     sha1_update(&ctx, serverKey.size, serverKeyN);
+     sha1_update(&ctx, serverKey.size, serverKeyE);
+-    sha1_digest(&ctx, hashSize, hash);
++#if NETTLE_VERSION_MAJOR >= 4
++    sha1_digest(&ctx, hash);
++#else
++    sha1_digest(&ctx, hash);
++#endif
+   } else {
+     hashSize = 32;
+     struct sha256_ctx ctx;
+@@ -368,7 +373,11 @@ void CSecurityRSAAES::writeHash()
+     sha256_update(&ctx, 4, lenServerKey);
+     sha256_update(&ctx, serverKey.size, serverKeyN);
+     sha256_update(&ctx, serverKey.size, serverKeyE);
+-    sha256_digest(&ctx, hashSize, hash);
++#if NETTLE_VERSION_MAJOR >= 4
++    sha256_digest(&ctx, hash);
++#else
++    sha256_digest(&ctx, hash);
++#endif
+   }
+   raos->writeBytes(hash, hashSize);
+   raos->flush();
+@@ -405,7 +414,11 @@ bool CSecurityRSAAES::readHash()
+     sha1_update(&ctx, 4, lenClientKey);
+     sha1_update(&ctx, clientKey.size, clientKeyN);
+     sha1_update(&ctx, clientKey.size, clientKeyE);
+-    sha1_digest(&ctx, hashSize, realHash);
++#if NETTLE_VERSION_MAJOR >= 4
++    sha1_digest(&ctx, realHash);
++#else
++    sha1_digest(&ctx, realHash);
++#endif
+   } else {
+     struct sha256_ctx ctx;
+     sha256_init(&ctx);
+@@ -415,7 +428,11 @@ bool CSecurityRSAAES::readHash()
+     sha256_update(&ctx, 4, lenClientKey);
+     sha256_update(&ctx, clientKey.size, clientKeyN);
+     sha256_update(&ctx, clientKey.size, clientKeyE);
+-    sha256_digest(&ctx, hashSize, realHash);
++#if NETTLE_VERSION_MAJOR >= 4
++    sha256_digest(&ctx, realHash);
++#else
++    sha256_digest(&ctx, realHash);
++#endif
+   }
+   if (memcmp(hash, realHash, hashSize) != 0)
+     throw protocol_error("Hash doesn't match");
+diff --git i/common/rfb/SSecurityRSAAES.cxx w/common/rfb/SSecurityRSAAES.cxx
+index 405005a..06619f9 100644
+--- i/common/rfb/SSecurityRSAAES.cxx
++++ w/common/rfb/SSecurityRSAAES.cxx
+@@ -36,6 +36,7 @@
+ #include <nettle/sha2.h>
+ #include <nettle/base64.h>
+ #include <nettle/asn1.h>
++#include <nettle/version.h>
+ 
+ #include <core/Exception.h>
+ #include <core/LogWriter.h>
+@@ -412,24 +413,24 @@ void SSecurityRSAAES::setCipher()
+     sha1_init(&ctx);
+     sha1_update(&ctx, 16, serverRandom);
+     sha1_update(&ctx, 16, clientRandom);
+-    sha1_digest(&ctx, 16, key);
++    sha1_digest(&ctx, key);
+     rais = new rdr::AESInStream(rawis, key, 128);
+     sha1_init(&ctx);
+     sha1_update(&ctx, 16, clientRandom);
+     sha1_update(&ctx, 16, serverRandom);
+-    sha1_digest(&ctx, 16, key);
++    sha1_digest(&ctx, key);
+     raos = new rdr::AESOutStream(rawos, key, 128);
+   } else {
+     struct sha256_ctx ctx;
+     sha256_init(&ctx);
+     sha256_update(&ctx, 32, serverRandom);
+     sha256_update(&ctx, 32, clientRandom);
+-    sha256_digest(&ctx, 32, key);
++    sha256_digest(&ctx, key);
+     rais = new rdr::AESInStream(rawis, key, 256);
+     sha256_init(&ctx);
+     sha256_update(&ctx, 32, clientRandom);
+     sha256_update(&ctx, 32, serverRandom);
+-    sha256_digest(&ctx, 32, key);
++    sha256_digest(&ctx, key);
+     raos = new rdr::AESOutStream(rawos, key, 256);
+   }
+   if (isAllEncrypted)
+@@ -464,7 +465,11 @@ void SSecurityRSAAES::writeHash()
+     sha1_update(&ctx, 4, lenClientKey);
+     sha1_update(&ctx, clientKey.size, clientKeyN);
+     sha1_update(&ctx, clientKey.size, clientKeyE);
+-    sha1_digest(&ctx, hashSize, hash);
++#if NETTLE_VERSION_MAJOR >= 4
++    sha1_digest(&ctx, hash);
++#else
++    sha1_digest(&ctx, hash);
++#endif
+   } else {
+     hashSize = 32;
+     struct sha256_ctx ctx;
+@@ -475,7 +480,11 @@ void SSecurityRSAAES::writeHash()
+     sha256_update(&ctx, 4, lenClientKey);
+     sha256_update(&ctx, clientKey.size, clientKeyN);
+     sha256_update(&ctx, clientKey.size, clientKeyE);
+-    sha256_digest(&ctx, hashSize, hash);
++#if NETTLE_VERSION_MAJOR >= 4
++    sha256_digest(&ctx, hash);
++#else
++    sha256_digest(&ctx, hash);
++#endif
+   }
+   raos->writeBytes(hash, hashSize);
+   raos->flush();
+@@ -512,7 +521,11 @@ bool SSecurityRSAAES::readHash()
+     sha1_update(&ctx, 4, lenServerKey);
+     sha1_update(&ctx, serverKey.size, serverKeyN);
+     sha1_update(&ctx, serverKey.size, serverKeyE);
+-    sha1_digest(&ctx, hashSize, realHash);
++#if NETTLE_VERSION_MAJOR >= 4
++    sha1_digest(&ctx, realHash);
++#else
++    sha1_digest(&ctx, realHash);
++#endif
+   } else {
+     struct sha256_ctx ctx;
+     sha256_init(&ctx);
+@@ -522,7 +535,11 @@ bool SSecurityRSAAES::readHash()
+     sha256_update(&ctx, 4, lenServerKey);
+     sha256_update(&ctx, serverKey.size, serverKeyN);
+     sha256_update(&ctx, serverKey.size, serverKeyE);
+-    sha256_digest(&ctx, hashSize, realHash);
++#if NETTLE_VERSION_MAJOR >= 4
++    sha256_digest(&ctx, realHash);
++#else
++    sha256_digest(&ctx, realHash);
++#endif
+   }
+   if (memcmp(hash, realHash, hashSize) != 0)
+     throw protocol_error("Hash doesn't match");
