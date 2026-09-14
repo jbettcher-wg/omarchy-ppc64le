@@ -30,7 +30,7 @@ source=("$url/archive/v$pkgver/$pkgname-$pkgver.tar.gz")
 sha256sums=('b6654928bd423f92e6da39eb1f40f10000ae2cc6247247fc1882dcff6acbdfc8')
 
 build() {
-  meson --prefix=/usr --buildtype=plain -Dtests=enabled -Dlibcurl=enabled -Dgdk-pixbuf2=enabled "${pkgname}-${pkgver}" build
+  meson --prefix=/usr --buildtype=plain -Dtests=enabled -Dlibcurl=enabled -Dgdk-pixbuf2=enabled -Dgd=disabled "${pkgname}-${pkgver}" build
   meson compile -C build
 }
 
