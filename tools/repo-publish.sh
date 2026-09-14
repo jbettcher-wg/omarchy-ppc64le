@@ -20,10 +20,14 @@
 # Usage:
 #   tools/repo-publish.sh            # dry run: report what would change
 #   tools/repo-publish.sh --commit   # rewrite the deployed db
+#   REPO=<dir> REPO_NAME=<name> ...   # another pool, e.g. repo-power8 / omarchy-power8
 set -uo pipefail
 
 REPO=${REPO:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/repo}
-DB=$REPO/omarchy-power9.db.tar.gz
+# The database name follows the repo, so the POWER8 pool publishes as
+# REPO=.../repo-power8 REPO_NAME=omarchy-power8 tools/repo-publish.sh --commit
+REPO_NAME=${REPO_NAME:-omarchy-power9}
+DB=$REPO/$REPO_NAME.db.tar.gz
 COMMIT=0
 [ "${1:-}" = "--commit" ] && COMMIT=1
 

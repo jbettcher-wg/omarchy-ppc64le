@@ -115,6 +115,12 @@ prepare() {
   sed -i 's/\("files":{[^,]*\),[^}]*}/\1}/' vendor/*/.cargo-checksum.json
 
   _rust_target="\"${CHOST}\""
+  # POWER9 codegen unless the POWER8 builder asks for POWER8:
+  # tools/makepkg.conf.d/00-power8.conf exports _power8=1. libstd is statically
+  # linked into every Rust binary, so consumer RUSTFLAGS cannot undo this pin;
+  # it has to change here. docs/power8-secondary-target.md, section 4.
+  local _rust_cpu=pwr9
+  (( ${_power8:-0} )) && _rust_cpu=pwr8
 
   # Arch POWER turns LTO off for 32-bit powerpc; powerpc64le is the only arch
   # here, so it is always fat.
@@ -190,14 +196,15 @@ ar = "/usr/bin/${CHOST}-gcc-ar"
 ranlib = "/usr/bin/${CHOST}-gcc-ranlib"
 llvm-config = "/usr/bin/llvm-config"
 linker = "${CHOST}-gcc"
-# Build the compiler we ship, its std and its tools for POWER9. Per-target so
+# Build the compiler we ship, its std and its tools for POWER9 (POWER8 when
+# _power8=1, see prepare()). Per-target so
 # the wasm32 std does not see it: an unrecognised CPU on wasm32 is "ignored"
 # by LLVM but wipes the target's default feature set (bulk-memory, sign-ext,
 # ...), which RUSTFLAGS_NOT_BOOTSTRAP -- the stage-scoped alternative -- did
 # to rust-wasm in the first 1.98.1 build. See README.md. Applies at every
 # stage, so the throwaway stage-1 compiler is POWER9 code too; that costs
 # nothing here.
-rustflags = ["-Ctarget-cpu=pwr9"]
+rustflags = ["-Ctarget-cpu=${_rust_cpu}"]
 
 [target.wasm32-unknown-unknown]
 cc = "/usr/bin/clang"
