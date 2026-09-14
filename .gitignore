@@ -43,6 +43,7 @@ __pycache__/
 # makepkg VCS mirrors, cloned next to the recipe when SRCDEST is unset.
 packages/luajit/luajit-ppc64le/
 packages/neovim/neovim/
+packages/qwen-code/qwen-code/
 packages/omarchy-theme-power9/power9.bak.*
 
 # Built ISO images (multi-GB). Reproducible from iso/build.sh + the repo.
