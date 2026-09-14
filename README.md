@@ -51,7 +51,7 @@ secondary target; see [`docs/power8-secondary-target.md`](docs/power8-secondary-
 
 | Package | Why |
 |---|---|
-| `localsend` | Flutter app; the Dart VM has no ppc64le back end yet |
+| `localsend` | Flutter app; the Dart VM has no ppc64le back end yet.... |
 | `limine`, `limine-snapper-sync` | not applicable; POWER boots through petitboot (below) |
 
 ## How it differs from upstream Omarchy
