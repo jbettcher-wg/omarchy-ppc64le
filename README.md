@@ -119,8 +119,16 @@ iso/build.sh --no-repo --repo-server <URL>
 ```
 
 Output goes to `iso/out/omarchy-p9-YYYY.MM.DD-ppc64le.iso`. Booting it starts
-`p9-configurator`, which asks for keyboard, user, disk and timezone, shows the
-target disk's serial for confirmation, and then runs `p9-install`.
+`p9-configurator`, which asks for keyboard, user, disk and timezone, and shows a
+summary with the target disk's serial for confirmation. It then runs
+`p9-install` under Omarchy's own install dashboard, so the install looks like
+upstream's:
+- a progress bar driven by the packages actually installed;
+- a failure screen with the log tail and options to view the log, reboot or
+  drop to a shell;
+- a **Reboot Now** prompt when it finishes.
+
+![The Omarchy installer's progress screen on POWER9](docs/images/installer.png)
 
 `p9-install` supports **PowerNV** (bare metal: AC922, Talos II, Blackbird and
 other skiboot/petitboot machines) and **pSeries** (KVM/PowerVM guests; it adds
