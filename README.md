@@ -53,7 +53,7 @@ secondary target; see [`docs/power8-secondary-target.md`](docs/power8-secondary-
 - Toolchains: **Go 1.27**, **Zig 0.16** (and 0.15 for herdr), LLVM 20/21.
 - **ROCm/HIP 7.2.4** and **llama.cpp** for Radeon compute.
 
-![Obsidian 1.13.7 on Electron 43, btop and fastfetch on the AC922](docs/images/obsidian.png)
+![Obsidian on Electron 43, cliamp playing Omarchy Radio, and Pinta 3.1.2 on .NET 10](docs/images/apps.png)
 
 ### Not available yet
 
