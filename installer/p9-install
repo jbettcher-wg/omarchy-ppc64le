@@ -100,9 +100,14 @@ P9_PASSWORD=""
 # naming it is what makes it usable, and a POWER server whose only console is
 # the video output is one graphical failure away from needing the BMC.
 #
-# video= because the installer and the console have to be readable on a 4K
-# panel. 1080p is the mode nothing refuses.
-P9_CMDLINE="${P9_CMDLINE:-console=hvc0 console=tty0 video=1920x1080 loglevel=3}"
+# No video=. The ISO boots without one and runs the console at the panel's
+# native mode; forcing 1920x1080 here made an AC922 drop from 4K in the
+# installer to 1080p on the installed system. Hyprland sets its own mode anyway.
+#
+# quiet splash, as upstream Omarchy boots: Plymouth draws the Omarchy boot
+# theme (the plymouth hook is in share/omarchy-p9-hooks.conf). quiet also quiets
+# hvc0; for a verbose boot, edit the entry at the petitboot menu.
+P9_CMDLINE="${P9_CMDLINE:-console=hvc0 console=tty0 quiet splash loglevel=3}"
 P9_ENTRY_TITLE="${P9_ENTRY_TITLE:-Omarchy POWER9}"
 P9_REBOOT=0
 P9_STAGE_FIRSTBOOT=1
