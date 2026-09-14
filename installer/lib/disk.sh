@@ -130,6 +130,17 @@ partition_disk() {
   [[ -n $_p9_prep_n ]] && P9_PART_PREP=$(part_path "$disk" "$_p9_prep_n") || P9_PART_PREP=""
   P9_PART_BOOT=$(part_path "$disk" "$_p9_boot_n")
   P9_PART_ROOT=$(part_path "$disk" "$_p9_root_n")
+
+  # Zero the PReP partition. wipefs and --zap-all clear signatures and the
+  # partition table, not the bytes underneath, and /boot and / get mkfs but the
+  # PReP partition is written raw -- so on a used disk it starts full of
+  # whatever filesystem was there before. grub-install then refuses it ("the
+  # PReP partition is not empty ... run dd to clear it"), on both attempts, and
+  # the install dies. Found on a secondhand 2 TB NVMe that carried xfs; a fresh
+  # VM image is all zeroes, which is why QEMU testing never hit it.
+  if [[ -n $P9_PART_PREP ]]; then
+    run dd if=/dev/zero of="$P9_PART_PREP" bs=1M count=8 conv=fsync status=none
+  fi
 }
 
 # /dev/sda1 vs /dev/nvme0n1p1 vs /dev/disk/by-id/X-part1: ask the kernel rather
