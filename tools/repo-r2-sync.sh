@@ -34,6 +34,10 @@ R2_REMOTE=${R2_REMOTE:-r2}
 : "${R2_BUCKET:?set R2_BUCKET to the bucket name}"
 DRY=()
 [[ ${1:-} == --dry-run ]] && DRY=(--dry-run)
+# The R2 token is scoped to one bucket (Object Read & Write). rclone otherwise
+# checks or creates the bucket before writing, which such a token may not do:
+# the result is AccessDenied (403), same as `rclone lsd r2:`.
+DRY+=(--s3-no-check-bucket)
 
 DB=$REPO/$REPO_NAME.db.tar.gz
 [[ -f $DB ]] || { echo "repo-r2-sync: no database $DB" >&2; exit 1; }
