@@ -181,6 +181,12 @@ greeter() {
   # Return; --reuse-canvas paints upward from the saved cursor, anchored one row
   # below the logo.
   printf '\033[%d;1H\0337' "$((logo_row + logo_h))"
+  # ppc64le: animate only on a video console. On hvc0 (OPAL serial, or a VM's
+  # spapr-vty) every 60 fps frame goes down the serial line while the greeter
+  # waits for Return -- a QEMU console log reached 672 MB in one sitting, and a
+  # BMC serial-over-LAN session is no better off.
+  anim=""
+  if [[ $(tty 2>/dev/null) == /dev/tty[0-9]* ]]; then
   # Run ttfx directly (not inside a `while` subshell) so $anim is ttfx's own
   # PID: killing a wrapping subshell would orphan ttfx, which then keeps
   # painting the logo over the keyboard step. --cycles is high enough that it
@@ -201,6 +207,7 @@ greeter() {
     --final-gradient-stops 2 \
     </dev/null >/dev/tty 2>/dev/null &
   anim=$!
+  fi
 
   IFS= read -r _ </dev/tty || true
   # Tolerate ttfx's kill signal in `wait` so a future `set -e` here can't abort.
@@ -513,17 +520,21 @@ p9_confirm_and_install() {
   echo
   say "About to install Omarchy on this machine:"
   echo
-  printf '    %-12s %s\n' "Disk"     "$disk  ($size${model:+ — $model})"
-  printf '    %-12s %s\n' "Serial"   "${serial:-<none reported>}"
-  printf '    %-12s %s\n' "Kernel"   "$P9_KERNEL"
-  printf '    %-12s %s\n' "Host"     "$hostname"
-  if $defer_provisioning; then
-    printf '    %-12s %s\n' "User"     "<deferred to first boot>"
-  else
-    printf '    %-12s %s\n' "User"     "$username"
-  fi
-  printf '    %-12s %s\n' "Timezone" "$timezone"
-  printf '    %-12s %s\n' "Keyboard" "$keyboard"
+  # Same frame as upstream's user summary: a gum table shifted by the logo's
+  # left padding, since gum table -p ignores GUM_TABLE_PADDING. '|' separates
+  # because disk models can contain commas.
+  local user_value="$username"
+  $defer_provisioning && user_value="[Deferred to first boot]"
+  printf '%s\n' \
+    "Field|Value" \
+    "Disk|$disk ($size${model:+, $model})" \
+    "Serial|${serial:-[None reported]}" \
+    "Kernel|$P9_KERNEL" \
+    "Hostname|$hostname" \
+    "User|$user_value" \
+    "Timezone|$timezone" \
+    "Keyboard|$keyboard" |
+    gum table -s "|" -p | sed "s/^/${PADDING_LEFT_SPACES}/"
   echo
   say --foreground 1 "Everything on $disk will be erased. There is no recovery."
   echo
