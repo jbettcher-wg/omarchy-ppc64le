@@ -2,9 +2,9 @@ From: Jordan Bettcher <thebettcher@gmail.com>
 Subject: [PATCH] powerpc: enable Rust on 64-bit little-endian
 
 Selects HAVE_RUST for PPC64 && CPU_LITTLE_ENDIAN and generates a
-soft-float powerpc64le target.json, so Rust drivers such as
-nova-core build on POWER. Local patch for the Omarchy ppc64le
-kernels; upstreamable once proven.
+powerpc64le target.json (ELFv2, no AltiVec/VSX), so Rust drivers
+such as nova-core build on POWER. Local patch for the Omarchy
+ppc64le kernels; upstreamable once proven.
 ---
 --- a/arch/powerpc/Kconfig
 +++ b/arch/powerpc/Kconfig
@@ -18,7 +18,7 @@ kernels; upstreamable once proven.
  	select HAVE_SETUP_PER_CPU_AREA		if PPC64
 --- a/scripts/generate_rust_target.rs
 +++ b/scripts/generate_rust_target.rs
-@@ -262,6 +262,31 @@
+@@ -262,6 +262,37 @@
          panic!("loongarch uses the builtin rustc loongarch64-unknown-none-softfloat target");
      } else if cfg.has("S390") {
          panic!("s390 uses the builtin rustc s390x-unknown-none-softfloat target");
@@ -37,9 +37,15 @@ kernels; upstreamable once proven.
 +        // `cfg(target_abi)` combination"); its own builtin target sets both.
 +        ts.push("abi", "elfv2");
 +        ts.push("llvm-abiname", "elfv2");
-+        // Kernel C is built -msoft-float -mno-altivec -mno-vsx; Rust must not
-+        // touch FP or vector state either.
-+        ts.push("features", "-altivec,-vsx,-hard-float");
++        // Kernel C is built -msoft-float -mno-altivec -mno-vsx. Rust gets
++        // -altivec,-vsx, so LLVM never uses vector registers for integer work,
++        // but hard-float has to stay: rustc (1.98) refuses to disable it on
++        // ELFv2 ("target feature `hard-float` is required by the ABI") and
++        // offers no soft-float rustc-abi on PowerPC64 ("`rustc_abi` is unused
++        // on PowerPC64"). This matches arm64's aarch64-unknown-none plus
++        // -neon: the FPU is available and kernel Rust code simply has no
++        // floats.
++        ts.push("features", "-altivec,-vsx");
 +        ts.push("llvm-target", "powerpc64le-unknown-linux-gnu");
 +        ts.push("code-model", "medium");
 +        if cfg.rustc_version_atleast(1, 91, 0) {
