@@ -40,9 +40,15 @@ build() {
   map add_file \
     '/usr/share/plymouth/themes/text/text.plymouth' \
     '/usr/share/plymouth/themes/details/details.plymouth' \
-    '/usr/share/pixmaps/archlinux-logo.png' \
     '/usr/share/plymouth/plymouthd.defaults' \
     '/etc/plymouth/plymouthd.conf'
+
+  # ppc64le: Arch POWER's filesystem ships no /usr/share/pixmaps logo, and
+  # add_file on a missing path fails the whole mkinitcpio run. Only themes
+  # built with -D logo= use it, and build() already skips that here.
+  if [[ -f /usr/share/pixmaps/archlinux-logo.png ]]; then
+    add_file '/usr/share/pixmaps/archlinux-logo.png'
+  fi
 
   # copy fonts
   if [ -n "$PLYMOUTH_FONT_PATH" ]; then

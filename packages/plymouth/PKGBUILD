@@ -9,7 +9,9 @@
 # So both uses are guarded rather than removed. On Arch the build is byte-for-
 # byte what it was; here, plymouth uses the fallback logo that its own meson
 # option explicitly documents for an empty `logo` value, and the spinner theme
-# is installed without a watermark.
+# is installed without a watermark. 26.134.222-3 guards the logo in the
+# mkinitcpio initcpio_install hook too: it failed every mkinitcpio run that used
+# the plymouth hook, which a fresh p9-install target does.
 #
 # Local packaging fix. The underlying report belongs to Arch POWER (their
 # filesystem package drops branding that Arch's PKGBUILDs assume), not to
@@ -23,7 +25,7 @@
 
 pkgname=plymouth
 pkgver=26.134.222
-pkgrel=2
+pkgrel=3
 pkgdesc='Graphical boot splash screen'
 arch=(x86_64 powerpc64le)
 url='https://www.freedesktop.org/wiki/Software/Plymouth/'
@@ -68,7 +70,7 @@ source=(
 b2sums=(
   5130dbb16d4634915b7f68542b6c29d664bd8c26f4508adf536833e93f2c78aee287208e88dc3bcf8298979c6f9811657ab5a30c1563b1e5307b7e886b6bffa2
   afb2449b542aa3e971eab6b953c907347fdf4e499b4140a5e6736a7c99557c0d8d2fed28dbee56d84c8c619335c59bd382457d85e51145884ad0616e9095f232
-  e9efbfd924a07005e883c4cd21d25c520288daf8bf611ee20a245b8b8f925bc90188dfcbb9e13da883479c5214562795717bb4404dd7ef1444eb04ab69dad4a9
+  0e2ea044c5369dfbad36e95e22f9b384239c8e4f93deaa6f833c9e2aa270455698fab787357727332f13150120ef9b05e7f30e90cd7a1b67b67af31fbe71000c
   063448411de837ed38ece935719f07fd17b18830680c9fa95b7bd39a097778186c40373590504c9b44144125986304311f528c73592c29d19043b8395e6f99c2
   5ab47942d222c311b495d056f24bdd9d08438162fef1ca6e51982fc00018acbf0c31e4c61164b40950fe2511e17ba2a4635894d145d83a9b349e5a8a83f8c026
 )
