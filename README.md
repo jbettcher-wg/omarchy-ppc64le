@@ -45,6 +45,8 @@ secondary target; see [`docs/power8-secondary-target.md`](docs/power8-secondary-
 - Toolchains: **Go 1.27**, **Zig 0.16** (and 0.15 for herdr), LLVM 20/21.
 - **ROCm/HIP 7.2.4** and **llama.cpp** for Radeon compute.
 
+![Obsidian 1.13.7 on Electron 43, btop and fastfetch on the AC922](docs/images/obsidian.png)
+
 ### Not available yet
 
 | Package | Why |
@@ -138,6 +140,8 @@ tools/bq.py build <pkg> [-j N] [--rebuild --force]
 tools/repo-publish.sh              # dry run: what would change in omarchy-power9
 tools/repo-publish.sh --commit     # write the published DB
 ```
+
+![All 176 threads of the AC922 building packages (left), and the second POWER9 box (right)](docs/images/building.png)
 
 Recipe sources are tried in order: `packages/` here, then Arch POWER, then
 Arch's GitLab, then optionally the AUR (`--sources`). Packages that build
