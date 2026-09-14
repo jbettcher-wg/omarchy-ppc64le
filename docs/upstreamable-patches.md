@@ -784,3 +784,36 @@ reads `model name`, which POWER's cpuinfo does not have, so Cycles lists
 "Unknown CPU". The patch reads the `cpu` field ("POWER9, altivec supported")
 instead. That half is a plain portability fix; the "(VSX)" kernel suffix only
 makes sense together with `cycles-vsx.patch`.
+
+## Chromium (Debian ppc64le series): seccomp-bpf trap returns use the `sc` convention for `scv` callers
+
+`packages/chromium/ppc64le-seccomp-scv-return-abi.patch` (identical copy in
+`packages/electron43/`). Applies after the Debian ppc64le tarball, on top of
+`sandbox/0001-sandbox-Enable-seccomp_bpf-for-ppc64.patch`.
+
+The ppc64 seccomp-bpf support in the Debian chromium-team series (from Raptor
+Engineering) writes the result of a system call emulated in the SIGSYS trap
+handler back using only the `sc` convention: `+errno` in r3 with CR0.SO set.
+glibc on POWER9 makes system calls with `scv 0`, whose convention is `-errno` in
+r3 with no SO bit. So every emulated *error* reads back in glibc as a positive
+*success*: a broker-denied `open()` returns file descriptor 2. Chromium adopts
+and closes descriptors it does not own. The ppc64 first-argument workaround in
+`Trap::SigSys()` is `sc`-specific in the same way, and negates valid directory
+fds for `scv` callers.
+
+Seen as the GPU process dying on the software path (`--disable-gpu`: headless,
+no accelerated driver, Electron apps with hardware acceleration off):
+"Crashing due to FD ownership violation", then
+"GPU process isn't usable. Goodbye.". `--no-sandbox` hides it. The patch reads
+the trap value from the saved registers (`0x3000` means `scv`). It encodes
+results, and applies the argument workarounds, in the caller's convention.
+`sc` behaviour is unchanged.
+
+Reproducer: `docs/seccomp-scv-return-abi-repro.c`. With Debian's encoding every
+`scv` error case is wrong; with the patch all 12 cases are correct for glibc,
+raw `sc` and raw `scv` callers. Full write-up:
+`docs/chromium-software-raster-crash.md`.
+
+Send to: the Debian chromium-team ppc64le series
+(<https://salsa.debian.org/chromium-team/chromium>, `debian/patches/ppc64le/`),
+and Chromium upstream if the ppc64 sandbox code is carried there.
