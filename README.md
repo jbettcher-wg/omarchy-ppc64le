@@ -84,8 +84,8 @@ Add the repo **ahead of** Arch POWER's repos in `/etc/pacman.conf`:
 
 ```ini
 [omarchy-power9]
-SigLevel = Optional TrustAll
-Server = <repo URL>
+SigLevel = PackageNever DatabaseOptional TrustAll
+Server = https://omappc64le.download/omarchy-power9
 
 [base-any]
 Server = https://repo.archlinuxpower.org/base/any
@@ -94,9 +94,11 @@ Server = https://repo.archlinuxpower.org/base/any
 Server = https://repo.archlinuxpower.org/base/$arch
 ```
 
-A public URL is still being arranged. Packages are **not signed yet**, which is
-why `SigLevel` is `Optional TrustAll`. Signing, and restoring
-`omarchy-keyring`, is planned.
+The repo is served from Cloudflare R2. Packages are **not signed yet**, which is
+why `SigLevel` is `PackageNever DatabaseOptional TrustAll`: `PackageNever` also
+stops pacman from asking for `.sig` files, whose 404 page is larger than
+pacman's signature size limit and would abort downloads under plain
+`Optional`. Signing, and restoring `omarchy-keyring`, is planned.
 
 Many packages here are POWER9 rebuilds of Arch POWER packages under the same
 name. If something from `[omarchy-power9]` misbehaves, report it here first

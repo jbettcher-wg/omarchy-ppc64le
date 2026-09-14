@@ -192,9 +192,12 @@ for `[power9]` yet (`gpg` on the build host has no secret key), so:
 
 * `--repo-siglevel required` — the design's target state. Fails until the repo
   is signed and a `power9-keyring` is trusted.
-* `--repo-siglevel optional-trustall` — `Optional TrustAll`. Installs unsigned
-  packages without verification. Defensible for a local, offline,
-  single-operator repository; not for anything handed to someone else.
+* `--repo-siglevel optional-trustall` — `PackageNever DatabaseOptional TrustAll`. Installs unsigned
+  packages without verification, and pacman never requests `.sig` files. That
+  part is load-bearing: the public repo is served from Cloudflare R2, which
+  answers a missing `.sig` with a 27 KB 404 page, over pacman's 16 KiB
+  signature limit, and plain `Optional` then aborts the whole transaction.
+  The stopgap until the repo is signed.
 
 `p9-install` **refuses to start** without one of them, and prints a warning when
 `TrustAll` is chosen. Nothing here quietly turns verification off.

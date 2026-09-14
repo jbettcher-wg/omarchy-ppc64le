@@ -166,8 +166,13 @@ default:
 
   --repo-siglevel required          the design's target state. Fails until the
                                     repo is signed and its keyring is trusted.
-  --repo-siglevel optional-trustall Optional TrustAll. Installs unsigned
-                                    packages without verification. Acceptable
+  --repo-siglevel optional-trustall PackageNever DatabaseOptional TrustAll.
+                                    Installs unsigned packages without
+                                    verification, and never asks for .sig
+                                    files: a static host (R2) answers those
+                                    with a 404 page larger than pacman's
+                                    16 KiB signature limit, which aborts the
+                                    whole download under plain Optional. Acceptable
                                     for a local, offline, single-operator repo
                                     on a machine you built the packages on.
                                     Not acceptable for anything you hand out.
@@ -196,7 +201,7 @@ while (($#)); do
     --repo-siglevel)
       case "$2" in
         required) P9_REPO_SIGLEVEL="Required DatabaseOptional" ;;
-        optional-trustall) P9_REPO_SIGLEVEL="Optional TrustAll" ;;
+        optional-trustall) P9_REPO_SIGLEVEL="PackageNever DatabaseOptional TrustAll" ;;
         *) P9_REPO_SIGLEVEL="$2" ;;
       esac
       shift 2
@@ -242,7 +247,7 @@ require_tools lsblk blkid findmnt awk sed pacman
 [[ -n $P9_DISK ]] || { usage >&2; die "--disk is required (try --list-disks)"; }
 [[ -n $P9_REPO_SIGLEVEL ]] ||
   die "--repo-siglevel is required. There is no default: the [$P9_REPO_NAME]
-      repository is not signed yet, so 'Required' fails and 'Optional TrustAll'
+      repository is not signed yet, so 'required' fails and 'optional-trustall'
       disables verification. Choose one and say so on the command line.
       See --help."
 
@@ -304,7 +309,7 @@ done
 log "repository: [$P9_REPO_NAME]  SigLevel = $P9_REPO_SIGLEVEL"
 for _s in "${P9_REPO_SERVERS[@]}"; do log "  Server = $_s"; done
 if [[ $P9_REPO_SIGLEVEL == *TrustAll* ]]; then
-  warn "SigLevel 'Optional TrustAll' for [$P9_REPO_NAME]: package signatures are NOT verified."
+  warn "SigLevel '$P9_REPO_SIGLEVEL' for [$P9_REPO_NAME]: package signatures are NOT verified."
 fi
 
 # ------------------------------------------------- pacman.conf + manifest ----

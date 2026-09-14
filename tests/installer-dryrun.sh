@@ -52,7 +52,7 @@ rejects() {
 }
 
 D=(--disk /dev/sda)
-S=(--repo-siglevel 'Optional TrustAll')
+S=(--repo-siglevel 'PackageNever DatabaseOptional TrustAll')
 
 echo "accepted paths:"
 ok "powernv, defaults"        "${D[@]}" "${S[@]}" --platform powernv
