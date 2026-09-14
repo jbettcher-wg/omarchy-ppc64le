@@ -1,5 +1,13 @@
 # Omarchy for POWER
 
+[![arch: powerpc64le](https://img.shields.io/badge/arch-powerpc64le-0f62fe)](#status)
+[![target: POWER9](https://img.shields.io/badge/target-POWER9-9fe870)](#status)
+[![POWER8: planned](https://img.shields.io/badge/POWER8-planned-3f4a5a)](docs/power8-secondary-target.md)
+[![Omarchy 4.0.3](https://img.shields.io/badge/Omarchy-4.0.3-0f62fe)](https://github.com/omacom/omarchy)
+[![base packages: 146/147](https://img.shields.io/badge/base%20packages-146%2F147-9fe870)](#not-available-yet)
+[![last commit](https://img.shields.io/github/last-commit/jbettcher-wg/omarchy-ppc64le?color=0f62fe)](https://github.com/jbettcher-wg/omarchy-ppc64le/commits/master)
+[![license: MIT](https://img.shields.io/badge/license-MIT-9fe870)](LICENSE)
+
 [Omarchy](https://github.com/omacom/omarchy) (Arch Linux + Hyprland), ported to
 **powerpc64le**. It's built on [Arch POWER](https://archlinuxpower.org) and
 aimed first at **POWER9** machines.
@@ -175,6 +183,13 @@ Portability fixes that belong upstream are tracked in
 [`docs/upstreamable-patches.md`](docs/upstreamable-patches.md), for Omarchy,
 Arch POWER and individual projects. Patches carry a header saying whether they
 are upstreamable or a local workaround.
+
+## License
+
+The tooling, installer, docs and our own recipes and patches are
+[MIT](LICENSE). Recipes adapted from Arch Linux, Arch POWER or the AUR, and
+patches taken from other projects, keep their original licences; see each
+package directory (`LICENSE`, `REUSE.toml` or the patch header).
 
 ## Credits
 
