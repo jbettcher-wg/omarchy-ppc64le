@@ -231,7 +231,15 @@ _package-headers() {
 
   if grep -q CONFIG_MODULES=y include/config/auto.conf; then
     echo "Installing build files..."
-    ./scripts/package/install-extmod-build "$builddir"
+    # install-extmod-build is written to run under kbuild (make pacman-pkg), which
+    # exports srctree, SRCARCH, CC and HOSTCC, plus MAKE when CC and HOSTCC
+    # differ. makepkg exports none of them, and the script is set -eu, so it
+    # died on "srctree: unbound variable" and took -headers and -api-headers
+    # with it. The 7.2.2 -headers packages came from the old make pacman-pkg
+    # flow, so this step had never run in the recipe. Native build: CC and
+    # HOSTCC are the same, so the host programs are not rebuilt.
+    srctree="$PWD" SRCARCH=powerpc CC=gcc HOSTCC=gcc MAKE=make \
+      ./scripts/package/install-extmod-build "$builddir"
   fi
 
   echo "Installing System.map and config..."
