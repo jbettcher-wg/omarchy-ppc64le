@@ -199,6 +199,32 @@ class DirSource(Source):
         return True
 
 
+_GITLAB_PINS = None
+
+
+def gitlab_pins():
+    """pkgbase -> the version to fetch from Arch's GitLab instead of its newest
+    recipe.
+
+    The gitlab source used to shallow-clone whatever Arch had that day. The
+    POWER9 builder took KF6 6.29 on 2026-09-06; the POWER8 builder cloned the
+    same repos on 09-14, got 6.30 (which needs ECM 6.30) and failed 41 builds,
+    and silently built newer docker, gvfs, libadwaita and more. BQ_GITLAB_PINS
+    names a file of "pkgbase version" lines -- the versions our repo shipped --
+    so every builder fetches the same recipe and version bumps are deliberate.
+    """
+    global _GITLAB_PINS
+    if _GITLAB_PINS is None:
+        _GITLAB_PINS = {}
+        path = os.environ.get("BQ_GITLAB_PINS")
+        if path:
+            for line in open(path):
+                f = line.split()
+                if len(f) >= 2 and not f[0].startswith("#"):
+                    _GITLAB_PINS[f[0]] = f[1]
+    return _GITLAB_PINS
+
+
 class GitSource(Source):
     def __init__(self, name, urlfmt, rewrite_arch=False):
         self.name = name
@@ -217,9 +243,22 @@ class GitSource(Source):
         # it blocks until the timeout. Fail fast instead.
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0",
                "GIT_ASKPASS": "", "SSH_ASKPASS": ""}
-        r = subprocess.run(["git", "clone", "-q", "--depth", "1", url, tmp],
+        cmd = ["git", "clone", "-q", "--depth", "1"]
+        pin = gitlab_pins().get(pkgbase) if self.name == "gitlab" else None
+        tag = None
+        if pin:
+            # Arch tags every release <pkgver>-<pkgrel>; an epoch's colon
+            # becomes a dash (freerdp 2:3.31.1-1 -> 2-3.31.1-1).
+            tag = pin.replace(":", "-")
+            cmd += ["--branch", tag]
+        r = subprocess.run(cmd + [url, tmp],
                            capture_output=True, text=True, timeout=600, env=env)
         if r.returncode != 0 or not os.path.isfile(os.path.join(tmp, "PKGBUILD")):
+            if tag:
+                # Never fall back to the newest recipe for a pinned package:
+                # that is exactly the silent drift the pin exists to stop.
+                print("bq: gitlab %s: pinned tag %s not fetched" % (pkgbase, tag),
+                      file=sys.stderr)
             shutil.rmtree(tmp, ignore_errors=True)
             return False
         shutil.rmtree(os.path.join(tmp, ".git"), ignore_errors=True)
@@ -271,7 +310,7 @@ def regen_srcinfo(dest):
     guard we just removed."""
     try:
         r = subprocess.run(["makepkg", "--printsrcinfo"], cwd=dest,
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=900)
         if r.returncode == 0 and r.stdout.strip():
             open(os.path.join(dest, ".SRCINFO"), "w").write(r.stdout)
             return True
@@ -1481,7 +1520,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     if not args.force:
         _pl = subprocess.run(["makepkg", "--config", conf, "--packagelist"],
                              cwd=work, capture_output=True, text=True,
-                             env=env, timeout=120)
+                             env=env, timeout=900)
         _want = [f for f in _pl.stdout.split() if "-debug-" not in f]
         if _want and all(os.path.isfile(f) for f in _want):
             _ri = read_recipe(work)
@@ -1597,7 +1636,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
             os.makedirs(quarantine, exist_ok=True)
             pl = subprocess.run(["makepkg", "--config", conf, "--packagelist"],
                                 cwd=work, capture_output=True, text=True,
-                                env=env, timeout=120)
+                                env=env, timeout=900)
             for f in pl.stdout.split():
                 if os.path.isfile(f):
                     shutil.move(f, os.path.join(quarantine, os.path.basename(f)))
@@ -1606,7 +1645,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     if rc == 0:
         pl = subprocess.run(["makepkg", "--config", conf, "--packagelist"],
                             cwd=work, capture_output=True, text=True,
-                            env=env, timeout=120)
+                            env=env, timeout=900)
         built = [os.path.basename(f) for f in pl.stdout.split()
                  if os.path.isfile(f)]
         result["packages"] = built
