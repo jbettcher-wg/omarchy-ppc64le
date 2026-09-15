@@ -358,7 +358,7 @@ onto the medium at `p9repo/omarchy-power9/`, which `p9-install` reads with
 
 A POWER8 ISO needs three things beyond a POWER8 package repo:
 
-1. **A POWER8 kernel. This is the blocker.** `packages/linux-power9` sets, in
+1. **A POWER8 kernel. This is the blocker.** `packages/ours/linux-power9` sets, in
    *both* `config.4k` and `config.64k`:
 
    ```

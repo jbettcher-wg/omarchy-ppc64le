@@ -84,6 +84,6 @@ Once all dependent packages have been rebuilt with tests enabled, all packages a
 [python-pyproject-hooks]: https://gitlab.archlinux.org/archlinux/packaging/packages/python-pyproject-hooks/
 [python-setuptools]: https://gitlab.archlinux.org/archlinux/packaging/packages/python-setuptools/
 [python-wheel]: https://gitlab.archlinux.org/archlinux/packaging/packages/python-wheel/
-[python]: https://gitlab.archlinux.org/archlinux/packaging/packages/python/
+[python]: https://gitlab.archlinux.org/archlinux/packaging/packages/python/python/
 [python-bootstrap#2]: https://gitlab.archlinux.org/archlinux/python-bootstrap/-/issues/2
 [no_check_pkgs.sh]: https://gitlab.archlinux.org/archlinux/python-bootstrap/-/blob/b45ea748b507323500f8fda5a7eb0d40a53c46a1/scripts/no_check_pkgs.sh

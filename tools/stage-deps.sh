@@ -27,7 +27,11 @@ BUILDROOT=${BUILDROOT:-/var/tmp/omarchy-bq}
 pkg=${1:?usage: stage-deps.sh <package> [recipedir]}
 recipedir=${2:-}
 
-for cand in "$recipedir" "$REPOROOT/packages/$pkg" "$BUILDROOT/build/$pkg"; do
+# packages/ is nested now (see packages/README.md), so find our copy by
+# pkgbase rather than assuming packages/<pkg>.
+_local=$(find "$REPOROOT/packages" -mindepth 1 -maxdepth 3 -type d \
+  -name "$pkg" -exec test -f '{}/PKGBUILD' \; -print -quit 2>/dev/null)
+for cand in "$recipedir" "$_local" "$BUILDROOT/build/$pkg"; do
   [ -n "$cand" ] && [ -f "$cand/PKGBUILD" ] && { f="$cand/PKGBUILD"; break; }
 done
 [ -n "${f:-}" ] || { echo "stage-deps: no PKGBUILD for $pkg"; exit 2; }

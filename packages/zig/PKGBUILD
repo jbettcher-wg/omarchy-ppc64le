@@ -23,7 +23,7 @@
 #    GCC and rustc put them. Adds the ELFv2 classification clang uses and
 #    enables the powerpc64 C ABI tests. Meant for upstream (zig master has the
 #    same gap); rules, gaps and test evidence are in the patch header. Same
-#    change as packages/zig0.15, where it fixed herdr's libghostty-vt.
+#    change as packages/ours/zig0.15, where it fixed herdr's libghostty-vt.
 #
 # Maintainer: Daurnimator <daurnimator@archlinux.org>
 # Contributor: Marc Tiehuis <marctiehuis@gmail.com>

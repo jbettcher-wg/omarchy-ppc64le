@@ -167,24 +167,28 @@ tools/repo-publish.sh              # dry run: what would change in omarchy-power
 tools/repo-publish.sh --commit     # write the published DB
 ```
 
-Recipe sources are tried in order: `packages/` here, then Arch POWER, then
-Arch's GitLab, then optionally the AUR (`--sources`). Packages that build
-unmodified from Arch POWER or Arch recipes have no directory here. Every
-package passes path guards that reject build-tree paths and stray install
-locations. Full details are in [`docs/build-queue.md`](docs/build-queue.md).
+Recipes are discovered by pkgbase, recursively, in `packages/` here and in
+the Arch POWER checkout, then from Arch's GitLab and optionally the AUR
+(`--sources`). When more than one tree has a pkgbase the **newest version**
+wins -- not the first source listed -- with `packages/` breaking a tie so our
+patched copy is preferred. A recipe older than the version our repo database
+ships is refused and logged (`--allow-downgrade` overrides): we do not
+downgrade for parity. Packages that build unmodified from Arch POWER or Arch
+recipes have no directory here. Every package passes path guards that reject
+build-tree paths and stray install locations. Full details are in [`docs/build-queue.md`](docs/build-queue.md).
 
 ### Releasing a new Omarchy version
 
 1. Read upstream's `omarchy.db`: filename, `%SHA256SUM%`, depends.
 2. Read the new migrations; a failing migration aborts `omarchy update`.
-3. Bump `pkgver` and the checksum in `packages/omarchy` and
-   `packages/omarchy-settings`, build, and publish.
+3. Bump `pkgver` and the checksum in `packages/ours/omarchy` and
+   `packages/ours/omarchy-settings`, build, and publish.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `packages/` | PKGBUILDs and patches: ports, ppc64le fixes, Omarchy's own packages |
+| `packages/` | PKGBUILDs and patches, laid out like Arch POWER: a recipe they nest under a category (`kf6/`, `xorg/`, `qt6/` ...) is under the same category here, and `ours/` holds recipes no upstream carries |
 | `tools/` | `bq.py` build queue, `repo-publish.sh`, dependency closure and soname/repo gap checks, path guards, sysroot helpers |
 | `installer/` | `p9-install`, the ISO configurator, first-boot layer, QEMU test rig |
 | `iso/` | archiso profile and `build.sh` |

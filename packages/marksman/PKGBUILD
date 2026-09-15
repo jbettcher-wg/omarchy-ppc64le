@@ -8,7 +8,7 @@
 #
 # Retarget to net10.0 (pkgrel 5). Upstream 2026-02-08 targets net9.0. Arch POWER
 # only ever had .NET 9.0.100-rc.2; this repo now ships a source-built .NET
-# 10.0.12 (packages/dotnet-core), which replaces that 9.0 runtime on upgrade.
+# 10.0.12 (packages/dotnet/dotnet-core), which replaces that 9.0 runtime on upgrade.
 # .NET does not roll a net9.0 app forward onto a 10.0 runtime by default, so
 # marksman is rebuilt for net10.0 rather than papered over with
 # RollForward=Major. The source change is only the five

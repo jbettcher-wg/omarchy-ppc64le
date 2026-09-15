@@ -59,7 +59,7 @@ omarchy-theme-power9
 # `omarchy-cmd-missing ttfx && exit 1`, so without it the idle screensaver at
 # 150s silently does nothing -- no error, no notification, nothing to debug.
 # Omarchy publishes ttfx from their own repository, which is in none of bq's
-# sources (local/archpower/gitlab/aur all miss it), so packages/ttfx/ is our own
+# sources (local/archpower/gitlab/aur all miss it), so packages/ours/ttfx/ is our own
 # recipe built from upstream Rust. No porting was needed, only packaging.
 ttfx
 hyprland

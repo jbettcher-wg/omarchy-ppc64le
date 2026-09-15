@@ -320,7 +320,7 @@ both, in that order.
 
 ### 13. `omarchy-nvim` declares `arch=any` while vendoring two x86-64 binaries
 
-`packages/omarchy-nvim/PKGBUILD`
+`packages/ours/omarchy-nvim/PKGBUILD`
 
 `omarchy-nvim` is published as `arch=any`. It is not. Of the 7,934 files in
 upstream's `2026.8.13-1` package (63 MB unpacked), all but two are shell, Lua,
@@ -349,7 +349,7 @@ packages:
 
 The package is then genuinely `arch=any`, and the architecture dependence lives
 where it belongs — in `depends=()`, resolved by pacman. This is what
-`packages/omarchy-nvim/PKGBUILD` does here, and its `check()` fails the build if
+`packages/ours/omarchy-nvim/PKGBUILD` does here, and its `check()` fails the build if
 a third ELF ever appears, rather than shipping a foreign one.
 
 A second, related point for the same package: mason's registry has **no ppc64le
@@ -690,7 +690,7 @@ is also called on the non-restart path where `regs->exit_result` is stale:
 ## powerpc/eeh: `pci_rescan_remove_lock` self-deadlock in `eeh_rmv_device()`
 
 Patch: `0006-powerpc-eeh-fix-pci_rescan_remove_lock-self-deadlock-in-eeh_rmv_device.patch`
-(carried in `packages/linux-power9`, applied to `~/Development/linux-7.2.2`).
+(carried in `packages/ours/linux-power9`, applied to `~/Development/linux-7.2.2`).
 
 Since `1010b4c012b0` ("powerpc/eeh: Make EEH driver device hotplug safe"),
 `eeh_handle_normal_event()` takes `pci_rescan_remove_lock` on entry and holds it
@@ -756,7 +756,7 @@ never reset, and the global rescan/remove lock held for the remaining uptime.
 
 ## Mono (dotnet/runtime): ppc64le ELFv2 small-struct returns and arguments
 
-`packages/dotnet-core/mono-ppc64le-elfv2-small-aggregates.patch` (paths relative
+`packages/dotnet/dotnet-core/mono-ppc64le-elfv2-small-aggregates.patch` (paths relative
 to `src/runtime`, so it applies to dotnet/runtime as is).
 
 Mono's ppc64 JIT returned every struct through a hidden pointer in r3, the old
@@ -820,7 +820,7 @@ and Chromium upstream if the ppc64 sandbox code is carried there.
 
 ## Mono (dotnet/runtime): static virtual methods constrained to an interface
 
-`packages/dotnet-core/mono-static-virtual-interface-constraint.patch`
+`packages/dotnet/dotnet-core/mono-static-virtual-interface-constraint.patch`
 
 When generic code calls a static virtual method through a type parameter that
 is itself an interface (`TSender.GetGType()` where `TSender` is an interface

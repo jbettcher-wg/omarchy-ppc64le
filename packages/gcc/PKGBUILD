@@ -6,7 +6,7 @@
 # `provides=go=1.17`). With it in repo/, bq stages it into every build sysroot,
 # which the bwrap overlay stacks OVER the host /usr. So every bq build that
 # needed the real Go toolchain got gccgo's go instead (chromium's dawn step,
-# Go packages). This repo uses the mainstream Go toolchain (packages/go), and
+# Go packages). This repo uses the mainstream Go toolchain (packages/go/go), and
 # nothing depends on gcc-go or libgo, so we stop producing them rather than
 # teach bq around them. Local packaging decision, not an upstream fix.
 #

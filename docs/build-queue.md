@@ -297,7 +297,7 @@ Sets known to need this treatment here:
 | set | keep together |
 |---|---|
 | Vulkan SDK | `glslang`, `spirv-tools`, `spirv-headers`, `shaderc` |
-| Qt 6 | every `qt6-*` module at one version -- see `packages/qt6-base` |
+| Qt 6 | every `qt6-*` module at one version -- see `packages/qt6/qt6-base` |
 | Qt for Python | `pyside6` and `shiboken6` at the **same version as Qt**, generated from its headers |
 | ROCm | `rocm-llvm`, `comgr`, `rocm-device-libs`, `hsa-rocr`, `hip-runtime`, `rocminfo` -- they version-check each other at runtime |
 | VTK third-party | bundled `ioss` expects the bundled `fmt`; see `packages/vtk` |
@@ -553,12 +553,18 @@ recipe source is a plugin rather than a fork:
 
 | source | where from |
 |---|---|
-| `local` | `packages/<pkgbase>/` — our own recipes |
-| `archpower` | `~/Development/repo/archpower/<pkgbase>/` — read-only |
+| `local` | `packages/**/<pkgbase>/` — our own recipes, found recursively |
+| `archpower` | `~/Development/repo/archpower/**/<pkgbase>/` — read-only, found recursively |
 | `gitlab` | `gitlab.archlinux.org/archlinux/packaging/packages/<pkgbase>` |
 | `aur` | `aur.archlinux.org/<pkgbase>.git` |
 
-Priority is `--sources local,archpower,gitlab` by default; first hit wins.
+`--sources local,archpower,gitlab` is the default. It names which sources to
+consider and breaks ties among them; it does **not** decide the winner.
+Selection is by version: the newest recipe wins, `packages/` takes a tie, and
+anything older than what our repo database already ships is refused and
+logged unless `--allow-downgrade` is passed. Every resolution is logged as
+`bq: recipe <pkgbase> -> <source> <path> <version>`, so a fall-through to
+GitLab is visible in the run log instead of being silent.
 
 The `aur` source additionally rewrites `arch=()` and regenerates `.SRCINFO`.
 That is not a convenience. **libalpm enforces the architecture guard itself**,

@@ -18,8 +18,17 @@ pkg=${1:?usage: build.sh <package>}
 shift || true
 
 mkdir -p "$SYSROOT" "$PKGDEST" "$LOGDIR" "$WORK/build"
-src="$REPOROOT/packages/$pkg"
-[ -d "$src" ] || { echo "no such package dir: $src"; exit 2; }
+# packages/ mirrors Arch POWER's layout, so a recipe sits at either
+# packages/<pkgbase>/ or packages/<category>/<pkgbase>/. Resolve it by
+# pkgbase, and refuse to guess if two directories claim one.
+mapfile -t _cand < <(find "$REPOROOT/packages" -mindepth 1 -maxdepth 3 \
+  -type d -name "$pkg" -exec test -f '{}/PKGBUILD' \; -print | sort)
+case ${#_cand[@]} in
+  0) echo "no recipe for $pkg under $REPOROOT/packages"; exit 2 ;;
+  1) src="${_cand[0]}" ;;
+  *) echo "ambiguous pkgbase $pkg, $((${#_cand[@]})) directories claim it:"
+     printf '  %s\n' "${_cand[@]}"; exit 2 ;;
+esac
 
 bdir="$WORK/build/$pkg"
 rm -rf "$bdir"; mkdir -p "$bdir"

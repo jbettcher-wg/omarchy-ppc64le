@@ -7,7 +7,7 @@
 # there is no ppc64le-specific change in this recipe at all.
 #
 # Why this is built from the Nerd Fonts release instead of repackaging
-# Omarchy's binary package (as packages/omarchy-nvim has to do):
+# Omarchy's binary package (as packages/ours/omarchy-nvim has to do):
 #
 #   Omarchy publishes no PKGBUILD, but for this package it does not matter,
 #   because its payload is verbatim upstream release files.  The four .ttf in

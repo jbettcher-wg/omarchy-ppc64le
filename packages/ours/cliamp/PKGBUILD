@@ -16,7 +16,7 @@
 #   toolchain from proxy.golang.org and builds with it instead of the repo's.
 #   `local` makes an old go fail loudly instead.  pkgrel 1 also lowered the
 #   go.mod directive to build on go 1.26.5; pkgrel 2 drops that, because the
-#   repo's go is 1.27.1 (packages/go).
+#   repo's go is 1.27.1 (packages/go/go).
 # - GOPATH and GOCACHE under $srcdir, so the build writes nothing into $HOME.
 # - Arch Go packaging flags (CGO_*FLAGS from makepkg, -mod=readonly,
 #   -modcacherw, external link with makepkg's LDFLAGS) instead of the AUR's

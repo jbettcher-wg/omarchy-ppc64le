@@ -14,7 +14,7 @@ to configure a helper.
 
 ## What `yay` does here
 
-Built from `packages/yay` (13.0.1-2). It needed one non-obvious change to work
+Built from `packages/ours/yay` (13.0.1-2). It needed one non-obvious change to work
 at all — `-buildmode=pie` makes purego's ppc64le FFI trampoline segfault on the
 first libalpm call, so this architecture builds without PIE; the full diagnosis
 is in that PKGBUILD's header. With that, verified against the staged package:

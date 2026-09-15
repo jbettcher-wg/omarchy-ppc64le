@@ -6,7 +6,7 @@ switches (related: ziglang/zig#17898).
 
 Against zig 0.16.0 with codeberg commit 9df02121 applied (the PKGBUILD
 applies that first); the lowering lives in src/codegen/llvm/FuncGen.zig.
-packages/zig0.15 carries the same change for zig 0.15.2.
+packages/ours/zig0.15 carries the same change for zig 0.15.2.
 
 What it fixes
 =============
