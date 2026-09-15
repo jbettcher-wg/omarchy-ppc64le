@@ -1037,6 +1037,20 @@ class Slot:
         self.conf = os.path.join(BUILDROOT, "makepkg.conf"
                                  if args.jobs == 1 else
                                  "makepkg.conf.slot%d" % idx)
+        # makepkg loads drop-ins only from "$MAKEPKG_CONF.d" -- the config's
+        # own name plus .d. A serial run's makepkg.conf finds the buildroot's
+        # makepkg.conf.d (where build-power8.sh installs 00-power8.conf); a
+        # slot's makepkg.conf.slotN looked for makepkg.conf.slotN.d, found
+        # nothing, and every -j>1 POWER8 run silently lost the drop-in: no
+        # _power8, so rust shipped a pwr9 libstd. Point each slot at the same
+        # directory.
+        dropins = os.path.join(BUILDROOT, "makepkg.conf.d")
+        if args.jobs > 1 and os.path.isdir(dropins):
+            link = self.conf + ".d"
+            if os.path.islink(link) or not os.path.exists(link):
+                if os.path.islink(link):
+                    os.unlink(link)
+                os.symlink("makepkg.conf.d", link)
 
     def wrap(self, cmd):
         if not self.cpus:
