@@ -2,9 +2,9 @@
 """
 recipe-sync -- where each package we shipped stands against Arch POWER and Arch.
 
-Read-only. It reads repo/omarchy-power9.db, our recipes under packages/, the
-archpower checkout (working tree and origin/master) and Arch's GitLab tags, and
-writes a report. It never writes into a recipe tree, the repo db or a package:
+Read-only. It reads every repo database under repo/, our recipes under
+packages/, the archpower checkout (working tree and origin/master) and Arch's
+GitLab tags, and writes a report. It never writes into a recipe tree, the repo db or a package:
 versions that need `makepkg --printsrcinfo` are computed in a temporary copy of
 the recipe under /var/tmp, and nothing is ever written back as a .SRCINFO. The
 only write to the archpower checkout is `git fetch origin` (remote-tracking
@@ -25,6 +25,7 @@ Usage
   --gitlab-rate N  GitLab requests started per minute (default 45; Arch
                  GitLab answers HTTP 429 past 60 unauthenticated git requests
                  a minute, so an uncached full run takes about 20 minutes)
+  --no-upstream  skip the nvchecker pass (upstream column stays empty)
   --only A,B     restrict the report to these pkgbases
   --only-file F  restrict it to the pkgbases listed in F, one per line
   --nv-jobs N    concurrent nvchecker runs (default 4)
@@ -47,15 +48,26 @@ Columns (TSV)
   source     where "ours" came from: local (packages/), archpower (the
              working tree), gitlab-only (neither tree has it), none (not on
              GitLab either)
-  shipped    version in omarchy-power9.db (newest, if entries disagree)
-  ours       recipe version from the source above. Recipes are found by
-             pkgbase anywhere under packages/ (top level or one category
-             directory deep), and a directory that moves while the report
-             runs is re-resolved rather than failing
-  archpower  archpower origin/master:<pkgbase>/PKGBUILD, or
-             <category>/<pkgbase>/PKGBUILD (kf6/, xorg/, qt6/, python/ ...)
-             when there is no top-level recipe. "ours" does not follow the
-             nesting, because bq's archpower source does not.
+  shipped    newest version across every repo database in repo/, which is the
+             never-downgrade floor. The p9 -> ppc64le rename keeps two live at
+             once (omarchy-power9.db.tar.gz and the partial
+             omarchy-ppc64le.db.tar.zst), and reading only one makes packages
+             we did ship look as though they never shipped; older entries are
+             listed in the note
+  ours       recipe version from the source above -- the recipe bq would
+             build. Both packages/ and the archpower working tree are indexed
+             by pkgbase at any depth with the shared closure.discover_recipes,
+             the same way bq's DirSource resolves them, and a directory that
+             moves while the report runs is re-resolved rather than failing. A
+             pkgbase claimed by more than one directory is reported in the
+             note, never silently resolved to the first
+  archpower  the recipe for this pkgbase in archpower origin/master, at any
+             depth: <pkgbase>/, <category>/<pkgbase>/ (kf6/, xorg/, qt6/,
+             python/ ...), tde/<group>/<pkgbase>/, kernels/<arch>/<pkgbase>/
+             and the leftover SVN <category>/<pkgbase>/trunk/. A directory
+             holding a PKGBUILD is a recipe and is never descended into, so
+             cscope/trunk/ beside cscope/ is not a second claim; the genuine
+             collisions (gnome-common, malcontent, linux-ps3) are noted
   arch       Arch GitLab's current release: the newest (by vercmp) of the
              <pkgver>-<pkgrel> tags on HEAD; if HEAD is an untagged
              post-release commit, the version in HEAD's .SRCINFO; only if that
@@ -99,11 +111,14 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from closure import discover_recipes  # noqa: E402  (shared recipe discovery)
+
 HOME = os.path.expanduser("~")
 OMARCHY = os.path.join(HOME, "Development/omarchy-ppc64le")
 LOCAL = os.path.join(OMARCHY, "packages")
 ARCHPOWER = os.path.join(HOME, "Development/repo/archpower")
-DB = os.path.join(OMARCHY, "repo/omarchy-power9.db.tar.gz")
+REPO = os.path.join(OMARCHY, "repo")
 CACHE = "/var/tmp/recipe-sync-cache"
 GITLAB = "https://gitlab.archlinux.org/archlinux/packaging/packages/%s.git"
 MAX_FILE = 1 << 20          # recipe files larger than this are sources, not recipe
@@ -165,8 +180,44 @@ class Vercmp:
 
 # ---------------------------------------------------------------- repo db
 
+DB_NAME = re.compile(r".+\.db\.tar\.(gz|xz|zst|bz2)$")
+
+
+def repo_dbs():
+    """Every live repo database in the pool.
+
+    The p9 -> ppc64le rename means two sit side by side
+    (omarchy-power9.db.tar.gz, 1,355 entries, and omarchy-ppc64le.db.tar.zst,
+    212). Reading only the first one found makes packages we did ship --
+    kconfig, kio, libxcb, rust, gcc -- look as though they never shipped, and
+    the never-downgrade floor has to be the newest across the whole pool."""
+    out = []
+    try:
+        names = sorted(os.listdir(REPO))
+    except OSError:
+        return out
+    for name in names:
+        p = os.path.join(REPO, name)
+        if DB_NAME.fullmatch(name) and os.path.isfile(p) and not os.path.islink(p):
+            out.append(p)
+    return out
+
+
+def load_pool(dbs):
+    """(pkgbase -> [(db, pkgname, version)], [(db, entry count)]) merged over
+    every repo database in the pool."""
+    merged, counts = {}, []
+    for path in dbs:
+        name, n = os.path.basename(path), 0
+        for base, entries in load_db(path).items():
+            merged.setdefault(base, []).extend((name, p, v) for p, v in entries)
+            n += len(entries)
+        counts.append((name, n))
+    return merged, counts
+
+
 def load_db(path):
-    """pkgbase -> [(pkgname, version)] from the published repo database."""
+    """pkgbase -> [(pkgname, version)] from one published repo database."""
     out = {}
     with tarfile.open(path) as t:
         for m in t:
@@ -263,41 +314,31 @@ def cache_write(path, d):
     os.replace(tmp, path)
 
 
-_LOCAL_IDX = {"map": None, "lock": threading.Lock()}
+_TREE_IDX = {"maps": {}, "lock": threading.Lock()}
 
 
-def scan_local():
-    """pkgbase -> recipe directory under packages/, at the top level or one
-    category directory deep. packages/ is being reorganised into Arch POWER's
-    category layout (kf6/, xorg/, qt6/ ...), so recipes are found by pkgbase
-    rather than at a fixed path, and a directory that moves mid-run is picked
-    up by re-scanning (see local_dir)."""
-    out = {}
-    try:
-        top = sorted(os.scandir(LOCAL), key=lambda e: e.name)
-    except OSError:
-        return out
-    for e in top:
-        if not e.is_dir() or e.name.startswith("."):
-            continue
-        if os.path.isfile(os.path.join(e.path, "PKGBUILD")):
-            out[e.name] = e.path
-            continue
-        try:
-            nested = sorted(os.scandir(e.path), key=lambda x: x.name)
-        except OSError:
-            continue
-        for n in nested:
-            if n.is_dir() and os.path.isfile(os.path.join(n.path, "PKGBUILD")):
-                out.setdefault(n.name, n.path)
-    return out
+def tree_dirs(root, pkgbase, rescan=False):
+    """Every directory in a recipe tree claiming this pkgbase, at any depth.
+
+    closure.discover_recipes is the shared implementation, which bq's
+    DirSource and closure.py also use: a directory containing a PKGBUILD is a
+    recipe and is never descended into, a trailing trunk/ names its parent,
+    and a pkgbase claimed by more than one directory comes back with all of
+    them. Reporting the collision is the point; picking the first silently is
+    the bug this removes. Re-scanning picks up a recipe that moves while the
+    report runs."""
+    with _TREE_IDX["lock"]:
+        if rescan or root not in _TREE_IDX["maps"]:
+            _TREE_IDX["maps"][root] = dict(discover_recipes(root))
+        return list(_TREE_IDX["maps"][root].get(pkgbase) or ())
 
 
-def local_dir(pkgbase, rescan=False):
-    with _LOCAL_IDX["lock"]:
-        if _LOCAL_IDX["map"] is None or rescan:
-            _LOCAL_IDX["map"] = scan_local()
-        return _LOCAL_IDX["map"].get(pkgbase)
+def local_dirs(pkgbase, rescan=False):
+    return tree_dirs(LOCAL, pkgbase, rescan)
+
+
+def archpower_dirs(pkgbase, rescan=False):
+    return tree_dirs(ARCHPOWER, pkgbase, rescan)
 
 
 def dir_files(path):
@@ -426,13 +467,22 @@ def origin_trees():
         f = meta.split()
         if len(f) == 3:
             shas[path] = f[2]
+    dirs = [p[:-len("/PKGBUILD")] for p in
+            git("ls-tree", "-r", "--name-only", "origin/master")
+            if p.endswith("/PKGBUILD")]
+    have = set(dirs)
     out = {}
-    for path in git("ls-tree", "-r", "--name-only", "origin/master"):
-        parts = path.split("/")
-        if parts[-1] == "PKGBUILD" and len(parts) in (2, 3):
-            d = "/".join(parts[:-1])
-            if d in shas:
-                out.setdefault(parts[-2], []).append((d, shas[d]))
+    for d in dirs:
+        parts = d.split("/")
+        # Same rule as closure.discover_recipes: a directory containing a
+        # PKGBUILD is a recipe and is never descended into, so cscope/trunk
+        # under cscope/ and python/python-pycparser/python-cffi are not second
+        # directories claiming a pkgbase that already resolved.
+        if any("/".join(parts[:i]) in have for i in range(1, len(parts))):
+            continue
+        base = parts[-2] if parts[-1] == "trunk" and len(parts) > 1 else parts[-1]
+        if d in shas:
+            out.setdefault(base, []).append((d, shas[d]))
     for v in out.values():
         v.sort(key=lambda x: (x[0].count("/"), x[0]))
     return out
@@ -610,9 +660,10 @@ def nvchecker_toml(pkgbase, ours_dir, ours_label, trees, max_age, limiter):
     """The .nvchecker.toml to check this pkgbase with, and where it came
     from: our own recipe, the archpower working tree, archpower
     origin/master (category directories included), or Arch GitLab at HEAD."""
+    local, apwt = local_dirs(pkgbase), archpower_dirs(pkgbase)
     for d, label in ((ours_dir, ours_label or "ours"),
-                     (local_dir(pkgbase), "local"),
-                     (os.path.join(ARCHPOWER, pkgbase), "archpower")):
+                     (local[0] if local else None, "local"),
+                     (apwt[0] if apwt else None, "archpower")):
         if not d:
             continue
         try:
@@ -793,7 +844,10 @@ def clean(s):
 
 def cmd_report(args):
     vc = Vercmp()
-    db = load_db(DB)
+    dbs = repo_dbs()
+    if not dbs:
+        raise SystemExit("recipe-sync: no repo database under %s" % REPO)
+    db, pool = load_pool(dbs)
     bases = sorted(db)
     if args.only_file:
         names = [l.split("#")[0].strip() for l in open(args.only_file)]
@@ -808,24 +862,31 @@ def cmd_report(args):
 
     fetch = "skipped (--no-fetch)" if args.no_fetch else fetch_archpower()
     trees = origin_trees()
-    have_nv = shutil.which("nvchecker") is not None
+    have_nv = shutil.which("nvchecker") is not None and not args.no_upstream
     max_age = args.max_age * 3600
 
     def ours_job(b):
         # Two passes: if the recipe directory moved between the scan and the
-        # read (packages/ is being reorganised while this runs), re-scan and
-        # take the new path instead of failing.
+        # read (packages/ was reorganised into the category layout), re-scan
+        # and take the new path instead of failing.
         for attempt in (0, 1):
-            d = local_dir(b, rescan=attempt == 1)
-            if not d:
+            dirs = local_dirs(b, rescan=attempt == 1)
+            if not dirs:
                 break
-            files = dir_files(d)
+            files = dir_files(dirs[0])
             if files.get("PKGBUILD"):
-                return ("local", d) + recipe_version(files)
-        d = os.path.join(ARCHPOWER, b)
-        if os.path.isfile(os.path.join(d, "PKGBUILD")):
-            return ("archpower", d) + recipe_version(dir_files(d))
-        return (None, None, None, None, None)
+                return ("local", dirs[0]) + recipe_version(files) + (dirs,)
+        # The archpower working tree is indexed the same way, at any depth,
+        # because bq's DirSource resolves it by pkgbase rather than by
+        # <root>/<pkgbase>: a nested recipe there is what bq would build.
+        for attempt in (0, 1):
+            dirs = archpower_dirs(b, rescan=attempt == 1)
+            if not dirs:
+                break
+            files = dir_files(dirs[0])
+            if files.get("PKGBUILD"):
+                return ("archpower", dirs[0]) + recipe_version(files) + (dirs,)
+        return (None, None, None, None, None, [])
 
     def origin_job(b):
         if b not in trees:
@@ -867,25 +928,28 @@ def cmd_report(args):
     rows = []
     for b in bases:
         errors, notes = [], []
-        versions = sorted({v for _, v in db[b]})
+        versions = sorted({v for _, _, v in db[b]})
         shipped = vc.newest(versions)
         if len(versions) > 1:
-            stale = sorted({"%s %s" % (n, v) for n, v in db[b] if v != shipped})
-            notes.append("db entries disagree (also %s)" % ", ".join(stale))
+            stale = sorted({"%s %s in %s" % (n, v, d)
+                            for d, n, v in db[b] if v != shipped})
+            notes.append("older entries: " + ", ".join(stale))
 
-        src, _, o_ver, _, o_err = ours[b]
+        src, _, o_ver, _, o_err, o_dirs = ours[b]
         if o_err:
             errors.append("ours (%s): %s" % (src, o_err))
+        if len(o_dirs) > 1:
+            notes.append("%d directories claim this pkgbase: %s; ours uses %s"
+                         % (len(o_dirs),
+                            ", ".join(os.path.relpath(x, LOCAL) for x in o_dirs),
+                            os.path.relpath(o_dirs[0], LOCAL)))
 
         a_ver, _, a_err = orig[b]
         if a_err:
             errors.append("archpower origin: " + a_err)
         paths = [p for p, _ in trees.get(b, [])]
         if paths and "/" in paths[0]:
-            # bq's archpower source reads only <pkgbase>/PKGBUILD, so a nested
-            # recipe is never what it builds; ours stays with local/gitlab.
-            notes.append("archpower recipe is nested at %s (bq reads only "
-                         "top-level archpower recipes)" % paths[0])
+            notes.append("archpower recipe at %s" % paths[0])
         if len(paths) > 1:
             notes.append("archpower has %s; archpower column uses %s"
                          % (" and ".join(paths), paths[0]))
@@ -956,15 +1020,16 @@ def cmd_report(args):
         sys.stdout.write(tsv)
         summary_fh = sys.stderr
 
-    summary(rows, vc, fetch, have_nv, summary_fh)
+    summary(rows, vc, fetch, have_nv, pool, summary_fh)
 
 
-def summary(rows, vc, fetch, have_nv, fh):
+def summary(rows, vc, fetch, have_nv, pool, fh):
     p = lambda *a: print(*a, file=fh)
     counts = {k: 0 for k in BUCKETS}
     for r in rows:
         counts[r["bucket"]] += 1
     p("recipe-sync report: %d pkgbases" % len(rows))
+    p("  repo pool: %s" % ", ".join("%s (%d)" % (n, c) for n, c in pool))
     p("  archpower: %s; origin/master %s" % (fetch, origin_date()))
     p("  vercmp: %s" % vc.backend)
     p("  upstream: %s" % ("nvchecker" if have_nv else
@@ -1075,6 +1140,7 @@ def main():
     rp.add_argument("--nv-jobs", type=int, default=4)
     rp.add_argument("--nv-rate", type=float, default=20)
     rp.add_argument("--github-rate", type=float, default=50)
+    rp.add_argument("--no-upstream", action="store_true")
     rp.add_argument("--only")
     rp.add_argument("--only-file")
     args = ap.parse_args()
