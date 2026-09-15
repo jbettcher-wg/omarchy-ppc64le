@@ -18,10 +18,18 @@ makepkg for the one job makepkg is good at.
 The recipe source is pluggable, because the AUR triage tool is this same
 engine with a different front end:
 
-    local      omarchy-ppc64le/packages/<pkgbase>/       (our own recipes)
-    archpower  ~/Development/repo/archpower/<pkgbase>/   (read-only input)
+    local      omarchy-ppc64le/packages/**/<pkgbase>/     (our own recipes)
+    archpower  ~/Development/repo/archpower/**/<pkgbase>/ (read-only input)
     gitlab     gitlab.archlinux.org/archlinux/packaging/packages/<pkgbase>
     aur        aur.archlinux.org/<pkgbase>.git
+
+Both directory trees are searched *recursively* and keyed by pkgbase, because
+Arch POWER nests most of its recipes under category directories (kf6/, xorg/,
+python/, plasma/ and twenty-odd more) and our tree mirrors that layout.  When
+more than one tree carries a pkgbase the newest version wins -- `packages/`
+breaking a tie, so our patched copy is preferred over an identical upstream one
+-- and a recipe older than the version our repo database already ships is never
+selected without --allow-downgrade.
 
 The AUR source additionally rewrites `arch=()` and regenerates `.SRCINFO`.
 That is not a nicety: libalpm enforces the architecture guard itself, so
@@ -55,7 +63,9 @@ import json
 import time
 import fcntl
 import shutil
+import tarfile
 import argparse
+import functools
 import threading
 import subprocess
 from collections import defaultdict
@@ -136,6 +146,13 @@ def emit(line):
         sys.stdout.flush()
 
 
+def log(line):
+    """Diagnostics go to stderr so stdout stays the queue listing."""
+    with _PRINT_LOCK:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+
+
 def record(st, pkgbase, result):
     with _STATE_LOCK:
         st["packages"][pkgbase] = result
@@ -165,23 +182,75 @@ class Source:
         """Put a buildable recipe directory at `dest`.  Returns True/False."""
         raise NotImplementedError
 
+    def version_of(self, pkgbase):
+        """The version this source would build, if it can be known without
+        fetching.  A git source cannot, and says so."""
+        return None
+
+    def relpath_of(self, pkgbase):
+        return None
+
+    def ambiguous(self):
+        return {}
+
 
 class DirSource(Source):
     """A recipe tree already on disk.  Always copied out, never built in
     place -- building in a checkout is what leaves src/, pkg/ and stray
     tarballs scattered through it and makes the next `git pull` awkward.
-    The archpower tree is strictly read-only input."""
+    The archpower tree is strictly read-only input.
+
+    The tree is indexed once, recursively, by pkgbase.  It used to be probed
+    as <root>/<pkgbase>/PKGBUILD, which found only the recipes a tree happens
+    to keep at its top level -- and Arch POWER keeps ~2500 of them one level
+    down under kf6/, xorg/, python/, plasma/ and the rest.  Those ~180 that we
+    actually queue were reported absent and quietly fetched from Arch's GitLab
+    instead, which is how the POWER8 builder came to build KDE Frameworks 6.30
+    against our 6.29 and fail 41 packages."""
 
     def __init__(self, name, root):
         self.name = name
         self.root = root
+        self._index = None
+        self._ambiguous = None
+
+    def _build_index(self):
+        if self._index is not None:
+            return
+        self._index, self._ambiguous = {}, {}
+        for base, dirs in discover_recipes(self.root).items():
+            if len(dirs) == 1:
+                self._index[base] = dirs[0]
+            else:
+                # Two directories claim one pkgbase.  Never pick one: picking
+                # silently is the entire failure mode this indexing exists to
+                # remove, so record it and let the caller refuse.
+                self._ambiguous[base] = sorted(dirs)
+
+    def index(self):
+        self._build_index()
+        return self._index
+
+    def ambiguous(self):
+        self._build_index()
+        return self._ambiguous
+
+    def path_of(self, pkgbase):
+        return self.index().get(pkgbase)
+
+    def relpath_of(self, pkgbase):
+        d = self.path_of(pkgbase)
+        return os.path.relpath(d, self.root) if d else None
+
+    def version_of(self, pkgbase):
+        return recipe_version(self.path_of(pkgbase))
 
     def available(self, pkgbase):
-        return os.path.isfile(os.path.join(self.root, pkgbase, "PKGBUILD"))
+        return self.path_of(pkgbase) is not None
 
     def materialise(self, pkgbase, dest):
-        src = os.path.join(self.root, pkgbase)
-        if not self.available(pkgbase):
+        src = self.path_of(pkgbase)
+        if src is None:
             return False
         os.makedirs(dest, exist_ok=True)
         for entry in os.listdir(src):
@@ -334,8 +403,10 @@ SOURCES = {
 # ==========================================================================
 
 # Tarjan lives in closure.py; the two tools share one graph implementation
-# rather than each growing its own.
-from closure import tarjan  # noqa: E402
+# rather than each growing its own.  discover_recipes is there for the same
+# reason: closure.py, bq and recipe-sync must agree on what a recipe tree
+# contains, or they disagree about which packages exist.
+from closure import tarjan, discover_recipes  # noqa: E402
 
 VERSTRIP = re.compile(r"[<>=]+.*$")
 
@@ -459,16 +530,243 @@ def pkgbase_of(name):
     return _PKGBASE.get(name, name)
 
 
-def find_source(pkgbase, order):
-    for sname in order:
-        s = SOURCES[sname]
-        if isinstance(s, DirSource) and s.available(pkgbase):
-            return s
-    # git sources cannot be probed cheaply; they are tried at materialise time
-    for sname in order:
-        if isinstance(SOURCES[sname], GitSource):
-            return SOURCES[sname]
-    return None
+_LITERAL_VER = re.compile(r"^[A-Za-z0-9._+~]+$")
+_VER_ASSIGN = re.compile(r"^(pkgver|pkgrel|epoch)=(.*?)\s*(?:#.*)?$")
+
+
+def _literal_versions(pkgbuild):
+    """pkgver/pkgrel/epoch exactly as written, for the ones that are a plain
+    literal assigned exactly once.  A VCS recipe computes pkgver in pkgver(),
+    and a recipe that assigns one twice is conditional; both are reported
+    unknown rather than guessed at, because a wrong version here would either
+    skip a real update or trip the never-downgrade guard on a phantom."""
+    try:
+        body = open(pkgbuild, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return {}
+    seen, out = defaultdict(int), {}
+    for ln in body.splitlines():
+        m = _VER_ASSIGN.match(ln)
+        if not m:
+            continue                      # indented => inside a function
+        seen[m.group(1)] += 1
+        out[m.group(1)] = m.group(2).strip().strip("'\"")
+    for k, n in list(seen.items()):
+        if n > 1 or not _LITERAL_VER.match(out.get(k, "")):
+            out.pop(k, None)
+    return out
+
+
+def recipe_version(recipedir):
+    """epoch:pkgver-pkgrel for a recipe directory, or None if it cannot be
+    read without sourcing the recipe.
+
+    The PKGBUILD is authoritative and .SRCINFO is only a fallback, the same
+    way round as read_recipe: Arch POWER edits a PKGBUILD and leaves Arch's
+    .SRCINFO beside it un-regenerated, so the .SRCINFO can name a version that
+    nothing will ever build."""
+    if not recipedir:
+        return None
+    v = _literal_versions(os.path.join(recipedir, "PKGBUILD"))
+    if "pkgver" not in v or "pkgrel" not in v:
+        si = os.path.join(recipedir, ".SRCINFO")
+        if os.path.isfile(si):
+            for ln in open(si, encoding="utf-8", errors="replace"):
+                k, _, val = ln.partition("=")
+                k, val = k.strip(), val.strip()
+                if k in ("pkgver", "pkgrel", "epoch") and val and k not in v:
+                    v[k] = val
+    if "pkgver" not in v:
+        return None
+    ver = "%s-%s" % (v["pkgver"], v.get("pkgrel", "1"))
+    return "%s:%s" % (v["epoch"], ver) if v.get("epoch") else ver
+
+
+_VERCMP_CACHE = {}
+
+
+def vercmp(a, b):
+    """pacman's own version comparison: negative, zero or positive.
+
+    Not a string or tuple compare.  The cases in this tree that break a naive
+    one are all real: epochs (freerdp 2:3.31.1-1), fractional pkgrels that
+    Arch POWER uses for its rebuilds (libsasl 2.1.28-5.1 against 2.1.28-5.3),
+    and gcc's +r346+g4e03491b401d snapshot versions."""
+    if a == b:
+        return 0
+    if not a or not b:
+        return 0
+    key = (a, b)
+    if key not in _VERCMP_CACHE:
+        try:
+            r = subprocess.run(["vercmp", a, b], capture_output=True,
+                               text=True, timeout=60)
+            _VERCMP_CACHE[key] = int((r.stdout or "0").strip() or 0)
+        except Exception:
+            _VERCMP_CACHE[key] = 0
+    return _VERCMP_CACHE[key]
+
+
+_SHIPPED = None
+
+
+def shipped_versions():
+    """pkgbase -> the newest version our repo database already ships.
+
+    This is the floor for recipe selection.  The standing rule is that we do
+    not downgrade for parity -- we want to be ahead of, or at worst level
+    with, Arch POWER -- so a recipe that would take a package backwards is
+    refused rather than quietly queued."""
+    global _SHIPPED
+    if _SHIPPED is not None:
+        return _SHIPPED
+    _SHIPPED = {}
+    # Every repo database in the pool, merged, newest version per pkgbase --
+    # not the first one that opens.  The pool currently holds two: the
+    # published omarchy-power9.db.tar.gz with 941 pkgbases, and
+    # omarchy-ppc64le.db.tar.zst, which is the in-progress p9 -> ppc64le rename
+    # and carries only 159.  Reading either one alone gives a floor with holes
+    # in it, and a hole in the floor is a silent downgrade: kconfig, kio,
+    # libxcb, rust and gcc all read as "never shipped" against the smaller db.
+    env = os.environ.get("BQ_REPO_DB")
+    if env:
+        cands = [env]
+    else:
+        cands = []
+        try:
+            for fn in sorted(os.listdir(REPO)):
+                # the live databases only -- not .bak.<stamp>, .old or .bqlck
+                if re.match(r"^[A-Za-z0-9._+-]+\.db\.tar\.(zst|gz|xz)$", fn):
+                    cands.append(os.path.join(REPO, fn))
+        except OSError:
+            pass
+    for path in cands:
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with tarfile.open(path) as t:
+                for m in t:
+                    if not m.isfile() or not m.name.endswith("/desc"):
+                        continue
+                    fields, key = defaultdict(list), None
+                    body = t.extractfile(m).read().decode("utf-8", "replace")
+                    for ln in body.splitlines():
+                        if len(ln) > 2 and ln.startswith("%") and ln.endswith("%"):
+                            key = ln[1:-1]
+                        elif key and ln.strip():
+                            fields[key].append(ln.strip())
+                    name = (fields.get("NAME") or [None])[0]
+                    ver = (fields.get("VERSION") or [None])[0]
+                    if not name or not ver:
+                        continue
+                    base = (fields.get("BASE") or [name])[0]
+                    if base not in _SHIPPED or vercmp(ver, _SHIPPED[base]) > 0:
+                        _SHIPPED[base] = ver
+        except Exception as e:
+            log("bq: could not read repo db %s: %s" % (path, e))
+            continue
+    return _SHIPPED
+
+
+_RESOLVED = {}
+_RESOLVE_LOCK = threading.Lock()
+
+
+def resolve_recipe(pkgbase, order, allow_downgrade=False):
+    """Pick one recipe for a pkgbase, and say out loud where it came from.
+
+    Selection is by *version*, not by fixed source order.  Source order used
+    to decide it, which meant an Arch POWER recipe shadowed a newer one of
+    ours (or the reverse) purely because of where it sat in --sources.  Now
+    the newest recipe wins and `packages/` breaks a tie, so our patched copy
+    is preferred over an upstream one at the same version.
+
+    Two things are refused rather than guessed:
+      * a pkgbase that two directories in one tree both claim, and
+      * a recipe older than what our repo database already ships.
+
+    Returns (Source or None, recipe directory or None, version or None), and
+    logs the decision so a fall-through to GitLab is never silent again.
+    """
+    key = (pkgbase, tuple(order), bool(allow_downgrade))
+    with _RESOLVE_LOCK:
+        if key in _RESOLVED:
+            sname, path, ver = _RESOLVED[key]
+            return (SOURCES[sname] if sname else None), path, ver
+
+    shipped = shipped_versions().get(pkgbase)
+    cands = []
+    for i, sname in enumerate(order):
+        s = SOURCES.get(sname)
+        if not isinstance(s, DirSource):
+            continue
+        amb = s.ambiguous().get(pkgbase)
+        if amb:
+            log("bq: recipe %s: AMBIGUOUS in %s -- %s -- refusing this source"
+                % (pkgbase, sname,
+                   ", ".join(os.path.relpath(d, s.root) for d in amb)))
+            continue
+        d = s.path_of(pkgbase)
+        if d is not None:
+            # tie-break 0 for our tree, then the order the caller gave
+            cands.append((s.version_of(pkgbase),
+                          0 if sname == "local" else i + 1, sname, d))
+
+    def _cmp(a, b):
+        va, vb = a[0], b[0]
+        if va and vb:
+            c = vercmp(vb, va)              # newest first
+            if c:
+                return c
+        elif va != vb:
+            return -1 if va else 1          # a known version beats an unknown
+        return a[1] - b[1]
+
+    cands.sort(key=functools.cmp_to_key(_cmp))
+
+    chosen = None
+    for ver, _tb, sname, d in cands:
+        if (shipped and ver and not allow_downgrade
+                and vercmp(ver, shipped) < 0):
+            log("bq: recipe %s: REFUSED %s %s (%s) -- older than the %s we "
+                "ship; --allow-downgrade overrides"
+                % (pkgbase, sname, ver,
+                   os.path.relpath(d, SOURCES[sname].root), shipped))
+            continue
+        chosen = (sname, d, ver)
+        break
+
+    if chosen is None:
+        # git sources cannot be probed cheaply; they are tried at materialise
+        # time.  Reaching one is a real event -- it means no tree we control
+        # supplied this recipe -- so it gets a line of its own.
+        for sname in order:
+            if isinstance(SOURCES.get(sname), GitSource):
+                why = ("no directory recipe" if not cands else
+                       "every directory recipe was older than the %s we ship"
+                       % shipped)
+                log("bq: recipe %-30s -> %-9s (%s)" % (pkgbase, sname, why))
+                chosen = (sname, None, None)
+                break
+
+    if chosen is None:
+        log("bq: recipe %s: no source in [%s]" % (pkgbase, ",".join(order)))
+        chosen = (None, None, None)
+    elif chosen[1]:
+        sname, d, ver = chosen
+        log("bq: recipe %-30s -> %-9s %-40s %s"
+            % (pkgbase, sname, os.path.relpath(d, SOURCES[sname].root),
+               ver or "?"))
+
+    with _RESOLVE_LOCK:
+        _RESOLVED[key] = chosen
+    sname, path, ver = chosen
+    return (SOURCES[sname] if sname else None), path, ver
+
+
+def find_source(pkgbase, order, allow_downgrade=False):
+    src, _path, _ver = resolve_recipe(pkgbase, order, allow_downgrade)
+    return src
 
 
 def satisfied_on_host(names):
@@ -489,7 +787,8 @@ def satisfied_on_host(names):
     return out
 
 
-def resolve_order(targets, source_order, assume_installed=True):
+def resolve_order(targets, source_order, assume_installed=True,
+                  allow_downgrade=False):
     """Topologically sort targets by build-time dependency.
 
     makepkg will not do this.  Edges are drawn only *between targets* -- a
@@ -515,7 +814,7 @@ def resolve_order(targets, source_order, assume_installed=True):
 
     for t in targets:
         base = pkgbase_of(t)
-        src = find_source(base, source_order)
+        src, rpath, rver = resolve_recipe(base, source_order, allow_downgrade)
         if src is None:
             continue
         d = os.path.join(stage, base)
@@ -527,6 +826,10 @@ def resolve_order(targets, source_order, assume_installed=True):
         if not info["pkgname"]:
             continue
         info["source"] = src.name
+        # Where the recipe actually came from, carried into queue.json: with a
+        # nested tree "archpower" alone no longer says which recipe was read.
+        info["recipe_path"] = rpath and os.path.relpath(rpath, src.root)
+        info["version"] = rver
         # Key the queue by pkgbase: one build produces every split package, so
         # listing them separately would build the same recipe several times.
         recipes[base] = info
@@ -1471,7 +1774,8 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     shutil.rmtree(work, ignore_errors=True)
     pkgbase = pkgbase_of(pkgbase)
     src = SOURCES[recipe_src] if recipe_src in SOURCES else \
-        find_source(pkgbase, args.sources.split(","))
+        find_source(pkgbase, args.sources.split(","),
+                    getattr(args, "allow_downgrade", False))
     if src is None or not src.materialise(pkgbase, work):
         return {"status": "failed", "class": "no-recipe",
                 "detail": "no recipe found in: " + args.sources}
@@ -1759,7 +2063,8 @@ def cmd_plan(args):
     targets = read_targets(args)
     order, recipes, stuck, provided_by, deps = resolve_order(
         targets, args.sources.split(","),
-        assume_installed=not args.full_bootstrap)
+        assume_installed=not args.full_bootstrap,
+        allow_downgrade=args.allow_downgrade)
     # A target with no recipe of its own is not missing if some recipe already
     # in the queue produces it as a split package -- gexiv2-common comes out of
     # gexiv2, libnautilus-extension out of nautilus. Reporting those as missing
@@ -1768,6 +2073,11 @@ def cmd_plan(args):
                      if b not in provided_by)
     q = {"order": order, "cycles": stuck, "missing_recipe": sorted(missing),
          "sources": {t: recipes[t].get("source") for t in order},
+         # Which recipe, not just which tree.  With a nested layout "archpower"
+         # names 4,400 directories, so the queue records the path and the
+         # version it resolved to and a later build can be held to them.
+         "paths": {t: recipes[t].get("recipe_path") for t in order},
+         "versions": {t: recipes[t].get("version") for t in order},
          # The edges, not just the order: `bq build -j` needs to know which
          # packages may overlap, and re-deriving them from a bare order is
          # impossible.  A queue.json written before this existed still works --
@@ -1791,8 +2101,13 @@ def cmd_plan(args):
     if missing:
         print("  %d with no recipe in [%s]: %s"
               % (len(missing), args.sources, " ".join(sorted(missing)[:10])))
+    print("%4s  %-32s %-9s %-40s %s"
+          % ("#", "pkgbase", "source", "recipe", "version"))
     for i, t in enumerate(order, 1):
-        print("%4d  %-34s %s" % (i, t, recipes[t].get("source", "?")))
+        r = recipes[t]
+        print("%4d  %-32s %-9s %-40s %s"
+              % (i, t, r.get("source", "?"), r.get("recipe_path") or "-",
+                 r.get("version") or "-"))
     return 0
 
 
@@ -1819,7 +2134,8 @@ def cmd_build(args):
         targets = read_targets(args)
         order, recipes, stuck, _, deps = resolve_order(
             targets, args.sources.split(","),
-            assume_installed=not getattr(args, "full_bootstrap", False))
+            assume_installed=not getattr(args, "full_bootstrap", False),
+            allow_downgrade=args.allow_downgrade)
         srcmap = {t: recipes[t].get("source") for t in order}
     elif os.path.isfile(qf):
         q = json.load(open(qf))
@@ -1832,7 +2148,8 @@ def cmd_build(args):
             # dependents alongside their dependencies.
             _o, _r, _c, _p, deps = resolve_order(
                 order, args.sources.split(","),
-                assume_installed=not getattr(args, "full_bootstrap", False))
+                assume_installed=not getattr(args, "full_bootstrap", False),
+                allow_downgrade=args.allow_downgrade)
     else:
         print("nothing to build: pass targets or run `bq plan` first", file=sys.stderr)
         return 2
@@ -2140,7 +2457,13 @@ def main():
         p.add_argument("targets", nargs="*")
         p.add_argument("-f", "--targets-file")
         p.add_argument("--sources", default="local,archpower,gitlab",
-                       help="recipe source priority (local,archpower,gitlab,aur)")
+                       help="recipe sources to consider, and the tie-break "
+                            "order among them (local,archpower,gitlab,aur). "
+                            "Selection is by version first, not by this order")
+        p.add_argument("--allow-downgrade", action="store_true",
+                       help="select a recipe even when it is older than the "
+                            "version our repo database already ships. Refused "
+                            "by default: we do not downgrade for parity")
 
     p = sub.add_parser("plan", help="resolve build order")
     common(p)

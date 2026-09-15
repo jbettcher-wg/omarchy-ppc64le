@@ -5,7 +5,10 @@ Omarchy ppc64le system, across two package universes at once:
 
   1. the Arch POWER sync DB (what the distro already has), and
   2. the local recipe trees (what we have to build ourselves) --
-     omarchy-ppc64le/packages/<pkgbase>/ and repo/archpower/<pkgbase>/.
+     omarchy-ppc64le/packages/ and repo/archpower/, both walked recursively
+     and keyed by pkgbase -- Arch POWER nests most of its recipes under
+     category directories (kf6/, xorg/, python/, ...) and our tree mirrors
+     that layout, so a flat listing of either one misses thousands.
 
 `pacman -Sp` alone cannot do this: it stops at the first name that is not in a
 sync repo, which is precisely the set we care about.  So the sync DBs are
@@ -249,15 +252,72 @@ def load_built(repodir, origin):
     return pkgs
 
 
-def load_tree(root, origin):
-    """Scan a directory of <pkgbase>/{.SRCINFO,PKGBUILD} recipe dirs."""
-    pkgs = {}
+# Directories that live *inside* a recipe directory and are not recipes:
+# makepkg's working trees, VCS mirrors cloned next to the recipe, and git
+# metadata. Descending into them would turn a PKGBUILD shipped inside some
+# project's own source tree into a phantom second recipe for a pkgbase.
+PRUNE_DIRS = {".git", ".github", "src", "pkg", "logs", "__pycache__", "keys"}
+MAX_RECIPE_DEPTH = 4
+
+
+def discover_recipes(root):
+    """pkgbase -> [recipe directory, ...] for an entire recipe tree.
+
+    bq, closure.py and recipe-sync all need the same answer to "what recipes
+    does this tree contain", and all three used to answer it with a flat
+    listdir of <root>/<pkgbase>. Arch POWER keeps ~1800 pkgbases at its top
+    level and ~2500 more one level down under kf6/, xorg/, python/, perl/,
+    plasma/ and twenty-odd other category directories, so the flat answer was
+    wrong for more than half the tree.
+
+    A directory that contains a PKGBUILD *is* a recipe and is never descended
+    into. That one rule is what keeps Arch POWER's leftover SVN layout
+    (cscope/PKGBUILD beside cscope/trunk/PKGBUILD) and oddities like
+    python/python-pycparser/python-cffi from each looking like a second
+    directory claiming a pkgbase that already resolved.
+
+    Genuine collisions are returned as they are, with every directory listed,
+    rather than resolved here: only the caller knows whether picking one is
+    acceptable, and picking one silently is the bug this function exists to
+    make impossible.
+    """
+    found = defaultdict(list)
     if not os.path.isdir(root):
-        return pkgs
-    for d in sorted(os.listdir(root)):
-        pdir = os.path.join(root, d)
-        if not os.path.isdir(pdir):
-            continue
+        return found
+
+    def walk(d, depth):
+        try:
+            entries = sorted(os.scandir(d), key=lambda e: e.name)
+        except OSError:
+            return
+        if any(e.is_file() and e.name == "PKGBUILD" for e in entries):
+            base = os.path.basename(d)
+            if base == "trunk":             # old SVN layout: not a pkgbase
+                base = os.path.basename(os.path.dirname(d))
+            found[base].append(d)
+            return
+        if depth >= MAX_RECIPE_DEPTH:
+            return
+        for e in entries:
+            if e.is_dir(follow_symlinks=False) and e.name not in PRUNE_DIRS:
+                walk(e.path, depth + 1)
+
+    walk(root, 0)
+    return found
+
+
+def load_tree(root, origin):
+    """Scan a recipe tree of {.SRCINFO,PKGBUILD} directories, at any depth."""
+    pkgs = {}
+    found = discover_recipes(root)
+    for d in sorted(found):
+        dirs = found[d]
+        if len(dirs) > 1:
+            print("closure: %s: %d directories claim this pkgbase: %s"
+                  % (d, len(dirs),
+                     ", ".join(os.path.relpath(x, root) for x in dirs)),
+                  file=sys.stderr)
+        pdir = dirs[0]
         si = os.path.join(pdir, ".SRCINFO")
         pb = os.path.join(pdir, "PKGBUILD")
         info = {}
