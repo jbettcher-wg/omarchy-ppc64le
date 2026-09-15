@@ -176,14 +176,27 @@ for dir in "$@"; do
   # The pkgdir path itself must never appear in a shipped header.
   dirabs=$(readlink -f "$dir")
 
-  while IFS= read -r -d '' p; do
-    # Applies to every file, ELF or not: see LEAK_PATHS above.
-    if has_leak_path "$p"; then
+  # The literal leak-path check applies to every file, ELF or not (see
+  # LEAK_PATHS above). One recursive grep instead of one grep per file: a
+  # 140k-file package (gstreamer) spent bq's whole 30-minute guard timeout
+  # forking per-file checks.
+  if [ ${#LEAK_PATHS[@]} -gt 0 ]; then
+    lp_args=()
+    for lp in "${LEAK_PATHS[@]}"; do lp_args+=(-e "$lp"); done
+    while IFS= read -r -d '' p; do
       echo "elf-pathguard: FAIL ${p#"$dirabs"}: sysroot path baked into file contents"
       viol=$((viol+1))
+    done < <(LC_ALL=C grep -rlaFZ "${lp_args[@]}" -- "$dirabs" 2>/dev/null)
+  fi
+
+  # One pass classifies every regular file: E = ELF (magic 7f 45 4c 46),
+  # T = a check_text candidate (starts with "#!", or a build-facing name).
+  # Every other file produced no output from check_text, so it is not visited.
+  while IFS= read -r -d '' rec; do
+    kind=${rec%%$'\t'*}; p=${rec#*$'\t'}
+    if [ "$kind" = T ]; then
+      check_text "$p" "$dirabs"; continue
     fi
-    [ "$(head -c4 -- "$p" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] || {
-      check_text "$p" "$dirabs"; continue; }
     out=$(readelf -dW -- "$p" 2>/dev/null) || continue
     [ -n "$out" ] || continue
     total_elf=$((total_elf+1))
@@ -223,7 +236,33 @@ for dir in "$@"; do
           done ;;
       esac
     done <<< "$out"
-  done < <(find "$dirabs" -type f -print0)
+  done < <(python3 - "$dirabs" <<'PYEOF'
+import fnmatch, os, stat, sys
+root = sys.argv[1]
+# check_text's build-facing patterns, matched against the path relative to the
+# package dir as bash `case` globs (where * also matches /).
+pats = ("*/bin/*-config", "*.pc", "*.cmake", "*/Makefile*", "*/*-config.cmake")
+out = sys.stdout.buffer
+for dirpath, dirnames, filenames in os.walk(root):
+    for name in filenames:
+        p = os.path.join(dirpath, name)
+        try:
+            if not stat.S_ISREG(os.lstat(p).st_mode):
+                continue
+            with open(p, "rb") as f:
+                head = f.read(4)
+        except OSError:
+            continue
+        rel = p[len(root):]
+        if head == b"\x7fELF":
+            kind = b"E"
+        elif head[:2] == b"#!" or any(fnmatch.fnmatchcase(rel, x) for x in pats):
+            kind = b"T"
+        else:
+            continue
+        out.write(kind + b"\t" + os.fsencode(p) + b"\0")
+PYEOF
+)
 done
 
 if [ "$viol" -gt 0 ]; then
