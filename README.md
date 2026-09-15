@@ -133,6 +133,11 @@ upstream's:
   drop to a shell;
 - a **Reboot Now** prompt when it finishes.
 
+On PowerNV machines the installed system appears in petitboot alongside
+anything else on the box, with one entry per installed kernel:
+
+![Petitboot listing Omarchy POWER9 entries for linux-power9 and linux-power9-64k](docs/images/petitboot.png)
+
 ![The Omarchy installer's progress screen on POWER9](docs/images/installer.png)
 
 `p9-install` supports **PowerNV** (bare metal: AC922, Talos II, Blackbird and
