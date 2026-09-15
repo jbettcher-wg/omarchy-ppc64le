@@ -1,0 +1,45 @@
+From: Arch POWER
+Subject: [PATCH] spa/json: qualify isnormal/isinf/signbit for C++ consumers
+
+spa_json_format_float() is a SPA_API_JSON static inline in a public
+header, so every C++ translation unit that includes <spa/utils/json.h>
+compiles it. It calls isnormal(), isinf() and signbit() unqualified,
+relying on the macros from <math.h>.
+
+In C++ those are not macros: libstdc++ undefines them and declares the
+functions in namespace std. GCC 16 no longer also injects them into the
+global namespace, so the header fails to compile for every C++ consumer:
+
+  json-core.h:453:13: error: isnormal was not declared in this scope;
+                             did you mean std::isnormal?
+
+Observed building openal, openexr and qt6-multimedia against
+pipewire 1.6.x with GCC 16.1.1.
+
+Qualify them with function-scoped using-declarations under __cplusplus,
+which keeps the C path byte-identical and adds no namespace pollution.
+---
+--- a/spa/include/spa/utils/json-core.h
++++ b/spa/include/spa/utils/json-core.h
+@@ -10,6 +10,9 @@
+ #include <stdint.h>
+ #include <string.h>
+ #include <math.h>
++#ifdef __cplusplus
++#include <cmath>
++#endif
+ #include <float.h>
+ 
+ #include <spa/utils/defs.h>
+@@ -450,6 +453,11 @@
+ 
+ SPA_API_JSON char *spa_json_format_float(char *str, int size, float val)
+ {
++#ifdef __cplusplus
++	using std::isnormal;
++	using std::isinf;
++	using std::signbit;
++#endif
+ 	if (SPA_UNLIKELY(!isnormal(val))) {
+ 		if (isinf(val))
+ 			val = signbit(val) ? FLT_MIN : FLT_MAX;

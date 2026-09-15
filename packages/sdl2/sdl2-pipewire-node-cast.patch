@@ -1,0 +1,27 @@
+From: Arch POWER
+Subject: [PATCH] audio/pipewire: cast proxy for pw_node_enum_params()
+
+pipewire 0.3.8x exposed pw_node_enum_params() as a macro that accepted
+any proxy. Newer pipewire (1.6) declares it as a real function taking
+struct pw_node *, so passing the pw_proxy * is now a hard error under
+GCC 14+, where -Wincompatible-pointer-types is an error by default:
+
+  SDL_pipewire.c:593:37: error: passing argument 1 of pw_node_enum_params
+                                from incompatible pointer type
+  node.h:208: expected struct pw_node * but argument is of type struct pw_proxy *
+
+The proxy is the node object; the cast is what the old macro did
+implicitly.
+
+---
+--- a/src/audio/pipewire/SDL_pipewire.c
++++ b/src/audio/pipewire/SDL_pipewire.c
+@@ -590,7 +590,7 @@
+ 
+         /* Need to parse the parameters to get the sample rate */
+         for (i = 0; i < info->n_params; ++i) {
+-            pw_node_enum_params(node->proxy, 0, info->params[i].id, 0, 0, NULL);
++            pw_node_enum_params((struct pw_node *)node->proxy, 0, info->params[i].id, 0, 0, NULL);
+         }
+ 
+         hotplug_core_sync(node);

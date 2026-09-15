@@ -1,0 +1,51 @@
+From: Arch POWER
+Subject: [PATCH] gst-libav: guard V308/V408/V410 for libavcodec >= 63
+
+ffmpeg 9 (libavcodec 63) removes AV_CODEC_ID_V308, AV_CODEC_ID_V408 and
+AV_CODEC_ID_V410; in libavcodec 62 they were still present behind
+FF_API_V408_CODECID. gst-libav 1.28.5 references them unconditionally in
+the "no quasi codecs" filters, so building against ffmpeg 9 fails:
+
+  gstavvidenc.c:1036:26: error: AV_CODEC_ID_V308 undeclared
+  gstavviddec.c:3003:26: error: AV_CODEC_ID_V308 undeclared
+
+Upstream fixed this after 1.28.5 by wrapping the three in
+"#if LIBAVCODEC_VERSION_MAJOR < 63". This backports that guard, keeping
+the || chain valid whether or not the block is compiled.
+
+Not architecture-specific; affects any target building 1.28.5 against
+ffmpeg 9.
+
+---
+--- a/subprojects/gst-libav/ext/libav/gstavviddec.c
++++ b/subprojects/gst-libav/ext/libav/gstavviddec.c
+@@ -3000,9 +3000,12 @@
+     if (in_plugin->id == AV_CODEC_ID_RAWVIDEO ||
+         in_plugin->id == AV_CODEC_ID_V210 ||
+         in_plugin->id == AV_CODEC_ID_V210X ||
++#if LIBAVCODEC_VERSION_MAJOR < 63
+         in_plugin->id == AV_CODEC_ID_V308 ||
+         in_plugin->id == AV_CODEC_ID_V408 ||
+-        in_plugin->id == AV_CODEC_ID_V410 || in_plugin->id == AV_CODEC_ID_R210
++        in_plugin->id == AV_CODEC_ID_V410 ||
++#endif
++        in_plugin->id == AV_CODEC_ID_R210
+ #if LIBAVCODEC_VERSION_MAJOR < 61
+         || in_plugin->id == AV_CODEC_ID_AYUV
+ #endif
+--- a/subprojects/gst-libav/ext/libav/gstavvidenc.c
++++ b/subprojects/gst-libav/ext/libav/gstavvidenc.c
+@@ -1033,9 +1033,12 @@
+     if (in_plugin->id == AV_CODEC_ID_RAWVIDEO ||
+         in_plugin->id == AV_CODEC_ID_V210 ||
+         in_plugin->id == AV_CODEC_ID_V210X ||
++#if LIBAVCODEC_VERSION_MAJOR < 63
+         in_plugin->id == AV_CODEC_ID_V308 ||
+         in_plugin->id == AV_CODEC_ID_V408 ||
+-        in_plugin->id == AV_CODEC_ID_V410 || in_plugin->id == AV_CODEC_ID_R210
++        in_plugin->id == AV_CODEC_ID_V410 ||
++#endif
++        in_plugin->id == AV_CODEC_ID_R210
+ #if LIBAVCODEC_VERSION_MAJOR < 61
+         || in_plugin->id == AV_CODEC_ID_AYUV
+ #endif
