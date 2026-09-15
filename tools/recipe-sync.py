@@ -26,6 +26,17 @@ Usage
                  GitLab answers HTTP 429 past 60 unauthenticated git requests
                  a minute, so an uncached full run takes about 20 minutes)
   --only A,B     restrict the report to these pkgbases
+  --only-file F  restrict it to the pkgbases listed in F, one per line
+  --nv-jobs N    concurrent nvchecker runs (default 4)
+  --nv-rate N    nvchecker runs started per minute for non-GitHub sources
+                 (default 20)
+  --github-rate N  nvchecker runs started per hour for source = "github"
+                 (default 50; GitHub's REST API allows about 60 an hour
+                 unauthenticated). source = "git" uses git ls-remote, which
+                 does not go through that API, so it takes the faster lane.
+                 This tool never reads, asks for or passes an API token; to
+                 check authenticated, put a keyfile in your own nvchecker
+                 configuration and run nvchecker yourself.
 
   Example:
     tools/recipe-sync.py report --out /var/tmp/recipe-sync-report.tsv
@@ -37,7 +48,10 @@ Columns (TSV)
              working tree), gitlab-only (neither tree has it), none (not on
              GitLab either)
   shipped    version in omarchy-power9.db (newest, if entries disagree)
-  ours       recipe version from the source above
+  ours       recipe version from the source above. Recipes are found by
+             pkgbase anywhere under packages/ (top level or one category
+             directory deep), and a directory that moves while the report
+             runs is re-resolved rather than failing
   archpower  archpower origin/master:<pkgbase>/PKGBUILD, or
              <category>/<pkgbase>/PKGBUILD (kf6/, xorg/, qt6/, python/ ...)
              when there is no top-level recipe. "ours" does not follow the
@@ -48,7 +62,12 @@ Columns (TSV)
              cannot be read, the vercmp-newest tag of all. The vercmp-newest
              tag alone is wrong for repos with old or staging tags (kicad
              20130518-3, qt6-base 6.12.0beta4-1)
-  upstream   nvchecker result (empty when nvchecker is not installed)
+  upstream   nvchecker's newest upstream release, checked with the
+             .nvchecker.toml from our recipe, the archpower working tree,
+             archpower origin/master or Arch GitLab at HEAD, run on a
+             temporary copy. Empty when there is no .nvchecker.toml, the
+             source is "manual", or the source rate-limited us; the note then
+             says which
   bucket     current | upstream-newer | ours-newer | diverged | unknown
   note       why, which side is newer, and flags (recipe-ahead-of-shipped)
 
@@ -242,6 +261,43 @@ def cache_write(path, d):
     with open(tmp, "w") as f:
         json.dump(d, f)
     os.replace(tmp, path)
+
+
+_LOCAL_IDX = {"map": None, "lock": threading.Lock()}
+
+
+def scan_local():
+    """pkgbase -> recipe directory under packages/, at the top level or one
+    category directory deep. packages/ is being reorganised into Arch POWER's
+    category layout (kf6/, xorg/, qt6/ ...), so recipes are found by pkgbase
+    rather than at a fixed path, and a directory that moves mid-run is picked
+    up by re-scanning (see local_dir)."""
+    out = {}
+    try:
+        top = sorted(os.scandir(LOCAL), key=lambda e: e.name)
+    except OSError:
+        return out
+    for e in top:
+        if not e.is_dir() or e.name.startswith("."):
+            continue
+        if os.path.isfile(os.path.join(e.path, "PKGBUILD")):
+            out[e.name] = e.path
+            continue
+        try:
+            nested = sorted(os.scandir(e.path), key=lambda x: x.name)
+        except OSError:
+            continue
+        for n in nested:
+            if n.is_dir() and os.path.isfile(os.path.join(n.path, "PKGBUILD")):
+                out.setdefault(n.name, n.path)
+    return out
+
+
+def local_dir(pkgbase, rescan=False):
+    with _LOCAL_IDX["lock"]:
+        if _LOCAL_IDX["map"] is None or rescan:
+            _LOCAL_IDX["map"] = scan_local()
+        return _LOCAL_IDX["map"].get(pkgbase)
 
 
 def dir_files(path):
@@ -485,19 +541,18 @@ def gitlab_tags(pkgbase, max_age, limiter):
 
 
 GITLAB_RAW = ("https://gitlab.archlinux.org/archlinux/packaging/packages/%s"
-              "/-/raw/HEAD/.SRCINFO")
+              "/-/raw/HEAD/%s")
 
 
-def gitlab_head_version(pkgbase, max_age, limiter):
-    """Version in the .SRCINFO at HEAD, for repos whose HEAD carries no tag
-    (a post-release commit such as a REUSE or nvchecker change). The
-    vercmp-newest tag is not a substitute: kicad's is 20130518-3 and
-    modemmanager's 20100109-1. Returns (version, error)."""
-    cpath = os.path.join(CACHE, "gitlab-head", pkgbase + ".json")
+def gitlab_raw(pkgbase, filename, max_age, limiter):
+    """One file from Arch GitLab at HEAD. Returns (text, error); (None, None)
+    when Arch simply does not ship that file."""
+    cpath = os.path.join(CACHE, "gitlab-raw",
+                         "%s%s.json" % (pkgbase, filename))
     c = cache_read(cpath, max_age)
     if c:
-        return c.get("version"), None
-    url = GITLAB_RAW % gitlab_path(pkgbase)
+        return c.get("text"), None
+    url = GITLAB_RAW % (gitlab_path(pkgbase), filename)
     for _ in range(GITLAB_ATTEMPTS):
         limiter.wait()
         try:
@@ -508,15 +563,31 @@ def gitlab_head_version(pkgbase, max_age, limiter):
             if e.code == 429:
                 limiter.pause(61)
                 continue
-            return None, "HEAD .SRCINFO: HTTP %d" % e.code
+            if e.code == 404:
+                cache_write(cpath, {"text": None})
+                return None, None
+            return None, "%s: HTTP %d" % (filename, e.code)
         except (urllib.error.URLError, OSError) as e:
-            return None, "HEAD .SRCINFO: %s" % e
+            return None, "%s: %s" % (filename, e)
     else:
-        return None, "HEAD .SRCINFO: HTTP 429 after %d attempts" % GITLAB_ATTEMPTS
+        return None, "%s: HTTP 429 after %d attempts" % (filename, GITLAB_ATTEMPTS)
+    cache_write(cpath, {"text": text})
+    return text, None
+
+
+def gitlab_head_version(pkgbase, max_age, limiter):
+    """Version in the .SRCINFO at HEAD, for repos whose HEAD carries no tag
+    (a post-release commit such as a REUSE or nvchecker change). The
+    vercmp-newest tag is not a substitute: kicad's is 20130518-3 and
+    modemmanager's 20100109-1. Returns (version, error)."""
+    text, err = gitlab_raw(pkgbase, ".SRCINFO", max_age, limiter)
+    if err:
+        return None, err
+    if not text:
+        return None, "HEAD has no .SRCINFO"
     si = srcinfo_vars(text)
     if not si:
         return None, "HEAD .SRCINFO has no pkgver/pkgrel"
-    cache_write(cpath, {"version": fmtver(si)})
     return fmtver(si), None
 
 
@@ -530,34 +601,125 @@ def tag_version(tag):
 
 # ---------------------------------------------------------------- nvchecker
 
-def nvchecker_version(pkgbase, recipedir, max_age):
-    toml = os.path.join(recipedir, ".nvchecker.toml")
-    if not os.path.isfile(toml):
-        return None, None
-    data = open(toml, "rb").read()
-    key = hashlib.sha256(data).hexdigest()
+NV_SOURCE = re.compile(r"^\s*source\s*=\s*['\"]?([A-Za-z_]+)", re.M)
+NV_TABLE = re.compile(r"^\s*\[([^\]]+)\]", re.M)
+NV_LIMITED = re.compile(r"rate limit|ratelimit|HTTP 403|403 Forbidden|429", re.I)
+
+
+def nvchecker_toml(pkgbase, ours_dir, ours_label, trees, max_age, limiter):
+    """The .nvchecker.toml to check this pkgbase with, and where it came
+    from: our own recipe, the archpower working tree, archpower
+    origin/master (category directories included), or Arch GitLab at HEAD."""
+    for d, label in ((ours_dir, ours_label or "ours"),
+                     (local_dir(pkgbase), "local"),
+                     (os.path.join(ARCHPOWER, pkgbase), "archpower")):
+        if not d:
+            continue
+        try:
+            with open(os.path.join(d, ".nvchecker.toml"), encoding="utf-8",
+                      errors="replace") as f:
+                return f.read(), label, None
+        except OSError:
+            continue  # absent, or moved out from under us
+    for _, sha in trees.get(pkgbase, []):
+        r = subprocess.run(["git", "-C", ARCHPOWER, "show",
+                            "%s:.nvchecker.toml" % sha], capture_output=True,
+                           text=True, timeout=60, env=GIT_ENV)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout, "archpower-origin", None
+    text, err = gitlab_raw(pkgbase, ".nvchecker.toml", max_age, limiter)
+    if err:
+        return None, None, err
+    if text:
+        return text, "arch-gitlab", None
+    return None, None, "no .nvchecker.toml in our recipe, archpower or Arch"
+
+
+def strip_nv_config(text):
+    """Drop a [__config__] table. It can point nvchecker at a keyfile of API
+    tokens; this tool never reads, asks for or passes tokens. A user who
+    wants authenticated checks puts the keyfile in their own nvchecker
+    configuration and runs nvchecker directly."""
+    tables, out, drop = list(NV_TABLE.finditer(text)), [], False
+    if not tables:
+        return text, False
+    dropped = False
+    pos = 0
+    for i, m in enumerate(tables):
+        end = tables[i + 1].start() if i + 1 < len(tables) else len(text)
+        if m.group(1).strip() == "__config__":
+            out.append(text[pos:m.start()])
+            dropped = True
+        else:
+            out.append(text[pos:end])
+        pos = end
+    return "".join(out), dropped
+
+
+def nvchecker_version(pkgbase, toml_text, max_age, limiters):
+    """(version, reason, source kind). nvchecker is run on a temporary copy
+    of the config; nothing is written into a recipe tree."""
+    m = NV_SOURCE.search(toml_text)
+    kind = m.group(1) if m else "?"
+    key = hashlib.sha256(("%s\0%s" % (pkgbase, toml_text)).encode()).hexdigest()
     cpath = os.path.join(CACHE, "nvchecker", key + ".json")
     c = cache_read(cpath, max_age)
     if c:
-        return c.get("version"), None
+        return c.get("version"), c.get("reason"), kind
+    if kind == "manual":
+        return None, "nvchecker source is manual (no upstream check)", kind
+    cfg, dropped = strip_nv_config(toml_text)
+    # GitHub's REST API allows ~60 unauthenticated requests an hour; the git
+    # and gitlab sources do not go through it, so they get the faster lane.
+    limiters["github" if kind == "github" else "other"].wait()
+    tmp = tempfile.mkdtemp(prefix="recipe-sync-nv.", dir="/var/tmp")
     try:
-        r = subprocess.run(["nvchecker", "-c", toml, "--logger", "json"],
-                           capture_output=True, text=True, timeout=120,
+        path = os.path.join(tmp, "nvchecker.toml")
+        with open(path, "w") as f:
+            f.write(cfg)
+        r = subprocess.run(["nvchecker", "-c", path, "--logger", "json"],
+                           capture_output=True, text=True, timeout=180,
                            stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return None, "nvchecker timed out"
-    ver = None
+        return None, "nvchecker timed out", kind
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    found, errs = {}, []
     for ln in (r.stdout + "\n" + r.stderr).splitlines():
         try:
             d = json.loads(ln)
         except ValueError:
+            if ln.strip():
+                errs.append(ln.strip())
             continue
-        if d.get("name") == pkgbase and d.get("version"):
-            ver = d["version"]
+        if d.get("version"):
+            found[d.get("name") or pkgbase] = d["version"]
+        if d.get("level") in ("error", "critical"):
+            errs.append("%s: %s" % (d.get("event", "error"),
+                                    d.get("error") or d.get("exc_info") or ""))
+    # Arch names the table after the pkgname, which is not always the pkgbase
+    # (libsasl's is cyrus-sasl): take that entry when there is only one.
+    if pkgbase in found:
+        ver = found[pkgbase]
+    elif len(found) == 1:
+        ver = next(iter(found.values()))
+    else:
+        ver = None
+        if found:
+            errs.append("several results: " + ", ".join(sorted(found)))
+    reason = None
     if ver is None:
-        return None, "nvchecker gave no version"
-    cache_write(cpath, {"version": ver})
-    return ver, None
+        detail = "; ".join(errs)[:200] or "nvchecker returned no version"
+        if NV_LIMITED.search(detail):
+            reason = ("%s rate-limited: %s (a token in your own nvchecker "
+                      "keyfile would lift this)" % (kind, detail[:120]))
+        else:
+            reason = "nvchecker (%s): %s" % (kind, detail)
+    if dropped:
+        reason = ((reason + "; ") if reason else "") + "[__config__] ignored"
+    if ver is not None:
+        cache_write(cpath, {"version": ver, "reason": reason})
+    return ver, reason, kind
 
 
 # ---------------------------------------------------------------- classify
@@ -633,6 +795,9 @@ def cmd_report(args):
     vc = Vercmp()
     db = load_db(DB)
     bases = sorted(db)
+    if args.only_file:
+        names = [l.split("#")[0].strip() for l in open(args.only_file)]
+        args.only = ",".join(n for n in names if n)
     if args.only:
         want = set(args.only.split(","))
         bases = [b for b in bases if b in want]
@@ -647,10 +812,19 @@ def cmd_report(args):
     max_age = args.max_age * 3600
 
     def ours_job(b):
-        for src, root in (("local", LOCAL), ("archpower", ARCHPOWER)):
-            d = os.path.join(root, b)
-            if os.path.isfile(os.path.join(d, "PKGBUILD")):
-                return (src, d) + recipe_version(dir_files(d))
+        # Two passes: if the recipe directory moved between the scan and the
+        # read (packages/ is being reorganised while this runs), re-scan and
+        # take the new path instead of failing.
+        for attempt in (0, 1):
+            d = local_dir(b, rescan=attempt == 1)
+            if not d:
+                break
+            files = dir_files(d)
+            if files.get("PKGBUILD"):
+                return ("local", d) + recipe_version(files)
+        d = os.path.join(ARCHPOWER, b)
+        if os.path.isfile(os.path.join(d, "PKGBUILD")):
+            return ("archpower", d) + recipe_version(dir_files(d))
         return (None, None, None, None, None)
 
     def origin_job(b):
@@ -666,18 +840,29 @@ def cmd_report(args):
         limiter = RateLimit(args.gitlab_rate)
         f_lab = {b: net.submit(gitlab_tags, b, max_age, limiter) for b in bases}
         ours = {b: f.result() for b, f in f_ours.items()}
-        f_nv = {}
-        if have_nv:
-            for b in bases:
-                if ours[b][1]:
-                    f_nv[b] = net.submit(nvchecker_version, b, ours[b][1], max_age)
         orig = {b: f.result() for b, f in f_orig.items()}
         lab = {b: f.result() for b, f in f_lab.items()}
         f_head = {b: net.submit(gitlab_head_version, b, max_age, limiter)
                   for b in bases
                   if lab[b]["status"] == "ok" and not lab[b]["head_tags"]}
         head = {b: f.result() for b, f in f_head.items()}
-        nv = {b: f.result() for b, f in f_nv.items()}
+
+        nv = {}
+        if have_nv:
+            limiters = {"github": RateLimit(args.github_rate / 60.0),
+                        "other": RateLimit(args.nv_rate)}
+
+            def nv_job(b):
+                text, where, err = nvchecker_toml(b, ours[b][1], ours[b][0],
+                                                  trees, max_age, limiter)
+                if not text:
+                    return None, err, None, None
+                v, reason, kind = nvchecker_version(b, text, max_age, limiters)
+                return v, reason, kind, where
+
+            with ThreadPoolExecutor(max_workers=args.nv_jobs) as nvpool:
+                f_nv = {b: nvpool.submit(nv_job, b) for b in bases}
+                nv = {b: f.result() for b, f in f_nv.items()}
 
     rows = []
     for b in bases:
@@ -743,9 +928,15 @@ def cmd_report(args):
 
         upstream = ""
         if b in nv:
-            upstream = nv[b][0] or ""
-            if nv[b][1]:
-                notes.append(nv[b][1])
+            uv, ureason, ukind, uwhere = nv[b]
+            upstream = uv or ""
+            if uv:
+                # Upstream releases carry no pkgrel, so compare pkgver only.
+                if vc(uv, split_ver(shipped)[1]) > 0:
+                    notes.append("behind upstream %s (%s via %s)"
+                                 % (uv, ukind, uwhere))
+            elif ureason:
+                notes.append("upstream unchecked: " + ureason)
 
         bucket, cnotes = classify(vc, shipped, o_ver, a_ver, arch, src, errors)
         rows.append({"pkgbase": b, "source": src, "shipped": shipped,
@@ -798,6 +989,9 @@ def summary(rows, vc, fetch, have_nv, fh):
         return vc.newest(c)
 
     p("")
+    p("Policy: be ahead of Arch POWER, or at worst at parity, and never")
+    p("downgrade for parity. Anything below is a package to move forward.")
+    p("")
     p("largest upstream-newer gaps (epoch > leading pkgver component > delta > pkgrel)")
     ranked = sorted(up, key=lambda r: gap_key(r["shipped"], target(r)), reverse=True)
     for r in ranked[:20]:
@@ -819,6 +1013,47 @@ def summary(rows, vc, fetch, have_nv, fh):
             p("  %-28s shipped %-22s %s recipe %s" % (r["pkgbase"], r["shipped"],
                                                      r["source"], r["ours"]))
 
+    mine = [r for r in rows if r["bucket"] == "ours-newer"]
+    if mine:
+        p("")
+        p("ahead of Arch POWER and Arch (%d) -- fine to keep, and candidates "
+          "to offer upstream" % len(mine))
+        for r in mine:
+            p("  %-28s ours %-22s archpower %-16s arch %s"
+              % (r["pkgbase"], r["shipped"], r["archpower"] or "-",
+                 r["arch"] or "-"))
+
+    older = [r for r in rows if "would downgrade" in r["note"]]
+    if older:
+        p("")
+        p("recipes older than what we ship (%d) -- do not rebuild these from "
+          "that recipe; forward-port instead" % len(older))
+        for r in older:
+            p("  %-28s shipped %-22s recipe %s" % (r["pkgbase"], r["shipped"],
+                                                   r["ours"]))
+
+    checked = [r for r in rows if r["upstream"]]
+    behind_up = [r for r in rows if "behind upstream" in r["note"]]
+    unchecked = [r for r in rows if not r["upstream"]
+                 and "upstream unchecked" in r["note"]]
+    if checked or unchecked:
+        p("")
+        p("upstream: %d of %d checked; %d behind upstream" %
+          (len(checked), len(rows), len(behind_up)))
+        for r in behind_up:
+            p("  %-28s shipped %-22s upstream %s"
+              % (r["pkgbase"], r["shipped"], r["upstream"]))
+        if unchecked:
+            why = {}
+            for r in unchecked:
+                m = re.search(r"upstream unchecked: ([^;]*)", r["note"])
+                key = (m.group(1) if m else "?")[:60]
+                why.setdefault(key, []).append(r["pkgbase"])
+            p("  not checked:")
+            for key, names in sorted(why.items(), key=lambda kv: -len(kv[1])):
+                p("    %-58s %d  %s" % (key, len(names),
+                                        " ".join(sorted(names))[:60]))
+
     unk = [r for r in rows if r["bucket"] == "unknown"]
     if unk:
         p("")
@@ -837,7 +1072,11 @@ def main():
     rp.add_argument("--jobs", type=int, default=32)
     rp.add_argument("--net-jobs", type=int, default=8)
     rp.add_argument("--gitlab-rate", type=float, default=45)
+    rp.add_argument("--nv-jobs", type=int, default=4)
+    rp.add_argument("--nv-rate", type=float, default=20)
+    rp.add_argument("--github-rate", type=float, default=50)
     rp.add_argument("--only")
+    rp.add_argument("--only-file")
     args = ap.parse_args()
     if args.cmd == "report":
         cmd_report(args)
