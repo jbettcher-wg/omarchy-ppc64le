@@ -4,11 +4,11 @@
 *.log
 
 # makepkg working directories
-packages/*/src/
-packages/*/pkg/
-packages/*/*.tar.gz
-packages/*/*.tar.xz
-packages/*/*.tar.zst
+packages/**/src/
+packages/**/pkg/
+packages/**/*.tar.gz
+packages/**/*.tar.xz
+packages/**/*.tar.zst
 
 # Local repo database (regenerate with repo-add)
 repo/*.db*
@@ -44,7 +44,7 @@ __pycache__/
 packages/luajit/luajit-ppc64le/
 packages/neovim/neovim/
 packages/qwen-code/qwen-code/
-packages/omarchy-theme-power9/power9.bak.*
+packages/ours/omarchy-theme-power9/power9.bak.*
 
 # Built ISO images (multi-GB). Reproducible from iso/build.sh + the repo.
 iso/out/
