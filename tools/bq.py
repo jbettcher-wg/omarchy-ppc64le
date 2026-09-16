@@ -2011,7 +2011,13 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     # naive accumulation across this queue would be ~130 GiB.
     peak = dir_size_gib(work)
     result["peak_gib"] = round(peak, 2)
-    if not args.keep:
+    # rc 124 is the --timeout path. Removing the tree there threw away work
+    # that was nearly finished -- chromium timed out at 55,804 of 55,835
+    # objects -- and the rmtree deleted the ThinLTO cache directory out from
+    # under a still-running clang++, so the link aborted with "can't create
+    # cache directory thinlto-cache" instead of merely stopping. Keep the tree
+    # on timeout so a retry can makepkg -R (repackage) or -e (skip build).
+    if not args.keep and rc != 124:
         subprocess.run(["makepkg", "--config", conf, "-c", "--noconfirm"],
                        cwd=work, capture_output=True, timeout=600, env=env)
         make_traversable(work)
