@@ -17,9 +17,22 @@
 # force=1 writes even under --dry-run: the file goes to the throwaway work
 # directory, and without it the resolve step below has no config to read, which
 # would make --dry-run unable to check the one thing it is best placed to check.
-render_pacman_conf() {
-  local out="$1" force="${2:-0}" for_target="${3:-0}" stanza="" note=""
-  local -a servers=("${P9_REPO_SERVERS[@]}")
+# One repository's stanza, or nothing when it has no usable server.
+#
+# Factored out because the installer can write two: the distribution publishes
+# a baseline pool (omarchy-ppc64le, POWER8-legal, runs on every ppc64le
+# machine) and an optimised one (omarchy-power9). When both are given the
+# optimised pool is written FIRST -- pacman takes the first repo that has a
+# name, regardless of version, so stanza order is what makes an optimised
+# package win where one exists and the baseline fill in the rest.
+_repo_stanza() {
+  local name="$1" siglevel="$2" for_target="$3"
+  local -n _srvs="$4"
+  local -a servers=("${_srvs[@]}") kept=() dropped=()
+  local _srv out=""
+
+  ((${#servers[@]})) || return 0
+  [[ ${servers[0]} == none ]] && return 0
 
   # The target keeps this file forever; the install-time copy lives for one
   # pacstrap. A file:// server on the boot medium is right for the install and
@@ -32,7 +45,6 @@ render_pacman_conf() {
   # a [repo] stanza and no Server silently has no repo, which is worse than one
   # that fails loudly and can be pointed at a mirror by hand.
   if ((for_target)); then
-    local -a kept=() dropped=()
     for _srv in "${servers[@]}"; do
       case "$_srv" in
         file:///run/archiso/*|file:///run/p9-medium/*) dropped+=("$_srv") ;;
@@ -42,25 +54,41 @@ render_pacman_conf() {
     if ((${#dropped[@]})); then
       if ((${#kept[@]})); then
         servers=("${kept[@]}")
-        log "target pacman.conf: dropped ${#dropped[@]} boot-medium server(s); they do not survive a reboot"
+        log "target pacman.conf: [$name] dropped ${#dropped[@]} boot-medium server(s); they do not survive a reboot"
       else
-        warn "the only [$P9_REPO_NAME] server is on the boot medium; the target will
+        warn "the only [$name] server is on the boot medium; the target will
       carry a Server it cannot reach. Give --repo-server a network mirror, or
       edit /etc/pacman.conf after the first boot."
       fi
     fi
   fi
 
-  if [[ ${#servers[@]} -gt 0 && ${servers[0]} != none ]]; then
-    # $( ) strips trailing newlines, so add them back explicitly or SigLevel
-    # and the first Server end up on one line.
-    stanza=$(printf '[%s]\nSigLevel = %s' "$P9_REPO_NAME" "$P9_REPO_SIGLEVEL")$'\n'
-    for _srv in "${servers[@]}"; do
-      stanza+=$(printf 'Server = %s\n' "$_srv")$'\n'
-    done
+  # $( ) strips trailing newlines, so add them back explicitly or SigLevel
+  # and the first Server end up on one line.
+  out=$(printf '[%s]\nSigLevel = %s' "$name" "$siglevel")$'\n'
+  for _srv in "${servers[@]}"; do
+    out+=$(printf 'Server = %s\n' "$_srv")$'\n'
+  done
+  printf '%s' "$out"
+}
+
+render_pacman_conf() {
+  local out="$1" force="${2:-0}" for_target="${3:-0}" stanza="" note="" _s=""
+
+  _s=$(_repo_stanza "$P9_REPO_NAME" "$P9_REPO_SIGLEVEL" "$for_target" P9_REPO_SERVERS)
+  [[ -n $_s ]] && stanza+="$_s"$'\n'
+  if [[ -n ${P9_BASELINE_REPO_NAME:-} ]]; then
+    _s=$(_repo_stanza "$P9_BASELINE_REPO_NAME" \
+         "${P9_BASELINE_REPO_SIGLEVEL:-$P9_REPO_SIGLEVEL}" "$for_target" \
+         P9_BASELINE_REPO_SERVERS)
+    [[ -n $_s ]] && stanza+="$_s"$'\n'
+  fi
+
+  if [[ -n $stanza ]]; then
     note="[$P9_REPO_NAME] SigLevel is '$P9_REPO_SIGLEVEL', chosen with --repo-siglevel."
+    [[ -n ${P9_BASELINE_REPO_NAME:-} ]] &&
+      note+=" [$P9_BASELINE_REPO_NAME] is the baseline pool, listed after it so the optimised build wins where one exists and the baseline fills in the rest."
   else
-    stanza=""
     note="No [$P9_REPO_NAME] stanza: --repo-server was 'none'. Arch POWER only."
   fi
 

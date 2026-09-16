@@ -61,12 +61,23 @@ ok "user + password"          "${D[@]}" "${S[@]}" --platform powernv --user test
 ok "deferred account"         "${D[@]}" "${S[@]}" --platform powernv
 ok "explicit repo-server"     "${D[@]}" "${S[@]}" --platform powernv --repo-server http://host/repo
 ok "two repo-servers"         "${D[@]}" "${S[@]}" --platform powernv \
-                                 --repo-server file:///run/archiso/bootmnt/p9repo/omarchy-power9 \
+                                 --repo-server file:///run/archiso/bootmnt/p9repo/omarchy-ppc64le \
                                  --repo-server http://host/repo
 ok "repo-server none"         "${D[@]}" "${S[@]}" --platform powernv --repo-server none
 ok "custom cmdline"           "${D[@]}" "${S[@]}" --platform powernv --cmdline quiet
 ok "custom kernel"            "${D[@]}" "${S[@]}" --platform powernv --kernel linux
 ok "SigLevel Required"        "${D[@]}" --repo-siglevel Required --platform powernv
+# The two-pool layout: an optimised pool listed ahead of the baseline, both
+# stanzas in one /etc/pacman.conf. Repo order is what does the overriding, so
+# a machine known to be POWER9 gets the optimised build where one exists and
+# the baseline everywhere else.
+ok "optimised over baseline"  "${D[@]}" "${S[@]}" --platform powernv \
+                                 --repo-name omarchy-power9 \
+                                 --repo-server https://omappc64le.download/omarchy-power9 \
+                                 --baseline-repo-name omarchy-ppc64le \
+                                 --baseline-repo-server https://omappc64le.download/omarchy-ppc64le
+ok "baseline alone (default)" "${D[@]}" "${S[@]}" --platform powernv \
+                                 --repo-server https://omappc64le.download/omarchy-ppc64le
 
 echo "guards:"
 rejects "no --repo-siglevel"  "${D[@]}" --platform powernv

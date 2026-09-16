@@ -2,7 +2,7 @@
 
 [![arch: powerpc64le](https://img.shields.io/badge/arch-powerpc64le-0f62fe)](#status)
 [![target: POWER9](https://img.shields.io/badge/target-POWER9-9fe870)](#status)
-[![POWER8: planned](https://img.shields.io/badge/POWER8-planned-3f4a5a)](docs/power8-secondary-target.md)
+[![baseline pool: omarchy-ppc64le](https://img.shields.io/badge/baseline%20pool-omarchy--ppc64le-3f4a5a)](docs/power8-secondary-target.md)
 [![Omarchy 4.0.3](https://img.shields.io/badge/Omarchy-4.0.3-0f62fe)](https://github.com/omacom/omarchy)
 [![base packages: 146/147](https://img.shields.io/badge/base%20packages-146%2F147-9fe870)](#not-available-yet)
 [![last commit](https://img.shields.io/github/last-commit/jbettcher-wg/omarchy-ppc64le?color=0f62fe)](https://github.com/jbettcher-wg/omarchy-ppc64le/commits/master)
@@ -24,20 +24,35 @@ LuaJIT, and `omarchy update`.
 | | |
 |---|---|
 | Omarchy base packages available | **146 of 147** (only `localsend` is missing, below) |
-| Packages in the `omarchy-power9` repo | 1,350 |
+| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | building |
+| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | 1,350 |
 | Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,562 pkgbases, 199 of them ours |
 | Omarchy version | 4.0.3, stable channel (`omarchy` 4.0.3-3, `omarchy-settings` 4.0.3-2) |
 | Kernel | `linux-power9` 7.2.2 (4K pages) and `linux-power9-64k` |
 | Installer | ISO + `p9-install`, PowerNV and pSeries |
 | Release channel | not public yet; packages are unsigned |
 
-The whole userland is rebuilt for POWER9 (`-mcpu=power9`). A **POWER8**
-release (separate repo and ISO, built from the same recipes) is planned as a
-secondary target; see [`docs/power8-secondary-target.md`](docs/power8-secondary-target.md).
+## Package pools
+
+The distribution ships **two package pools**, built from the same recipes. A
+build is named for what it *runs on*, not for what it was tuned for.
+
+| pool | built | runs on | role |
+|---|---|---|---|
+| **`omarchy-ppc64le`** | POWER8-legal (ISA 2.07) | POWER8 → POWER11, i.e. **every ppc64le machine** | **the baseline, and the default.** What the ISO installs from, what the installer writes into `/etc/pacman.conf`, what external testers use |
+| `omarchy-power9` | `-mcpu=power9`, ISA 3.0 | POWER9 only | an **opt-in extra** for machines known to be POWER9, layered *ahead* of the baseline |
+
+Layered means exactly what pacman does with repo order: with both configured,
+`[omarchy-power9]` is listed first, so an optimised package wins where one
+exists and the baseline fills in the rest. Nothing has to be built twice for a
+machine to get a complete system — the baseline alone is complete.
+
+How the POWER8-legal build is produced, and which recipes pin an ISA of their
+own: [`docs/power8-secondary-target.md`](docs/power8-secondary-target.md).
 
 ## Repositories
 
-The distribution is two repositories.
+The distribution is two **git** repositories.
 
 | | |
 |---|---|
@@ -88,8 +103,9 @@ that is the default the tools assume.
 - **Boot.** OpenPOWER firmware boots through **petitboot**, not limine. The
   installer writes a `grub.cfg` that petitboot reads, and a pacman hook keeps
   it current. There are no bootable snapshots; `snapper` is optional.
-- **Packages.** They come from the `[omarchy-power9]` repo, listed ahead of
-  Arch POWER's `[base]` and `[base-any]`, instead of pkgs.omarchy.org.
+- **Packages.** They come from our own pool — `[omarchy-ppc64le]` by default,
+  optionally `[omarchy-power9]` ahead of it — listed ahead of Arch POWER's
+  `[base]` and `[base-any]`, instead of pkgs.omarchy.org.
 - **`omarchy` and `omarchy-settings` are upstream's packages, repacked.** They
   contain no machine code. The recipes drop the limine/snapper/keyring
   dependencies and the update guard hook.
@@ -101,12 +117,33 @@ that is the default the tools assume.
 
 ## Using the repository
 
-Add the repo **ahead of** Arch POWER's repos in `/etc/pacman.conf`:
+Add the repo **ahead of** Arch POWER's repos in `/etc/pacman.conf`. The
+baseline pool is the one to use unless you know the machine is a POWER9:
+
+```ini
+[omarchy-ppc64le]
+SigLevel = PackageNever DatabaseOptional TrustAll
+Server = https://omappc64le.download/omarchy-ppc64le
+
+[base-any]
+Server = https://repo.archlinuxpower.org/base/any
+
+[base]
+Server = https://repo.archlinuxpower.org/base/$arch
+```
+
+On a POWER9 machine you can layer the optimised pool **ahead of** the
+baseline — repo order is what does the overriding, so you get the optimised
+build of everything it carries and the baseline for the rest:
 
 ```ini
 [omarchy-power9]
 SigLevel = PackageNever DatabaseOptional TrustAll
 Server = https://omappc64le.download/omarchy-power9
+
+[omarchy-ppc64le]
+SigLevel = PackageNever DatabaseOptional TrustAll
+Server = https://omappc64le.download/omarchy-ppc64le
 
 [base-any]
 Server = https://repo.archlinuxpower.org/base/any
@@ -121,14 +158,14 @@ stops pacman from asking for `.sig` files, whose 404 page is larger than
 pacman's signature size limit and would abort downloads under plain
 `Optional`. Signing, and restoring `omarchy-keyring`, is planned.
 
-Many packages here are POWER9 rebuilds of Arch POWER packages under the same
-name. If something from `[omarchy-power9]` misbehaves, report it here first
-rather than to Arch POWER.
+Many packages here are rebuilds of Arch POWER packages under the same name. If
+something from `[omarchy-ppc64le]` or `[omarchy-power9]` misbehaves, report it
+here first rather than to Arch POWER.
 
 Updates work through `omarchy update` or plain `pacman -Syu`. For now
 `omarchy update` prints harmless errors from its keyring step
 (`omarchy-keyring` and `archlinux-keyring` don't exist on Arch POWER). Our
-`omarchy` package reports a system using `[omarchy-power9]` as the **stable**
+`omarchy` package reports a system using one of our pools as the **stable**
 channel.
 
 ## Installing
@@ -137,12 +174,16 @@ Build the ISO (needs root for `mkarchiso`, plus the
 [kth5/archiso](https://github.com/kth5/archiso) fork at `../archiso-power`):
 
 ```sh
-iso/build.sh                 # installs from https://omappc64le.download/omarchy-power9
-iso/build.sh --bundle-repo   # also embeds repo/, to test packages not yet published
+iso/build.sh                 # baseline: https://omappc64le.download/omarchy-ppc64le
+iso/build.sh --power9        # the POWER9-optimised pool instead
+iso/build.sh --bundle-repo   # also embeds the pool, to test unpublished packages
+iso/build.sh --print-config  # show the resolved pool, db and servers; build nothing
 ```
 
-The install needs a network connection: packages come from `[omarchy-power9]`
-and Arch POWER.
+The default ISO installs the **baseline** pool, which runs on any ppc64le
+machine; `--power9` builds one for the optimised pool, and `--repo-name` /
+`--pool` name the two halves by hand. The install needs a network connection:
+packages come from our pool and Arch POWER.
 
 Output goes to `iso/out/omarchy-p9-YYYY.MM.DD-ppc64le.iso`. Booting it starts
 `p9-configurator`, which asks for keyboard, user, disk and timezone, and shows a
@@ -193,6 +234,9 @@ git clone git@github.com:jbettcher-wg/omarchy-ppc64le-packaging.git \
 tools/bq.py build <pkg> [-j N] [--rebuild --force]
 tools/repo-publish.sh              # dry run: what would change in omarchy-power9
 tools/repo-publish.sh --commit     # write the published DB
+REPO=$PWD/repo-ppc64le REPO_NAME=omarchy-ppc64le tools/repo-publish.sh --commit
+                                   # ... and the same for the baseline pool
+tools/build-ppc64le.sh <pkg>       # build into the baseline pool (POWER8-legal)
 ```
 
 Recipes are discovered by pkgbase, **recursively**, in that one tree — nothing
@@ -224,7 +268,7 @@ build-tree paths and stray install locations. Full details are in [`docs/build-q
 | `manifest/` | generated dependency closure and build order |
 | `docs/` | build system, package status, POWER8 plan, upstreamable patches, investigations |
 | `RULES.md` | working rules for this tree |
-| `repo/`, `repo-power8/` | built packages and repo DBs (not in git) |
+| `repo-ppc64le/`, `repo/` | the baseline and POWER9-optimised package pools: built packages and repo DBs (not in git) |
 | `upstream/` | reference clones of `omarchy` and `omarchy-iso` (not in git) |
 
 Build scripts are not here; see [Repositories](#repositories).

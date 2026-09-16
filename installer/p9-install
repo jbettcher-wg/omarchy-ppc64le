@@ -12,7 +12,9 @@
 #   2. Kernel       stock `linux` -> --kernel/$P9_KERNEL_PKG, default
 #                   linux-power9.                   see --help
 #   3. mkinitcpio   omarchy_hooks.conf -> share/omarchy-p9-hooks.conf
-#   4. Repo         pkgs.omarchy.org -> the local [power9] repo over Arch POWER
+#   4. Repo         pkgs.omarchy.org -> our own repo over Arch POWER. Default
+#                   [omarchy-ppc64le], the baseline that runs on every ppc64le
+#                   machine; [omarchy-power9] is the optimised opt-in.
 #
 # Read installer/README.md before changing any of them.
 #
@@ -63,10 +65,24 @@ P9_BOOT_SIZE=2G
 # pages, matching the AC922 config) or --kernel linux (64K).
 P9_KERNEL_PKG="${P9_KERNEL_PKG:-linux-power9}"
 
-# Substitution 4. The design's layout is a repo named `power9` served from
-# <root>/power9/os/$arch, listed ahead of Arch POWER's [base] so repo order
-# does the overriding (nothing in [base] gets rebuilt).
-P9_REPO_NAME="${P9_REPO_NAME:-omarchy-power9}"
+# Substitution 4. Our own repository, listed ahead of Arch POWER's [base] so
+# repo order does the overriding (nothing in [base] gets rebuilt).
+#
+# The distribution publishes two pools, and the default here is the BASELINE:
+#
+#   omarchy-ppc64le  built POWER8-legal (ISA 2.07), so it runs on POWER8
+#                    through POWER11 -- every ppc64le machine. The default,
+#                    what the ISO installs from, what testers use.
+#   omarchy-power9   the POWER9-optimised build. An opt-in extra for machines
+#                    known to be POWER9, layered AHEAD of the baseline with
+#                    --repo-name omarchy-power9 --baseline-repo-name
+#                    omarchy-ppc64le, so an optimised package wins where one
+#                    exists and the baseline fills in the rest.
+#
+# A build is named for what it runs on, not for what it was tuned for.
+P9_REPO_NAME_SET=0
+P9_REPO_NAME_FROM_ENV="${P9_REPO_NAME+1}"
+P9_REPO_NAME="${P9_REPO_NAME:-omarchy-ppc64le}"
 # May be given more than once. pacman tries each Server in order and falls
 # through on failure, which is what makes one config correct both on the medium
 # and after it is gone: the file:// entry serves the install at local speed, and
@@ -78,9 +94,17 @@ P9_REPO_NAME="${P9_REPO_NAME:-omarchy-power9}"
 # win over a default nobody chose -- or, worse, can never lose to one somebody
 # did.
 P9_REPO_SERVER_FROM_ENV="${P9_REPO_SERVER+1}"
-P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/omarchy-power9}"
+P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/omarchy-ppc64le}"
 P9_REPO_SERVERS=()
 P9_REPO_SIGLEVEL=""   # deliberately empty -- see --repo-siglevel below
+
+# The second, lower-priority pool. Empty by default: one pool is the normal
+# case, and the baseline alone is a complete system. Set both of these to layer
+# an optimised pool over the baseline; the stanza order in the rendered
+# pacman.conf is P9_REPO_NAME first, then this one.
+P9_BASELINE_REPO_NAME="${P9_BASELINE_REPO_NAME:-}"
+P9_BASELINE_REPO_SERVERS=()
+P9_BASELINE_REPO_SIGLEVEL="${P9_BASELINE_REPO_SIGLEVEL:-}"
 P9_BASE_SERVER="${P9_BASE_SERVER:-https://repo.archlinuxpower.org/base/\$arch}"
 P9_BASE_ANY_SERVER="${P9_BASE_ANY_SERVER:-https://repo.archlinuxpower.org/base/any}"
 P9_BASE_SIGLEVEL="${P9_BASE_SIGLEVEL:-Required DatabaseOptional}"
@@ -141,7 +165,14 @@ Packages:
   --manifest FILE              package list (default share/p9-base.packages)
   --repo-server URL|none       [repo] Server=. May be repeated; pacman tries
                                them in order. 'none' installs from Arch POWER only
-  --repo-name NAME             repository name (default power9)
+  --repo-name NAME             repository name (default omarchy-ppc64le, the
+                               baseline pool; an ISO built for the other pool
+                               bakes its name in and it is read from there)
+  --baseline-repo-name NAME    second, lower-priority repository. Use with
+                               --repo-name omarchy-power9 to layer the
+                               optimised pool ahead of the baseline
+  --baseline-repo-server URL   Server= for it. May be repeated
+  --baseline-repo-siglevel LVL SigLevel for it (default: same as --repo-siglevel)
   --repo-siglevel LEVEL        REQUIRED, see below
   --base-server URL            Arch POWER [base] Server=
   --base-any-server URL        Arch POWER [base-any] Server=
@@ -160,7 +191,7 @@ Checking:
   --dry-run        print every command and write nothing. The disk guard still
                    runs (it only reads), so --dry-run needs a real device.
 
---repo-siglevel has no default on purpose. The [power9] repository is not
+--repo-siglevel has no default on purpose. Our repository is not
 signed today -- there is no signing key for it yet -- so there is no honest
 default:
 
@@ -197,7 +228,10 @@ while (($#)); do
     --boot-size) P9_BOOT_SIZE="$2"; shift 2 ;;
     --manifest) P9_MANIFEST="$2"; shift 2 ;;
     --repo-server) P9_REPO_SERVERS+=("$2"); shift 2 ;;
-    --repo-name) P9_REPO_NAME="$2"; shift 2 ;;
+    --repo-name) P9_REPO_NAME="$2"; P9_REPO_NAME_SET=1; shift 2 ;;
+    --baseline-repo-name) P9_BASELINE_REPO_NAME="$2"; shift 2 ;;
+    --baseline-repo-server) P9_BASELINE_REPO_SERVERS+=("$2"); shift 2 ;;
+    --baseline-repo-siglevel) P9_BASELINE_REPO_SIGLEVEL="$2"; shift 2 ;;
     --repo-siglevel)
       case "$2" in
         required) P9_REPO_SIGLEVEL="Required DatabaseOptional" ;;
@@ -266,6 +300,17 @@ case "$P9_PLATFORM" in
 esac
 
 log "kernel package: $P9_KERNEL_PKG"
+# Which pool this ISO was built for. Same precedence as the server list below:
+# command line, then the environment, then what iso/build.sh baked in. Without
+# this an ISO built for the optimised pool would install under the baseline's
+# name and pacman would ask a POWER9 server for omarchy-ppc64le.db.
+if ((!P9_REPO_NAME_SET)) && [[ -z $P9_REPO_NAME_FROM_ENV && -r $P9_SHARE/repo-name.conf ]]; then
+  read -r _n < "$P9_SHARE/repo-name.conf" || true
+  _n=${_n%%#*}; _n=${_n// /}
+  [[ -n $_n ]] && P9_REPO_NAME=$_n
+fi
+# One SigLevel decision covers both pools unless the operator splits them.
+P9_BASELINE_REPO_SIGLEVEL="${P9_BASELINE_REPO_SIGLEVEL:-$P9_REPO_SIGLEVEL}"
 # With nothing on the command line, take the list the ISO was built with.
 # iso/build.sh writes it: an ISO carrying the repo gets the file:// entry, one
 # built --no-repo gets only the network entries, and neither case needs the
@@ -280,36 +325,53 @@ elif ((!${#P9_REPO_SERVERS[@]})) && [[ -r $P9_SHARE/repo-servers.conf ]]; then
 fi
 ((${#P9_REPO_SERVERS[@]})) || P9_REPO_SERVERS=("$P9_REPO_SERVER")
 
-for _i in "${!P9_REPO_SERVERS[@]}"; do
-  _s=${P9_REPO_SERVERS[$_i]}
-  [[ $_s == file://* ]] || continue
-  _p=${_s#file://}
-  # A file:// repo under the install target is either about to be shadowed by
-  # the target mount or is inside the filesystem being installed to; both read
-  # as "works until it doesn't".
-  if [[ $_p == "$P9_MNT" || $_p == "$P9_MNT"/* ]]; then
-    die "--repo-server $_s is under the install target $P9_MNT; mount the medium somewhere else"
-  fi
-  [[ -d $_p ]] && continue
-  # Missing, and shaped like our bundled layout: the medium was unmounted by
-  # copytoram. Go find it rather than falling straight through to the network.
-  if [[ $_p == */p9repo/* ]]; then
-    _sub="p9repo/${_p#*/p9repo/}"
-    if _m=$(find_boot_medium "$_sub"); then
-      P9_REPO_SERVERS[$_i]="file://$_m/$_sub"
-      log "boot medium moved: bundled repo found at $_m/$_sub"
-    else
-      warn "bundled repo $_p is gone and the boot medium could not be found"
+# Applied to each pool's server list in turn, so the second pool gets the same
+# medium-moved handling and the same target-mount guard as the first.
+resolve_repo_servers() {
+  local -n _list="$1"
+  local _i _s _p _sub _m
+  for _i in "${!_list[@]}"; do
+    _s=${_list[$_i]}
+    [[ $_s == file://* ]] || continue
+    _p=${_s#file://}
+    # A file:// repo under the install target is either about to be shadowed by
+    # the target mount or is inside the filesystem being installed to; both read
+    # as "works until it doesn't".
+    if [[ $_p == "$P9_MNT" || $_p == "$P9_MNT"/* ]]; then
+      die "--repo-server $_s is under the install target $P9_MNT; mount the medium somewhere else"
     fi
-  else
-    warn "repo server $_s does not exist"
-  fi
-done
+    [[ -d $_p ]] && continue
+    # Missing, and shaped like our bundled layout: the medium was unmounted by
+    # copytoram. Go find it rather than falling straight through to the network.
+    if [[ $_p == */p9repo/* ]]; then
+      _sub="p9repo/${_p#*/p9repo/}"
+      if _m=$(find_boot_medium "$_sub"); then
+        _list[$_i]="file://$_m/$_sub"
+        log "boot medium moved: bundled repo found at $_m/$_sub"
+      else
+        warn "bundled repo $_p is gone and the boot medium could not be found"
+      fi
+    else
+      warn "repo server $_s does not exist"
+    fi
+  done
+}
+resolve_repo_servers P9_REPO_SERVERS
+((${#P9_BASELINE_REPO_SERVERS[@]})) && resolve_repo_servers P9_BASELINE_REPO_SERVERS
 
 log "repository: [$P9_REPO_NAME]  SigLevel = $P9_REPO_SIGLEVEL"
 for _s in "${P9_REPO_SERVERS[@]}"; do log "  Server = $_s"; done
 if [[ $P9_REPO_SIGLEVEL == *TrustAll* ]]; then
   warn "SigLevel '$P9_REPO_SIGLEVEL' for [$P9_REPO_NAME]: package signatures are NOT verified."
+fi
+if [[ -n $P9_BASELINE_REPO_NAME ]]; then
+  if ((${#P9_BASELINE_REPO_SERVERS[@]})); then
+    log "baseline repository: [$P9_BASELINE_REPO_NAME]  SigLevel = $P9_BASELINE_REPO_SIGLEVEL"
+    log "  listed after [$P9_REPO_NAME], so the optimised build wins where one exists"
+    for _s in "${P9_BASELINE_REPO_SERVERS[@]}"; do log "  Server = $_s"; done
+  else
+    warn "--baseline-repo-name $P9_BASELINE_REPO_NAME with no --baseline-repo-server; no baseline stanza will be written"
+  fi
 fi
 
 # ------------------------------------------------- pacman.conf + manifest ----

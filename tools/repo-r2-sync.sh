@@ -12,7 +12,11 @@
 #
 # Usage:
 #   R2_BUCKET=<bucket> tools/repo-r2-sync.sh [--dry-run]
-#   REPO=repo-power8 REPO_NAME=omarchy-power8 R2_BUCKET=<bucket> tools/repo-r2-sync.sh
+#   REPO=repo-ppc64le REPO_NAME=omarchy-ppc64le R2_BUCKET=<bucket> tools/repo-r2-sync.sh
+#
+# REPO_NAME selects the pool: omarchy-ppc64le is the baseline everyone installs,
+# omarchy-power9 the optimised opt-in. Only the named db is uploaded, so bq's
+# bq-staging.db.tar.zst in repo/ is never published by this script.
 #
 # Environment:
 #   R2_REMOTE   rclone remote name (default r2), configured by the user with

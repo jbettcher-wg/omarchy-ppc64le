@@ -12,11 +12,15 @@
 #      ppc64le image no matter what profiledef.sh says. The fork is not packaged
 #      anywhere; it has to be a checkout.
 #
-#   2. It bakes the repo servers into the installer. By default that is only
-#      the public repo, https://omappc64le.download/omarchy-power9: the image
-#      carries what the live system needs and the install downloads the rest,
-#      as it already has to for Arch POWER [base]. --bundle-repo also injects
-#      repo/ onto the medium at p9repo/omarchy-power9/, read ahead of the
+#   2. It bakes the repo name and servers into the installer. By default the
+#      pool is the BASELINE, https://omappc64le.download/omarchy-ppc64le: it is
+#      built POWER8-legal (ISA 2.07) so it runs on POWER8 through POWER11, i.e.
+#      every ppc64le machine, which is the only honest default for an image
+#      anyone might boot. --power9 selects the POWER9-optimised pool instead
+#      (--repo-name/--pool name the two halves by hand). The image carries what
+#      the live system needs and the install downloads the rest, as it already
+#      has to for Arch POWER [base]. --bundle-repo also injects the pool
+#      directory onto the medium at p9repo/<repo name>/, read ahead of the
 #      network servers -- for testing packages that are not published yet.
 #
 #      archiso has no mechanism for putting arbitrary files in the ISO
@@ -48,8 +52,18 @@ WORKDIR="${TMPDIR:-/var/tmp}/omarchy-iso-work"
 # medium into RAM and thrown away when the medium is unmounted -- the install
 # pays for it twice and keeps none of it. --no-repo is still accepted; it is
 # the default now.
-DEFAULT_REPO_SERVER="https://omappc64le.download/omarchy-power9"
+# Which package pool this ISO installs from.
+#
+# The baseline is the default and that is deliberate: a build is named for what
+# it RUNS ON, not for what it was tuned for. omarchy-ppc64le is compiled
+# POWER8-legal (ISA 2.07), so it runs on every ppc64le machine from POWER8 to
+# POWER11 -- an ISO handed to a tester must install from it. omarchy-power9 is
+# the optimised pool for machines known to be POWER9, selected with --power9.
+REPO_NAME="omarchy-ppc64le"
+REPO_POOL=""                    # derived from REPO_NAME below unless --pool says
+REPO_BASE_URL="${REPO_BASE_URL:-https://omappc64le.download}"
 BUNDLE_REPO=0
+PRINT_CONFIG=0
 REPO_SERVERS=()
 
 while [[ $# -gt 0 ]]; do
@@ -59,9 +73,26 @@ while [[ $# -gt 0 ]]; do
     --bundle-repo) BUNDLE_REPO=1; shift ;;
     --no-repo) BUNDLE_REPO=0; shift ;;
     --repo-server) REPO_SERVERS+=("$2"); shift 2 ;;
+    --repo-name) REPO_NAME="$2"; shift 2 ;;
+    --pool) REPO_POOL="$2"; shift 2 ;;
+    --power9) REPO_NAME="omarchy-power9"; shift ;;
+    --print-config) PRINT_CONFIG=1; shift ;;
     *)  echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# The pool directory follows the repo name unless one was given: the
+# POWER9-optimised pool is the original repo/, everything else is repo-<suffix>
+# (omarchy-ppc64le -> repo-ppc64le), which is how the pools sit on disk.
+if [[ -z $REPO_POOL ]]; then
+  case "$REPO_NAME" in
+    omarchy-power9) REPO_POOL="$PROJECT/repo" ;;
+    *)              REPO_POOL="$PROJECT/repo-${REPO_NAME#omarchy-}" ;;
+  esac
+fi
+REPO_DB="$REPO_POOL/$REPO_NAME.db"
+MEDIUM_DIR="p9repo/$REPO_NAME"
+DEFAULT_REPO_SERVER="$REPO_BASE_URL/$REPO_NAME"
 
 # What p9-install will use when the operator names no --repo-server. A bundled
 # repo goes first so the install reads it at local speed; the network servers
@@ -70,13 +101,29 @@ done
 # keeps a server it can reach after reboot.
 ((${#REPO_SERVERS[@]})) || REPO_SERVERS=("$DEFAULT_REPO_SERVER")
 _servers=()
-((BUNDLE_REPO)) && _servers+=("file:///run/archiso/bootmnt/p9repo/omarchy-power9")
+((BUNDLE_REPO)) && _servers+=("file:///run/archiso/bootmnt/$MEDIUM_DIR")
 _servers+=("${REPO_SERVERS[@]}")
+
+# Everything above is pure option handling, so it can be shown without root and
+# without mkarchiso. --print-config exists to make the pool selection checkable
+# on its own: which repo, which directory, which database, which servers.
+if ((PRINT_CONFIG)); then
+  printf 'repo name     : %s\n' "$REPO_NAME"
+  printf 'pool directory: %s\n' "$REPO_POOL"
+  printf 'repo database : %s%s\n' "$REPO_DB" \
+    "$([[ -f $REPO_DB ]] && echo '  (present)' || echo '  (MISSING -- run repo-add first)')"
+  printf 'default server: %s\n' "$DEFAULT_REPO_SERVER"
+  printf 'medium path   : %s  (--bundle-repo: %s)\n' "$MEDIUM_DIR" \
+    "$((BUNDLE_REPO))"
+  printf 'servers baked in:\n'
+  printf '      %s\n' "${_servers[@]}"
+  exit 0
+fi
 
 MKARCHISO="$ARCHISO/archiso/mkarchiso"
 [[ -x $MKARCHISO ]] || { echo "no mkarchiso at $MKARCHISO -- clone https://github.com/kth5/archiso" >&2; exit 1; }
 grep -q openpower "$MKARCHISO" || { echo "$MKARCHISO has no openpower bootmode; wrong archiso" >&2; exit 1; }
-[[ -f $PROJECT/repo/omarchy-power9.db ]] || { echo "no repo db at $PROJECT/repo -- run repo-add first" >&2; exit 1; }
+[[ -f $REPO_DB ]] || { echo "no repo db at $REPO_DB -- run repo-add first" >&2; exit 1; }
 
 mkdir -p "$OUTDIR"
 # mkarchiso builds the airootfs as root, so everything it leaves behind is
@@ -84,13 +131,15 @@ mkdir -p "$OUTDIR"
 # run. Ask for the sudo ticket now rather than halfway through the build.
 sudo rm -rf "$WORKDIR"
 
-# Render the profile into the work dir: pacman.conf carries @P9_REPO_DIR@
-# rather than an absolute path, because the same tree is read from the build
-# host and over an sshfs mount where the prefix differs.
+# Render the profile into the work dir: pacman.conf carries @P9_REPO_DIR@ and
+# @P9_REPO_NAME@ rather than an absolute path and a fixed pool name, because
+# the same tree is read from the build host and over an sshfs mount where the
+# prefix differs, and because either pool can be built from.
 rendered="$WORKDIR/profile"
 mkdir -p "$WORKDIR"
 cp -a "$PROFILE" "$rendered"
-sed -i "s|@P9_REPO_DIR@|$PROJECT/repo|" "$rendered/pacman.conf"
+sed -i -e "s|@P9_REPO_DIR@|$REPO_POOL|" -e "s|@P9_REPO_NAME@|$REPO_NAME|" \
+  "$rendered/pacman.conf"
 
 # Sync the installer in from installer/ rather than keeping a second copy under
 # iso/profile/airootfs. The first real ISO shipped a p9-install from before the
@@ -112,9 +161,14 @@ chmod 755 "$rendered/airootfs/root/p9-configurator" "$inst/p9-install" \
 # P9_SHARE is $P9_ROOT/share. Written one level up it is simply never found,
 # and the installer silently falls back to its built-in default.
 printf '%s\n' "${_servers[@]}" | grep . > "$inst/share/repo-servers.conf"
+# The pool NAME travels with the server list. Without it an ISO built --power9
+# would hand p9-install a set of omarchy-power9 servers under the installer's
+# own default repo name, and pacman would look for omarchy-ppc64le.db on a
+# server that only has the other one.
+printf '%s\n' "$REPO_NAME" > "$inst/share/repo-name.conf"
 
 # The live system's /etc/pacman.conf comes from the pacman package, so without
-# this the live environment knows nothing about [omarchy-power9] -- pacman -Sy
+# this the live environment knows nothing about [$REPO_NAME] -- pacman -Sy
 # in a second tty cannot install so much as a missing tool. Reuse the profile's
 # conf, which already has the repo ahead of [base], but swap the build host's
 # file:// path for the servers the ISO is actually built with: @P9_REPO_DIR@
@@ -153,10 +207,18 @@ if [[ ! -r $_want ]]; then
   exit 1
 fi
 echo "==> verified p9-install will read ${_want#"$inst/"}"
+# Same guard for the repo name: derive the consumer's path from p9-install
+# rather than restating it, so a rename there fails here instead of silently
+# installing from the wrong pool name.
+_wantn=$(grep -oE '\$P9_SHARE/[A-Za-z0-9._-]+' "$inst/p9-install" | grep repo-name | head -1)
+[[ -n $_wantn ]] || { echo "build.sh: p9-install no longer reads a repo-name file; update this guard" >&2; exit 1; }
+_wantn=${_wantn/\$P9_SHARE/$inst/share}
+[[ -r $_wantn ]] || { echo "build.sh: wrote the repo name, but p9-install reads $_wantn and it is not there" >&2; exit 1; }
+echo "==> verified p9-install will read ${_wantn#"$inst/"} ($REPO_NAME)"
 if grep -q "@P9_REPO_DIR@" "$rendered/pacman.conf"; then
   echo "build.sh: @P9_REPO_DIR@ substitution failed" >&2; exit 1
 fi
-echo "==> repo for the build: $PROJECT/repo"
+echo "==> repo for the build: [$REPO_NAME] from $REPO_POOL"
 
 # mkarchiso copies airootfs with --no-preserve=mode and then restores only the
 # modes profiledef.sh lists in file_permissions, so any other script reaches the
@@ -183,21 +245,21 @@ iso=$(find "$OUTDIR" -maxdepth 1 -name 'omarchy-p9-*.iso' -newer "$PROFILE/profi
 echo "==> built $iso"
 
 if ((!BUNDLE_REPO)); then
-  echo "==> network install: not injecting $PROJECT/repo (--bundle-repo embeds it)"
+  echo "==> network install: not injecting $REPO_POOL (--bundle-repo embeds it)"
   echo "==> done: $iso"
   ls -la "$iso"
   exit 0
 fi
 
-echo "==> injecting repo at p9repo/omarchy-power9/ ($(du -sh "$PROJECT/repo" | cut -f1))"
-# Map repo/ straight into the image rather than staging a copy: the repo is
+echo "==> injecting repo at $MEDIUM_DIR/ ($(du -sh "$REPO_POOL" | cut -f1))"
+# Map the pool straight into the image rather than staging a copy: the repo is
 # several GiB, and after mkarchiso has run $WORKDIR is root-owned anyway, so a
 # staging directory there would need sudo to create and double the I/O for
 # nothing. xorriso reads the source tree directly.
 out="${iso%.iso}-repo.iso"
 xorriso -indev "$iso" -outdev "$out" \
         -boot_image any replay \
-        -map "$PROJECT/repo" /p9repo/omarchy-power9 \
+        -map "$REPO_POOL" "/$MEDIUM_DIR" \
         -commit -eject all
 
 mv -f "$out" "$iso"

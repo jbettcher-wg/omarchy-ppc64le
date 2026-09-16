@@ -3,10 +3,12 @@
 #
 # There are two databases in repo/ and they are not the same thing:
 #
-#   omarchy-ppc64le.db.tar.zst   bq's build database. bq repo-adds every package
+#   bq-staging.db.tar.zst        bq's build database. bq repo-adds every package
 #                                it builds here, and tools/pacman-build.conf +
 #                                prime-dbpath.sh use it to make fresh packages
 #                                visible to later builds inside the sandbox.
+#                                Named for what it is, not for a pool: it is
+#                                never served to anyone.
 #
 #   omarchy-power9.db.tar.gz     the deployed database. This is what
 #                                /etc/pacman.conf's [omarchy-power9] serves,
@@ -14,18 +16,29 @@
 #                                target, and what iso/build.sh requires. It is
 #                                NOT updated by bq.
 #
+# Two pools are published from this tree, each with its own directory and db:
+#
+#   repo-ppc64le/  omarchy-ppc64le.db.tar.gz   the BASELINE. Built POWER8-legal
+#                  (ISA 2.07), so it runs on POWER8 through POWER11 -- every
+#                  ppc64le machine. This is what the ISO and the installer
+#                  default to.
+#   repo/          omarchy-power9.db.tar.gz    the POWER9-optimised pool. An
+#                  opt-in extra, layered AHEAD of the baseline so an optimised
+#                  package wins where one exists and the baseline fills in the
+#                  rest.
+#
 # So packages built today are installable by path but invisible to pacman until
 # this runs. That gap is why iso/build.sh carries a "run repo-add first" check.
 #
 # Usage:
 #   tools/repo-publish.sh            # dry run: report what would change
 #   tools/repo-publish.sh --commit   # rewrite the deployed db
-#   REPO=<dir> REPO_NAME=<name> ...   # another pool, e.g. repo-power8 / omarchy-power8
+#   REPO=<dir> REPO_NAME=<name> ...   # another pool, e.g. repo-ppc64le / omarchy-ppc64le
 set -uo pipefail
 
 REPO=${REPO:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/repo}
-# The database name follows the repo, so the POWER8 pool publishes as
-# REPO=.../repo-power8 REPO_NAME=omarchy-power8 tools/repo-publish.sh --commit
+# The database name follows the repo, so the baseline pool publishes as
+# REPO=.../repo-ppc64le REPO_NAME=omarchy-ppc64le tools/repo-publish.sh --commit
 REPO_NAME=${REPO_NAME:-omarchy-power9}
 DB=$REPO/$REPO_NAME.db.tar.gz
 COMMIT=0

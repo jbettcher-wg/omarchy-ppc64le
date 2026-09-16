@@ -12,7 +12,12 @@
 # packages come from a repository listed *ahead* of it, so repo order does the
 # overriding and nothing in [base] has to be rebuilt.
 #
-# Repo order below is load-bearing: [power9] first.
+# Repo order below is load-bearing: our own repositories first, Arch POWER
+# after them. Where both an optimised pool ([omarchy-power9]) and the baseline
+# ([omarchy-ppc64le], POWER8-legal and so good on every ppc64le machine) are
+# configured, the optimised one is written first: pacman takes the first repo
+# carrying a name, so the optimised build wins where one exists and the
+# baseline fills in the rest.
 #
 # @P9_SIGLEVEL_NOTE@
 

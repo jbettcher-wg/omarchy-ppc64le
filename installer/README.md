@@ -167,7 +167,7 @@ encrypted `/boot`, so LUKS-on-`/` is possible later but is not wired up, and the
 LUKS re-key branch of Omarchy's first-boot provisioning therefore never fires
 (it is gated on a staged key file this installer does not create).
 
-### 4. Repo — `pkgs.omarchy.org` → the local `[power9]` over Arch POWER
+### 4. Repo — `pkgs.omarchy.org` → our own pool over Arch POWER
 
 Upstream's `install/post-install/pacman.sh` copies
 `default/pacman/pacman-stable.conf` and `mirrorlist-stable` over `/etc`,
@@ -182,16 +182,35 @@ POWER stays the base distribution and the project's own repository is listed
 to be rebuilt.
 
 ```
-[power9]                                   ← --repo-name / --repo-server
+[omarchy-ppc64le]                          ← --repo-name / --repo-server
 [base-any]  https://repo.archlinuxpower.org/base/any
 [base]      https://repo.archlinuxpower.org/base/$arch
 ```
 
+`omarchy-ppc64le` is the **baseline** pool and the default: it is built
+POWER8-legal (ISA 2.07), so it runs on POWER8 through POWER11 — every ppc64le
+machine — which is the only honest default for an installer anyone might run.
+
+On a machine known to be a POWER9 the optimised pool can be layered *ahead* of
+it, which is a second stanza, not a replacement:
+
+```
+[omarchy-power9]     ← --repo-name omarchy-power9 --repo-server …
+[omarchy-ppc64le]    ← --baseline-repo-name omarchy-ppc64le --baseline-repo-server …
+[base-any]  https://repo.archlinuxpower.org/base/any
+[base]      https://repo.archlinuxpower.org/base/$arch
+```
+
+Stanza order is load-bearing: pacman takes the first repo carrying a name,
+regardless of version, so the optimised build wins where one exists and the
+baseline fills in the rest. `lib/target.sh`'s `render_pacman_conf` writes both,
+and applies the boot-medium `file://` drop to each of them.
+
 **`SigLevel` is an explicit decision, not a default.** There is no signing key
-for `[power9]` yet (`gpg` on the build host has no secret key), so:
+for either pool yet (`gpg` on the build host has no secret key), so:
 
 * `--repo-siglevel required` — the design's target state. Fails until the repo
-  is signed and a `power9-keyring` is trusted.
+  is signed and a keyring is trusted.
 * `--repo-siglevel optional-trustall` — `PackageNever DatabaseOptional TrustAll`. Installs unsigned
   packages without verification, and pacman never requests `.sig` files. That
   part is load-bearing: the public repo is served from Cloudflare R2, which
@@ -202,11 +221,13 @@ for `[power9]` yet (`gpg` on the build host has no secret key), so:
 `p9-install` **refuses to start** without one of them, and prints a warning when
 `TrustAll` is chosen. Nothing here quietly turns verification off.
 
-The repository *name* and *server* are variables too, because the design's
-target layout (`repo/power9/os/$arch`, db `power9.db`) is not what is on disk
-today (`repo/`, db `omarchy-ppc64le.db`). `--repo-name omarchy-ppc64le
---repo-server http://…` works against the current tree; the defaults are the
-design's.
+The repository *name* and *server* are variables, because either pool can be
+installed from. The precedence for the name is command line (`--repo-name`),
+then `$P9_REPO_NAME`, then `share/repo-name.conf` — which `iso/build.sh` writes
+with the pool the image was built for, next to the `repo-servers.conf` it
+already wrote. That pairing matters: an ISO built `--power9` carries POWER9
+servers, and serving those under the baseline's repo name would have pacman ask
+them for an `omarchy-ppc64le.db` they do not have.
 
 ---
 
@@ -314,7 +335,7 @@ KVM cannot host a PowerNV guest) and runs the installer in it. See
 btrfs-progs e2fsprogs` + `--kernel linux-4k`), on a blank 20 GiB virtual disk:
 
 *Stage 1 — install.* Arch POWER's live ISO under OPAL; `p9-install` resolves
-145 packages against `[power9]` (served over HTTP from this project's `repo/`)
+145 packages against our pool (served over HTTP from this project's `repo/`)
 plus Arch POWER `[base]`; refuses everything but the disk whose virtio serial
 matches `--serial`; partitions; `mkfs`; reads the UUIDs back; `pacstrap`s;
 writes fstab; installs the mkinitcpio drop-in and rebuilds the initramfs

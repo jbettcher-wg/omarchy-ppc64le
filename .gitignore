@@ -14,10 +14,11 @@ packages/
 repo/*.db*
 repo/*.files*
 
-# POWER8 secondary-target artifacts. Holding folder, not a published repo --
-# same reasoning as repo/: reproducible from the recipes, which are tracked.
-repo-power8/*.db*
-repo-power8/*.files*
+# Baseline pool artifacts (repo-ppc64le/: POWER8-legal, runs on every ppc64le
+# machine) -- same reasoning as repo/: reproducible from the recipes, which are
+# tracked.
+repo-ppc64le/*.db*
+repo-ppc64le/*.files*
 
 # Upstream Omarchy is tracked as its own clone, not vendored.
 upstream/

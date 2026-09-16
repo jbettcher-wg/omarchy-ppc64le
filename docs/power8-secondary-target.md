@@ -206,13 +206,17 @@ POWER9. Nothing about the secondary target requires a `sudo` or a write under
 
 ### Invocation
 
-Modelled directly on `build-v620.sh`; a `tools/build-power8.sh` would be that
-script with the ROCm-specific queue removed.
+This is `tools/build-ppc64le.sh`, which wraps exactly the invocation below.
+The script is named for the **pool** it fills — `repo-ppc64le/`, published as
+`[omarchy-ppc64le]` — while the drop-in it installs keeps the **ISA** name,
+`00-power8.conf`, because that is what it is: `-mcpu=power8`. The pool is the
+baseline precisely *because* it is POWER8-legal, so it runs on every ppc64le
+machine.
 
 ```sh
-export BQ_BUILDROOT=/var/tmp/omarchy-bq-power8
+export BQ_BUILDROOT=/var/tmp/omarchy-bq-ppc64le
 export BQ_STATE=$BQ_BUILDROOT/state.json
-export BQ_REPO=$HOME/Development/omarchy-ppc64le/repo-power8
+export BQ_REPO=$HOME/Development/omarchy-ppc64le/repo-ppc64le
 export TMPDIR=$BQ_BUILDROOT/tmp
 mkdir -p "$BQ_REPO" "$TMPDIR" "$BQ_BUILDROOT/makepkg.conf.d" "$BQ_BUILDROOT/srcdest"
 cp tools/makepkg.conf.d/00-power8.conf "$BQ_BUILDROOT/makepkg.conf.d/"   # refuse to build without it
@@ -222,15 +226,20 @@ python3 tools/bq.py --buildroot "$BQ_BUILDROOT" build \
     --timeout 21600
 ```
 
-Two things a second *published* repo needs that are not parameterised today.
-Neither blocks building; both are one-line edits when it comes to publishing:
+Publishing a second pool is parameterised now, and the baseline is the default
+where a default exists:
 
-* `tools/repo-publish.sh` hardcodes `DB=$REPO/omarchy-power9.db.tar.gz`. It
-  already honours `REPO=`; the DB basename needs to follow the repo name.
-* The repo name `omarchy-power9` is baked into `iso/build.sh` (5 sites),
-  `iso/profile/pacman.conf`, `tools/repo-gaps.py` and `tools/soname-gaps.py`.
-  `installer/p9-install` already takes `--repo-name`, so the installer side is
-  fine.
+* `tools/repo-publish.sh` takes `REPO=` and `REPO_NAME=`; the DB basename
+  follows the repo name (`REPO=…/repo-ppc64le REPO_NAME=omarchy-ppc64le`).
+  Same for `tools/repo-r2-sync.sh`, `tools/repo-gaps.py` and
+  `tools/soname-gaps.py`.
+* `iso/build.sh` takes `--repo-name` / `--pool`, with `--power9` as the
+  shorthand for the optimised pool, and **defaults to the baseline**;
+  `iso/profile/pacman.conf` carries `@P9_REPO_NAME@`. The name the ISO was
+  built for is written to `share/repo-name.conf` and read by `p9-install`.
+* `installer/p9-install` defaults to `omarchy-ppc64le` and takes
+  `--baseline-repo-name` / `--baseline-repo-server` to layer the optimised
+  pool ahead of the baseline in one `/etc/pacman.conf`.
 
 ---
 
@@ -352,11 +361,14 @@ its blind-spot list.
 ## 6. The ISO
 
 `iso/build.sh` builds an archiso profile (`iso/profile/packages.ppc64le`, 136
-packages) with the kth5/archiso fork for `openpower.grub`, and injects `repo/`
-onto the medium at `p9repo/omarchy-power9/`, which `p9-install` reads with
-`P9_REPO_SERVER=file:///run/archiso/bootmnt/p9repo/omarchy-power9`.
+packages) with the kth5/archiso fork for `openpower.grub`, and with
+`--bundle-repo` injects the selected pool onto the medium at
+`p9repo/<repo name>/`, which `p9-install` reads with
+`P9_REPO_SERVER=file:///run/archiso/bootmnt/p9repo/<repo name>`. The pool is
+selected with `--repo-name` / `--pool` (`--power9` for the optimised one) and
+**defaults to the baseline `omarchy-ppc64le`**.
 
-A POWER8 ISO needs three things beyond a POWER8 package repo:
+A baseline ISO needs three things beyond a POWER8-legal package pool:
 
 1. **A POWER8 kernel. This is the blocker.** `packaging/ours/linux-power9` sets, in
    *both* `config.4k` and `config.64k`:
@@ -387,8 +399,8 @@ A POWER8 ISO needs three things beyond a POWER8 package repo:
    regenerated**, or the hand-set options and the seven carried patches are
    lost.
 
-2. **Repo name plumbing.** The five `omarchy-power9` sites in `iso/build.sh`
-   plus `iso/profile/pacman.conf` (§3).
+2. **Repo name plumbing.** Done (§3): `iso/build.sh` and
+   `iso/profile/pacman.conf` are parameterised, baseline by default.
 
 3. **Nothing else.** The bootloader path (`openpower.grub`, petitboot) is
    identical, and every other package on the medium comes from Arch POWER,
@@ -471,12 +483,16 @@ POWER8/gfx1030 ROCm drop slots underneath unchanged.
 ## 9. Artifacts from this pass
 
 Two packages were built POWER8 to test the method, and are kept in
-`repo-power8/` (a holding folder — **no repo database, not published**):
+`repo-ppc64le/` (**no repo database yet, not published**):
 
 | file | flags | ISA 3.0 | status |
 |---|---|---:|---|
-| `repo-power8/libde265-1.1.2-1-powerpc64le.pkg.tar.zst` | POWER8 drop-in in force (`-mcpu=power8 -mtune=power8`) | **0** | genuine POWER8 package |
-| `repo-power8/needs-rebuild/fd-10.5.0-3-powerpc64le.pkg.tar.zst` | POWER8 drop-in in force (`-C target-cpu=pwr8`) | **2,676** | **not POWER8-legal** — statically linked POWER9 `libstd`; held apart deliberately. Rebuild after `packaging/rust` gets its POWER8 toggle. |
+| `repo-ppc64le/libde265-1.1.2-1-powerpc64le.pkg.tar.zst` | POWER8 drop-in in force (`-mcpu=power8 -mtune=power8`) | **0** | genuine POWER8 package |
+| `repo-ppc64le/needs-rebuild/fd-10.5.0-3-powerpc64le.pkg.tar.zst` | POWER8 drop-in in force (`-C target-cpu=pwr8`) | **2,676** | **not POWER8-legal** — statically linked POWER9 `libstd`; held apart deliberately. Rebuild after `packaging/rust` gets its POWER8 toggle. |
+
+Two sibling holding directories keep builds that must not reach the pool:
+`repo-ppc64le-rejected/` and `repo-ppc64le-rejected-pwr9-libstd/` (Rust
+packages that linked a POWER9 `libstd`).
 
 Both carry `arch = powerpc64le` and this machine's packager line. Neither
 inherited the host's `-mcpu=power9`: the drop-in was verified in force before

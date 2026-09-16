@@ -496,8 +496,13 @@ P9_INSTALL="${P9_INSTALL:-/usr/local/share/omarchy-p9/p9-install}"
 # p9-install saw an explicit server on every run and never consulted the
 # repo-servers.conf the ISO was built with. Let p9-install resolve it: command
 # line, then $P9_REPO_SERVER from the environment, then the baked-in list.
-P9_REPO_NAME="${P9_REPO_NAME:-omarchy-power9}"
-P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/omarchy-power9}"
+# The baseline pool is the default everywhere: omarchy-ppc64le is built
+# POWER8-legal, so it runs on every ppc64le machine. An ISO built for the
+# POWER9-optimised pool (iso/build.sh --power9) bakes its own name into
+# share/repo-name.conf, which p9-install reads -- so this default is only the
+# last fallback, not an override of what the ISO was built with.
+P9_REPO_NAME="${P9_REPO_NAME:-omarchy-ppc64le}"
+P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/omarchy-ppc64le}"
 P9_KERNEL="${P9_KERNEL:-linux-power9}"
 P9_LOCALE="${P9_LOCALE:-en_US.UTF-8}"
 

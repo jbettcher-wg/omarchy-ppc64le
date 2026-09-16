@@ -50,11 +50,10 @@ Columns (TSV)
              tree bq builds from), gitlab-only (it is not in the packaging
              tree), none (not on GitLab either)
   shipped    newest version across every repo database in repo/, which is the
-             never-downgrade floor. The p9 -> ppc64le rename keeps two live at
-             once (omarchy-power9.db.tar.gz and the partial
-             omarchy-ppc64le.db.tar.zst), and reading only one makes packages
-             we did ship look as though they never shipped; older entries are
-             listed in the note
+             never-downgrade floor. Two live side by side (the published
+             omarchy-power9.db.tar.gz and bq's own working bq-staging.db.tar.zst),
+             and reading only one makes packages we did ship look as though
+             they never shipped; older entries are listed in the note
   ours       recipe version from the source above -- the recipe bq would
              build. The packaging tree is indexed by pkgbase at any depth with
              the shared closure.discover_recipes, the same way bq's DirSource
@@ -192,9 +191,9 @@ DB_NAME = re.compile(r".+\.db\.tar\.(gz|xz|zst|bz2)$")
 def repo_dbs():
     """Every live repo database in the pool.
 
-    The p9 -> ppc64le rename means two sit side by side
-    (omarchy-power9.db.tar.gz, 1,355 entries, and omarchy-ppc64le.db.tar.zst,
-    212). Reading only the first one found makes packages we did ship --
+    Two sit side by side in repo/: the published omarchy-power9.db.tar.gz
+    (1,355 entries) and bq's own working bq-staging.db.tar.zst (212).
+    Reading only the first one found makes packages we did ship --
     kconfig, kio, libxcb, rust, gcc -- look as though they never shipped, and
     the never-downgrade floor has to be the newest across the whole pool."""
     out = []

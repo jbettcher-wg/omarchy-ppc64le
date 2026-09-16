@@ -32,8 +32,11 @@ for db in /var/lib/pacman/sync/*.db; do
   cp -f "$db" "$dbpath/sync/"
 done
 
-if [ -e "$repo/omarchy-ppc64le.db.tar.zst" ]; then
-  cp -f "$repo/omarchy-ppc64le.db.tar.zst" "$dbpath/sync/omarchy-ppc64le.db"
+# bq's staging database, copied in under the name tools/pacman-build.conf gives
+# the stanza that serves it ([bq-staging]). It is not a published pool db --
+# those are omarchy-ppc64le.db.tar.gz (baseline) and omarchy-power9.db.tar.gz.
+if [ -e "$repo/bq-staging.db.tar.zst" ]; then
+  cp -f "$repo/bq-staging.db.tar.zst" "$dbpath/sync/bq-staging.db"
 fi
 
 echo "prime-dbpath: $(ls -1 "$dbpath"/sync/*.db 2>/dev/null | wc -l) sync databases in $dbpath"

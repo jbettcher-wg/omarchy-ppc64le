@@ -9,8 +9,18 @@ This is deliberately a *metadata* check and catches only undeclared-name gaps.
 It does NOT catch a package linking a soname nothing ships any more -- that
 needs the runtime ldd sweep, which is what found libnuma, the incomplete
 qt6-declarative, and the libfmt.so.11/libabsl 2601 breakage.
+
+Which pool it reads is selectable, because the distribution publishes two:
+
+  REPO=repo-ppc64le REPO_NAME=omarchy-ppc64le tools/repo-gaps.py   # baseline
+  tools/repo-gaps.py                                               # POWER9 pool
+
+The default is the POWER9 pool, which is where this script has always looked.
 """
-import tarfile, collections, re, glob, sys
+import tarfile, collections, re, glob, os, sys
+
+REPO = os.environ.get("REPO", "repo")
+REPO_NAME = os.environ.get("REPO_NAME", "omarchy-power9")
 
 def entries(db):
     cur = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -32,7 +42,15 @@ prov = collections.defaultdict(set)
 deps = collections.defaultdict(list)
 ours = set()
 
-sources = [("repo/omarchy-power9.db.tar.gz", True)]
+sources = [(os.path.join(REPO, REPO_NAME + ".db.tar.gz"), True)]
+# A pool with no database yet is the normal state of a pool that has been built
+# but not published. Say so, rather than dying inside tarfile.
+if not os.path.isfile(sources[0][0]):
+    raise SystemExit(
+        "repo-gaps: no database at %s\n"
+        "  The pool has not been published yet. Publish it with\n"
+        "    REPO=%s REPO_NAME=%s tools/repo-publish.sh --commit"
+        % (sources[0][0], REPO, REPO_NAME))
 sources += [(d, False) for d in sorted(glob.glob("/var/lib/pacman/sync/*.db"))]
 
 for db, mine in sources:

@@ -32,11 +32,21 @@ Resolves each package NAME to the entry pacman would actually pick (our repo
 beats base, matching pacman.conf order), collects the versioned sonames those
 winners provide, then reports any versioned soname dependency -- from any
 package, ours or theirs -- that no winner satisfies.
+
+Which pool it reads is selectable, because the distribution publishes two:
+
+  REPO=repo-ppc64le REPO_NAME=omarchy-ppc64le tools/soname-gaps.py  # baseline
+  tools/soname-gaps.py                                              # POWER9 pool
+
+The default is the POWER9 pool, which is where this script has always looked.
 """
 import tarfile, collections, glob, os, sys
 
+REPO = os.environ.get("REPO", "repo")
+REPO_NAME = os.environ.get("REPO_NAME", "omarchy-power9")
+
 # pacman.conf order. Ours first: that is the whole point.
-REPO_ORDER = ["omarchy-power9", "base", "base-any", "core", "extra"]
+REPO_ORDER = [REPO_NAME, "base", "base-any", "core", "extra"]
 
 
 def entries(path, repo):
@@ -68,7 +78,16 @@ def rank(repo):
 
 
 def main():
-    sources = [("repo/omarchy-power9.db.tar.gz", "omarchy-power9")]
+    sources = [(os.path.join(REPO, REPO_NAME + ".db.tar.gz"), REPO_NAME)]
+    # A pool with no database yet is the normal state of a pool that has been
+    # built but not published. Without this the run "succeeds" having read
+    # nothing of ours, which reads as "no stranded packages".
+    if not os.path.isfile(sources[0][0]):
+        raise SystemExit(
+            "soname-gaps: no database at %s\n"
+            "  The pool has not been published yet. Publish it with\n"
+            "    REPO=%s REPO_NAME=%s tools/repo-publish.sh --commit"
+            % (sources[0][0], REPO, REPO_NAME))
     for d in sorted(glob.glob("/var/lib/pacman/sync/*.db")):
         sources.append((d, os.path.basename(d)[:-3]))
 
@@ -104,7 +123,7 @@ def main():
 
     print("packages considered: %d   (ours: %d)"
           % (len(winner), sum(1 for _, (r, _f) in winner.items()
-                              if r == "omarchy-power9")))
+                              if r == REPO_NAME)))
     print()
     if not broken:
         print("no stranded soname dependencies")
@@ -125,7 +144,7 @@ def main():
 
     print("STRANDED PACKAGES (%d, over %d dependencies)" % (len(bypkg), len(broken)))
     for (name, repo), items in sorted(bypkg.items()):
-        mark = "*" if repo != "omarchy-power9" else "!"
+        mark = "*" if repo != REPO_NAME else "!"
         tag = "  *** IN MANIFEST" if name in manifest else ""
         print("  %s %s (%s)%s" % (mark, name, repo, tag))
         for base, ver, why in sorted(items):

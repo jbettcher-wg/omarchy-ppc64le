@@ -642,12 +642,20 @@ def shipped_versions():
         return _SHIPPED
     _SHIPPED = {}
     # Every repo database in the pool, merged, newest version per pkgbase --
-    # not the first one that opens.  The pool currently holds two: the
-    # published omarchy-power9.db.tar.gz with 941 pkgbases, and
-    # omarchy-ppc64le.db.tar.zst, which is the in-progress p9 -> ppc64le rename
-    # and carries only 159.  Reading either one alone gives a floor with holes
-    # in it, and a hole in the floor is a silent downgrade: kconfig, kio,
+    # not the first one that opens.  repo/ holds two, and they are different
+    # kinds of thing: the *published* omarchy-power9.db.tar.gz, and
+    # bq-staging.db.tar.zst, which is bq's own working database (--repo-db)
+    # for packages built but not published yet.  Both are a floor -- a package
+    # is shipped whether it went out in the published db or is sitting here
+    # staged -- so both are read.  Reading either one alone gives a floor with
+    # holes in it, and a hole in the floor is a silent downgrade: kconfig, kio,
     # libxcb, rust and gcc all read as "never shipped" against the smaller db.
+    #
+    # The staging db is deliberately NOT named for a pool.  It used to be
+    # called omarchy-ppc64le.db.tar.zst, which now names the *baseline package
+    # pool* (repo-ppc64le/, published as [omarchy-ppc64le]) -- two unrelated
+    # things under one name.  Nothing here treats bq-staging as published:
+    # repo-publish.sh and repo-r2-sync.sh both act on $REPO_NAME.db.tar.gz.
     env = os.environ.get("BQ_REPO_DB")
     if env:
         cands = [env]
@@ -1200,7 +1208,7 @@ def bwrap_prefix(sysroot):
     # with an empty package pool nothing has been staged yet, so its usr/ does
     # not exist -- and a missing usr/ used to mean no overlay at all: the build
     # ran bare, with the -isystem/-L fallback in build_env(). Found on the POWER8
-    # builder (repo-power8 starts empty): 7zip got "-isystem A:-isystem B" and
+    # builder (repo-ppc64le starts empty): 7zip got "-isystem A:-isystem B" and
     # failed, alsa-lib's configure could not link, bash baked the sysroot into
     # Makefile.inc. An empty upper layer is a valid overlay source; create it.
     if layers:
@@ -1401,7 +1409,7 @@ class Slot:
                                  "makepkg.conf.slot%d" % idx)
         # makepkg loads drop-ins only from "$MAKEPKG_CONF.d" -- the config's
         # own name plus .d. A serial run's makepkg.conf finds the buildroot's
-        # makepkg.conf.d (where build-power8.sh installs 00-power8.conf); a
+        # makepkg.conf.d (where build-ppc64le.sh installs 00-power8.conf); a
         # slot's makepkg.conf.slotN looked for makepkg.conf.slotN.d, found
         # nothing, and every -j>1 POWER8 run silently lost the drop-in: no
         # _power8, so rust shipped a pwr9 libstd. Point each slot at the same
@@ -2569,8 +2577,10 @@ def main():
                         "system one should stay unset, or every hand-run makepkg "
                         "and every yay AUR build lands in the repo too.")
     p.add_argument("--full-bootstrap", action="store_true")
-    p.add_argument("--repo-db", default="omarchy-ppc64le.db.tar.zst",
-                   help="repo database to add into; empty to skip repo-add")
+    p.add_argument("--repo-db", default="bq-staging.db.tar.zst",
+                   help="repo database to add into; empty to skip repo-add. "
+                        "This is bq's own staging database, not a published "
+                        "pool db -- publishing is tools/repo-publish.sh")
     p.set_defaults(fn=cmd_build)
 
     p = sub.add_parser("status", help="what has been built")
