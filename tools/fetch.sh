@@ -22,7 +22,11 @@ case ${1:-} in
   --gitlab) shift ;;
   -*) usage ;;
 esac
-base=${1:?$(usage)}
+base=${1:-}
+# Not ${1:?$(usage)}: usage() exits from the command substitution's
+# subshell, so the script carried on and bash appended its own empty
+# "line N: 1:" diagnostic under the real usage line.
+[ -n "$base" ] || usage
 dest=${2:-}
 
 [ -d "$PACKAGING" ] || { echo "no packaging tree at $PACKAGING" >&2; exit 2; }
