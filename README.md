@@ -301,3 +301,7 @@ patch header).
 Maintained by Jordan Bettcher.
 
 ![The power9 theme wallpaper, with cliamp playing Omarchy Radio](docs/images/theme-cliamp.png)
+
+![The powerpc-classic theme on POWER9: fastfetch with the OpenPOWER cube, and btop](docs/images/theme-powerpc-classic.png)
+
+![The powerpc-after-dark theme, the dark sibling of powerpc-classic](docs/images/theme-powerpc-after-dark.png)
