@@ -25,7 +25,7 @@ LuaJIT, and `omarchy update`.
 |---|---|
 | Omarchy base packages available | **146 of 147** (only `localsend` is missing, below) |
 | Packages in the `omarchy-power9` repo | 1,350 |
-| Recipes maintained here | 175 |
+| Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,562 pkgbases, 199 of them ours |
 | Omarchy version | 4.0.3, stable channel (`omarchy` 4.0.3-3, `omarchy-settings` 4.0.3-2) |
 | Kernel | `linux-power9` 7.2.2 (4K pages) and `linux-power9-64k` |
 | Installer | ISO + `p9-install`, PowerNV and pSeries |
@@ -34,6 +34,27 @@ LuaJIT, and `omarchy update`.
 The whole userland is rebuilt for POWER9 (`-mcpu=power9`). A **POWER8**
 release (separate repo and ISO, built from the same recipes) is planned as a
 secondary target; see [`docs/power8-secondary-target.md`](docs/power8-secondary-target.md).
+
+## Repositories
+
+The distribution is two repositories.
+
+| | |
+|---|---|
+| **this one** | the installer and ISO, the build tooling, the repo databases, and the docs |
+| [**omarchy-ppc64le-packaging**](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | every build script the distribution builds from — 4,562 pkgbases, 199 of them ours |
+
+No PKGBUILD lives here. A builder needs both, and locates the packaging tree
+through `OMARCHY_PACKAGING`:
+
+```sh
+git clone git@github.com:jbettcher-wg/omarchy-ppc64le.git
+git clone git@github.com:jbettcher-wg/omarchy-ppc64le-packaging.git
+export OMARCHY_PACKAGING=$PWD/omarchy-ppc64le-packaging
+```
+
+Clone them side by side under `~/Development` and the variable is unnecessary —
+that is the default the tools assume.
 
 ### Notable ports
 
@@ -160,35 +181,42 @@ Everything is built unprivileged. `tools/bq.py` orders the build, layers build
 dependencies with `bwrap` overlays (no chroot, no sudo), runs several packages
 in parallel and caches compiles with ccache.
 
+Build scripts live in their own repository,
+[**omarchy-ppc64le-packaging**](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging)
+— every PKGBUILD the distribution builds from, curated by us. Clone it beside
+this one, or point `OMARCHY_PACKAGING` at it:
+
 ```sh
-# edit packages/<pkg>/PKGBUILD, bump pkgrel
+git clone git@github.com:jbettcher-wg/omarchy-ppc64le-packaging.git \
+  ~/Development/omarchy-ppc64le-packaging      # the default location
+# edit <category>/<pkg>/PKGBUILD there, bump pkgrel
 tools/bq.py build <pkg> [-j N] [--rebuild --force]
 tools/repo-publish.sh              # dry run: what would change in omarchy-power9
 tools/repo-publish.sh --commit     # write the published DB
 ```
 
-Recipes are discovered by pkgbase, recursively, in `packages/` here and in
-the Arch POWER checkout, then from Arch's GitLab and optionally the AUR
-(`--sources`). When more than one tree has a pkgbase the **newest version**
-wins -- not the first source listed -- with `packages/` breaking a tie so our
-patched copy is preferred. A recipe older than the version our repo database
-ships is refused and logged (`--allow-downgrade` overrides): we do not
-downgrade for parity. Packages that build unmodified from Arch POWER or Arch
-recipes have no directory here. Every package passes path guards that reject
+Recipes are discovered by pkgbase, **recursively**, in that one tree — nothing
+else is a build-time source. Arch's GitLab and the AUR are import sources
+reached through `tools/fetch.sh`, which places a fetched recipe in the right
+category inside the packaging tree, where it is reviewed and committed. That
+split is deliberate: when three trees could each supply a recipe, versions
+drifted silently between builders. A pkgbase claimed by two directories is an
+error, never resolved by picking one, and a recipe older than the version our
+repo database ships is refused and logged (`--allow-downgrade` overrides): we
+do not downgrade for parity. Every package passes path guards that reject
 build-tree paths and stray install locations. Full details are in [`docs/build-queue.md`](docs/build-queue.md).
 
 ### Releasing a new Omarchy version
 
 1. Read upstream's `omarchy.db`: filename, `%SHA256SUM%`, depends.
 2. Read the new migrations; a failing migration aborts `omarchy update`.
-3. Bump `pkgver` and the checksum in `packages/ours/omarchy` and
-   `packages/ours/omarchy-settings`, build, and publish.
+3. Bump `pkgver` and the checksum in `ours/omarchy` and
+   `ours/omarchy-settings` in the packaging tree, build, and publish.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `packages/` | PKGBUILDs and patches, laid out like Arch POWER: a recipe they nest under a category (`kf6/`, `xorg/`, `qt6/` ...) is under the same category here, and `ours/` holds recipes no upstream carries |
 | `tools/` | `bq.py` build queue, `repo-publish.sh`, dependency closure and soname/repo gap checks, path guards, sysroot helpers |
 | `installer/` | `p9-install`, the ISO configurator, first-boot layer, QEMU test rig |
 | `iso/` | archiso profile and `build.sh` |
@@ -198,6 +226,8 @@ build-tree paths and stray install locations. Full details are in [`docs/build-q
 | `RULES.md` | working rules for this tree |
 | `repo/`, `repo-power8/` | built packages and repo DBs (not in git) |
 | `upstream/` | reference clones of `omarchy` and `omarchy-iso` (not in git) |
+
+Build scripts are not here; see [Repositories](#repositories).
 
 ## Upstream work
 
@@ -211,7 +241,8 @@ are upstreamable or a local workaround.
 The tooling, installer, docs and our own recipes and patches are
 [MIT](LICENSE). Recipes adapted from Arch Linux, Arch POWER or the AUR, and
 patches taken from other projects, keep their original licences; see each
-package directory (`LICENSE`, `REUSE.toml` or the patch header).
+package directory in the packaging repository (`LICENSE`, `REUSE.toml` or the
+patch header).
 
 ## Credits
 

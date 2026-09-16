@@ -15,21 +15,30 @@ not running makepkg; it is everything around it:
 So the queue owns order, isolation, cleanup, resumption and triage, and calls
 makepkg for the one job makepkg is good at.
 
-The recipe source is pluggable, because the AUR triage tool is this same
-engine with a different front end:
+There is **one** local source of build scripts:
 
-    local      omarchy-ppc64le/packages/**/<pkgbase>/     (our own recipes)
-    archpower  ~/Development/repo/archpower/**/<pkgbase>/ (read-only input)
+    packaging  omarchy-ppc64le-packaging/**/<pkgbase>/   ($OMARCHY_PACKAGING)
+
+It is searched *recursively* and keyed by pkgbase, because the tree keeps most
+recipes under category directories (kf6/, xorg/, python/, plasma/ and
+twenty-odd more) and only ~1,900 of its ~4,570 pkgbases at the top level.
+
+Arch POWER and Arch are sources we *import from*, not trees consulted at build
+time.  `tools/fetch.sh` brings a new build script into the packaging tree, in
+the right category, where it is reviewed and committed.  That is deliberate:
+when three trees could each supply a recipe, the versions drifted silently
+between builders -- the POWER8 box took KF6 6.30 from GitLab while the POWER9
+box had built 6.29 from a tree, and 41 packages failed.
+
+The git sources remain registered but are **not** in the default --sources, so
+they are reachable only when asked for explicitly:
+
     gitlab     gitlab.archlinux.org/archlinux/packaging/packages/<pkgbase>
-    aur        aur.archlinux.org/<pkgbase>.git
+    aur        aur.archlinux.org/<pkgbase>.git   (the AUR triage front end)
 
-Both directory trees are searched *recursively* and keyed by pkgbase, because
-Arch POWER nests most of its recipes under category directories (kf6/, xorg/,
-python/, plasma/ and twenty-odd more) and our tree mirrors that layout.  When
-more than one tree carries a pkgbase the newest version wins -- `packages/`
-breaking a tie, so our patched copy is preferred over an identical upstream one
--- and a recipe older than the version our repo database already ships is never
-selected without --allow-downgrade.
+Selection within a source is still by version, and a recipe older than the
+version our repo database already ships is never selected without
+--allow-downgrade.
 
 The AUR source additionally rewrites `arch=()` and regenerates `.SRCINFO`.
 That is not a nicety: libalpm enforces the architecture guard itself, so
@@ -72,7 +81,13 @@ from collections import defaultdict
 
 HOME = os.path.expanduser("~")
 OMARCHY = os.path.join(HOME, "Development/omarchy-ppc64le")
-ARCHPOWER = os.path.join(HOME, "Development/repo/archpower")
+# The one local source of build scripts.  A builder clones
+# https://github.com/jbettcher-wg/omarchy-ppc64le-packaging and points
+# OMARCHY_PACKAGING at it; the default is where a normal checkout lands, so a
+# builder that follows the README needs no configuration at all.
+PACKAGING = os.environ.get(
+    "OMARCHY_PACKAGING",
+    os.path.join(HOME, "Development/omarchy-ppc64le-packaging"))
 TOOLS = os.path.join(OMARCHY, "tools")
 # Where built packages land, and where sysroot-add/stage-deps look for "ours".
 # BQ_REPO points a side build at its own package pool: a cross-target build
@@ -198,15 +213,14 @@ class DirSource(Source):
     """A recipe tree already on disk.  Always copied out, never built in
     place -- building in a checkout is what leaves src/, pkg/ and stray
     tarballs scattered through it and makes the next `git pull` awkward.
-    The archpower tree is strictly read-only input.
 
     The tree is indexed once, recursively, by pkgbase.  It used to be probed
     as <root>/<pkgbase>/PKGBUILD, which found only the recipes a tree happens
-    to keep at its top level -- and Arch POWER keeps ~2500 of them one level
-    down under kf6/, xorg/, python/, plasma/ and the rest.  Those ~180 that we
-    actually queue were reported absent and quietly fetched from Arch's GitLab
-    instead, which is how the POWER8 builder came to build KDE Frameworks 6.30
-    against our 6.29 and fail 41 packages."""
+    to keep at its top level -- and ~2,650 of the packaging tree's pkgbases
+    live one and two levels down under kf6/, xorg/, python/, plasma/ and the
+    rest.  Those ~180 that we actually queue were reported absent and quietly
+    fetched from Arch's GitLab instead, which is how the POWER8 builder came to
+    build KDE Frameworks 6.30 against our 6.29 and fail 41 packages."""
 
     def __init__(self, name, root):
         self.name = name
@@ -388,14 +402,20 @@ def regen_srcinfo(dest):
     return False
 
 
+# One local source.  The git sources stay registered -- the AUR triage tool is
+# this same engine with a different front end, and an explicit
+# `--sources packaging,gitlab` is still how a one-off import gets tested -- but
+# neither is in DEFAULT_SOURCES, so a normal build cannot silently fall through
+# to a tree we do not curate.
 SOURCES = {
-    "local":     DirSource("local", os.path.join(OMARCHY, "packages")),
-    "archpower": DirSource("archpower", ARCHPOWER),
+    "packaging": DirSource("packaging", PACKAGING),
     "gitlab":    GitSource("gitlab",
                            "https://gitlab.archlinux.org/archlinux/packaging/packages/%s.git"),
     "aur":       GitSource("aur", "https://aur.archlinux.org/%s.git",
                            rewrite_arch=True),
 }
+
+DEFAULT_SOURCES = "packaging"
 
 
 # ==========================================================================
@@ -678,8 +698,8 @@ def resolve_recipe(pkgbase, order, allow_downgrade=False):
     Selection is by *version*, not by fixed source order.  Source order used
     to decide it, which meant an Arch POWER recipe shadowed a newer one of
     ours (or the reverse) purely because of where it sat in --sources.  Now
-    the newest recipe wins and `packages/` breaks a tie, so our patched copy
-    is preferred over an upstream one at the same version.
+    the newest recipe wins and the packaging tree breaks a tie, so our patched
+    copy is preferred over an upstream one at the same version.
 
     Two things are refused rather than guessed:
       * a pkgbase that two directories in one tree both claim, and
@@ -708,9 +728,9 @@ def resolve_recipe(pkgbase, order, allow_downgrade=False):
             continue
         d = s.path_of(pkgbase)
         if d is not None:
-            # tie-break 0 for our tree, then the order the caller gave
+            # tie-break 0 for the packaging tree, then the order the caller gave
             cands.append((s.version_of(pkgbase),
-                          0 if sname == "local" else i + 1, sname, d))
+                          0 if sname == "packaging" else i + 1, sname, d))
 
     def _cmp(a, b):
         va, vb = a[0], b[0]
@@ -2456,10 +2476,14 @@ def main():
     def common(p):
         p.add_argument("targets", nargs="*")
         p.add_argument("-f", "--targets-file")
-        p.add_argument("--sources", default="local,archpower,gitlab",
+        p.add_argument("--sources", default=DEFAULT_SOURCES,
                        help="recipe sources to consider, and the tie-break "
-                            "order among them (local,archpower,gitlab,aur). "
-                            "Selection is by version first, not by this order")
+                            "order among them (default: packaging, the only "
+                            "local tree). gitlab and aur are import sources -- "
+                            "naming one here builds straight from upstream "
+                            "without the recipe ever entering the packaging "
+                            "tree, so prefer tools/fetch.sh. Selection is by "
+                            "version first, not by this order")
         p.add_argument("--allow-downgrade", action="store_true",
                        help="select a recipe even when it is older than the "
                             "version our repo database already ships. Refused "

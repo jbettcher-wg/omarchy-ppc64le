@@ -9,7 +9,7 @@ ppc64le actually is.
 
 ### 1. rnnoise — `src/vec.h`'s scalar fallback has never compiled
 
-`packages/rnnoise/0001-vec.h-fix-the-scalar-fallback-path.patch`
+`packaging/rnnoise/0001-vec.h-fix-the-scalar-fallback-path.patch`
 
 `vec.h` dispatches three ways: AVX/SSE2, ARM NEON, and a generic scalar `#else`.
 The scalar branch does not compile on any architecture. It includes
@@ -30,7 +30,7 @@ Send to: <https://gitlab.xiph.org/xiph/rnnoise>.
 
 ### 2. marksman — the Makefile's arch table silently produces an invalid .NET RID
 
-`packages/marksman/0001-Makefile-recognise-ppc64le-riscv64-and-s390x.patch`
+`packaging/marksman/0001-Makefile-recognise-ppc64le-riscv64-and-s390x.patch`
 
 The Makefile builds a .NET runtime identifier as `$(OS_ID)-$(ARCH_ID)`, mapping
 `uname -m` through a list of `ifeq` cases: x86_64, amd64, x86, arm, arm64,
@@ -54,7 +54,7 @@ Send to: <https://github.com/artempyanykh/marksman>.
 
 ### 3. neovim -- `FindLpeg.cmake` bakes lpeg's build-time path into the binary
 
-`packages/neovim/0001-findlpeg-link-by-name-not-absolute-path.patch`
+`packaging/neovim/0001-findlpeg-link-by-name-not-absolute-path.patch`
 
 `cmake/FindLpeg.cmake` resolves lpeg with `find_library` and hands the absolute
 result to the linker through an `UNKNOWN IMPORTED` target -- deliberately, to
@@ -89,7 +89,7 @@ Send to: <https://github.com/neovim/neovim>.
 ---
 
 Those are the *only* three, after 87 packages built and verified across Perl,
-Python, Lua, Rust, Go, C and C++. Every other diff in `packages/` is in a
+Python, Lua, Rust, Go, C and C++. Every other diff in `packaging/` is in a
 PKGBUILD, and 59 of the 87 are `arch=()` alone.
 
 The first two are the arch-gating pattern from the handbook, holding at scale:
@@ -102,7 +102,7 @@ string. It took an unprivileged sysroot build to pull them apart.
 
 ### 4. ispc -- the ispcrt CMake helper does not know about the new ppc64le backend
 
-`packages/ispc/ispcrt-cmake-ppc64le.patch`
+`packaging/ispc/ispcrt-cmake-ppc64le.patch`
 
 ispc 1.31.0 added an experimental ppc64le backend (`PPC64_ENABLED`,
 `--arch=ppc64le`, `vsx-*` targets) but did not teach `ispcrt/cmake/ispc.cmake`
@@ -119,7 +119,7 @@ Send to: <https://github.com/ispc/ispc>.
 
 ### 4b. rkcommon -- three x86 leftovers behind `#else`
 
-`packages/rkcommon/rkcommon-ppc64le.patch`
+`packaging/rkcommon/rkcommon-ppc64le.patch`
 
 rkcommon is portable C++ except for three spots guarded by `#else` rather than
 an architecture test, so any target that is neither x86 nor NEON falls into
@@ -136,7 +136,7 @@ Send to: <https://github.com/RenderKit/rkcommon>.
 
 ### 5. embree -- ppc64le port on the compiler's SSE-to-VSX headers
 
-`packages/embree/embree-ppc64le.patch`
+`packaging/embree/embree-ppc64le.patch`
 
 Embree's kernels are SSE intrinsics selected by the `__SSE*__` macros. GCC
 (>= 8) and clang ship `<xmmintrin.h>` .. `<nmmintrin.h>` for powerpc64le that
@@ -160,7 +160,7 @@ Send to: <https://github.com/RenderKit/embree>.
 
 ### 5b. embree -- a native VSX backend for the 4-wide SIMD layer
 
-`packages/embree/embree-ppc64le-vsx.patch` (applies on top of 5)
+`packaging/embree/embree-ppc64le-vsx.patch` (applies on top of 5)
 
 The compat-header port in 5 runs SSE code through `<xmmintrin.h>`: every
 `_mm_shuffle_ps` is a control-vector permute (`vpermr`), every blend an
@@ -192,7 +192,7 @@ failed-and-ignored, identical to the compat build; an operation-level
 differential probe (`powerpc64le-handbook/probes/embree_vsx_probe.cpp`)
 against the compat build: 29,470 of 32,067 records bit-identical, 661 within
 the fused/estimate tolerances, 0 mismatches; Blender BMW27 renders at parity
-(`packages/embree/README.md`); a `-mcpu=power8` build contains no ISA 3.0
+(`packaging/embree/README.md`); a `-mcpu=power8` build contains no ISA 3.0
 instruction. Packaged library: 1,896,754 -> 1,735,670 instructions,
 control-vector permutes 22,472 -> 2,750, fused FMAs 54,200 -> 58,651.
 
@@ -200,7 +200,7 @@ Send to: <https://github.com/RenderKit/embree>, together with 5.
 
 ### 6. openvkl -- add a VSX ISA
 
-`packages/openvkl/openvkl-ppc64le.patch`
+`packaging/openvkl/openvkl-ppc64le.patch`
 
 CMake only. Open VKL's ISA selection knows x86 and NEON and passes
 `--arch=x86-64` or `aarch64`. The patch adds `OPENVKL_ISA_VSX` (one 4-wide
@@ -214,7 +214,7 @@ Send to: <https://github.com/RenderKit/openvkl>.
 
 ### 7. openimagedenoise -- `OIDN_ARCH=PPC64LE`
 
-`packages/openimagedenoise/oidn-ppc64le.patch`
+`packaging/openimagedenoise/oidn-ppc64le.patch`
 
 OIDN's CPU device is ISPC kernels; the x86-only parts (cpuid, AMX, DNNL) are
 already gated behind `OIDN_ARCH_X64` and AArch64 takes the generic ISPC path.
@@ -237,7 +237,7 @@ Send to: <https://github.com/RenderKit/oidn>.
 
 ### 8. ospray -- add a VSX ISA
 
-`packages/ospray/ospray-ppc64le.patch`
+`packaging/ospray/ospray-ppc64le.patch`
 
 OSPRay derives its ISPC target list from the ISAs Embree and Open VKL report
 and only knows the x86 and NEON names. The patch adds `VSX` (Embree SSE4.2 +
@@ -251,7 +251,7 @@ Send to: <https://github.com/RenderKit/ospray>.
 
 ### 11. blender -- a native VSX Cycles CPU kernel (and the SSE kernel through the compat headers)
 
-`packages/blender/cycles-vsx.patch`
+`packaging/blender/cycles-vsx.patch`
 
 Cycles compiles one 4-wide CPU kernel per ISA: SSE4.2 (the x86-64 baseline),
 AVX2, and on ARM the SSE4.2 kernel through `sse2neon`. `util/optimization.h`
@@ -287,7 +287,7 @@ mismatches; BMW27 / Classroom render to PSNR 59 / 49 dB against the scalar
 kernel, the same as the SSE kernel scores. Kernel object: 895 control-vector
 permutes and 2,194 fused vector multiply-adds vs 10,675 and 6 for the compat
 build. Render time versus the scalar kernel is not yet measured on an idle
-machine; the procedure is in `packages/blender/README.md`.
+machine; the procedure is in `packaging/blender/README.md`.
 
 Two upstream-relevant side findings: the x86 SSE kernel's `make_int4(float4)`
 rounds to nearest while every other path truncates (the probe shows 184
@@ -300,7 +300,7 @@ Nobody has a POWER kernel for Cycles.
 
 ### 12. blender -- OIDN is hidden behind an x86 cpuid check
 
-`packages/blender/oidn-ppc64le-supported.patch`
+`packaging/blender/oidn-ppc64le-supported.patch`
 
 Cycles' `openimagedenoise_supported()` and the compositor Denoise node's
 `is_oidn_supported()` return `true` on Apple and ARM64 and otherwise fall
@@ -320,7 +320,7 @@ both, in that order.
 
 ### 13. `omarchy-nvim` declares `arch=any` while vendoring two x86-64 binaries
 
-`packages/ours/omarchy-nvim/PKGBUILD`
+`packaging/ours/omarchy-nvim/PKGBUILD`
 
 `omarchy-nvim` is published as `arch=any`. It is not. Of the 7,934 files in
 upstream's `2026.8.13-1` package (63 MB unpacked), all but two are shell, Lua,
@@ -349,7 +349,7 @@ packages:
 
 The package is then genuinely `arch=any`, and the architecture dependence lives
 where it belongs — in `depends=()`, resolved by pacman. This is what
-`packages/ours/omarchy-nvim/PKGBUILD` does here, and its `check()` fails the build if
+`packaging/ours/omarchy-nvim/PKGBUILD` does here, and its `check()` fails the build if
 a third ELF ever appears, rather than shipping a foreign one.
 
 A second, related point for the same package: mason's registry has **no ppc64le
@@ -379,28 +379,28 @@ obs-studio, the GNOME apps and any gdk-pixbuf thumbnailer path would hit it too.
 
 Not a portability bug — it reproduces on any architecture with that pair of
 packages. It is a repo-consistency bug, and the fix is for Arch POWER to build
-`libde265 1.1.2`. We carry `packages/libde265/` (Arch's PKGBUILD plus
+`libde265 1.1.2`. We carry `packaging/libde265/` (Arch's PKGBUILD plus
 `powerpc64le` in `arch()`) in the meantime.
 
 ### `openimageio` is built against `openjph 0.27`, and `blender` against ffmpeg 8
 
 Arch POWER ships `openimageio 3.1.11.0-3` linked to `libopenjph.so.0.27`
 (their `openjph` is `0.27.0-1`). This repo's `repo/` carries `openjph
-0.31.0-1` -- with no `packages/openjph/` recipe, which is its own problem --
+0.31.0-1` -- with no `packaging/openjph/` recipe, which is its own problem --
 so on a system with `[omarchy-power9]` enabled pacman resolves the newer
 openjph and everything linking OpenImageIO fails to load
 (`libopenjph.so.0.27: cannot open shared object file`). Arch proper already
-rebuilt (`openimageio 3.1.12.1-5` is the 0.31 rebuild); `packages/openimageio/`
+rebuilt (`openimageio 3.1.12.1-5` is the 0.31 rebuild); `packaging/openimageio/`
 is that recipe with the arch gate lifted.
 
 Same shape: Arch POWER's `blender 17:5.1.0-2` links `libavcodec.so.62`
 (ffmpeg 8) while their repo now ships ffmpeg 9 (`libavcodec.so.63`), so the
-package they ship does not start. `packages/blender/` carries Arch's
+package they ship does not start. `packaging/blender/` carries Arch's
 `ffmpeg-9.patch` and builds against ffmpeg 9.
 
 ### 9. hsa-rocr — the HSA runtime's device-visibility fences are x86 intrinsics with no other-arch definition
 
-`packages/hsa-rocr/0001-ppc64le-fences-spin-hint-and-image-support.patch`
+`packaging/hsa-rocr/0001-ppc64le-fences-spin-hint-and-image-support.patch`
 
 `runtime/hsa-runtime/core/util/utils.h` includes `<x86intrin.h>` only on x86,
 yet `amd_aql_queue.cpp` (the doorbell write), `amd_blit_kernel.cpp` and
@@ -445,7 +445,7 @@ Send to: <https://github.com/ROCm/rocm-systems> (`projects/rocr-runtime`).
 
 ### 10. CLR — `top.hpp` classifies hosts as ARM or x86 only; kernarg flush fences are unguarded
 
-`packages/hip-runtime/0001-clr-ppc64le-arch-fences-and-spin-hint.patch`
+`packaging/hip-runtime/0001-clr-ppc64le-arch-fences-and-spin-hint.patch`
 
 `rocclr/include/top.hpp` defines `ATI_ARCH_ARM` or `ATI_ARCH_X86` and nothing
 for any other host. Mostly that is silent (`Os::spinPause()` becomes a no-op)
@@ -460,7 +460,7 @@ Send to: <https://github.com/ROCm/rocm-systems> (`projects/clr`).
 
 ### 11. clang — the PowerPC target defines no `__bf16`, so HIP's bf16 header cannot be compiled on a ppc64le host
 
-`packages/rocm-llvm/0002-clang-PowerPC-give-__bf16-a-storage-type-and-soft-arithmetic.patch`
+`packaging/rocm-llvm/0002-clang-PowerPC-give-__bf16-a-storage-type-and-soft-arithmetic.patch`
 
 `clang/lib/Basic/Targets/PPC.h` never sets `BFloat16Width/Align/Format` or
 `HasBFloat16`. On powerpc64le `__bf16` is therefore "not supported on this
@@ -483,7 +483,7 @@ a libcall to `__truncsfbf2`/`__truncdfbf2`. It's Custom rather than Expand
 because the generic expansion truncates instead of rounding and emits
 `FCANONICALIZE`, which this backend marks Legal for f32 but cannot select.
 That's a separate latent bug, not touched here. The patch header has the
-details; `packages/rocm-llvm/bf16-ppc64le-roundtrip.c` checks rounding bit
+details; `packaging/rocm-llvm/bf16-ppc64le-roundtrip.c` checks rounding bit
 for bit against a round-to-nearest-even reference.
 
 GCC has no `__bf16` on PowerPC, so there is no ABI boundary to break.
@@ -495,7 +495,7 @@ Send to: <https://github.com/llvm/llvm-project> (clang + PowerPC backend).
 
 ### 12. CLR — `char1`..`char4` are plain `char`, so unsigned on a POWER host; CUDA's are `signed char`
 
-`packages/hip-runtime/0002-clr-char-vectors-signed-on-unsigned-char-hosts.patch`
+`packaging/hip-runtime/0002-clr-char-vectors-signed-on-unsigned-char-hosts.patch`
 
 `amd_hip_vector_types.h` builds the char vectors with
 `__MAKE_VECTOR_TYPE__(char, char)`. CUDA's `vector_types.h` uses `signed
@@ -690,7 +690,7 @@ is also called on the non-restart path where `regs->exit_result` is stale:
 ## powerpc/eeh: `pci_rescan_remove_lock` self-deadlock in `eeh_rmv_device()`
 
 Patch: `0006-powerpc-eeh-fix-pci_rescan_remove_lock-self-deadlock-in-eeh_rmv_device.patch`
-(carried in `packages/ours/linux-power9`, applied to `~/Development/linux-7.2.2`).
+(carried in `packaging/ours/linux-power9`, applied to `~/Development/linux-7.2.2`).
 
 Since `1010b4c012b0` ("powerpc/eeh: Make EEH driver device hotplug safe"),
 `eeh_handle_normal_event()` takes `pci_rescan_remove_lock` on entry and holds it
@@ -756,7 +756,7 @@ never reset, and the global rescan/remove lock held for the remaining uptime.
 
 ## Mono (dotnet/runtime): ppc64le ELFv2 small-struct returns and arguments
 
-`packages/dotnet/dotnet-core/mono-ppc64le-elfv2-small-aggregates.patch` (paths relative
+`packaging/dotnet/dotnet-core/mono-ppc64le-elfv2-small-aggregates.patch` (paths relative
 to `src/runtime`, so it applies to dotnet/runtime as is).
 
 Mono's ppc64 JIT returned every struct through a hidden pointer in r3, the old
@@ -779,7 +779,7 @@ Send to: dotnet/runtime (precedent for Mono ppc64le fixes: PR #98923).
 
 ## Blender Cycles: CPU name from `/proc/cpuinfo` on POWER
 
-`packages/blender/cycles-power-cpu-name.patch`. `system_cpu_brand_string()`
+`packaging/blender/cycles-power-cpu-name.patch`. `system_cpu_brand_string()`
 reads `model name`, which POWER's cpuinfo does not have, so Cycles lists
 "Unknown CPU". The patch reads the `cpu` field ("POWER9, altivec supported")
 instead. That half is a plain portability fix; the "(VSX)" kernel suffix only
@@ -787,8 +787,8 @@ makes sense together with `cycles-vsx.patch`.
 
 ## Chromium (Debian ppc64le series): seccomp-bpf trap returns use the `sc` convention for `scv` callers
 
-`packages/chromium/ppc64le-seccomp-scv-return-abi.patch` (identical copy in
-`packages/electron43/`). Applies after the Debian ppc64le tarball, on top of
+`packaging/chromium/ppc64le-seccomp-scv-return-abi.patch` (identical copy in
+`packaging/electron43/`). Applies after the Debian ppc64le tarball, on top of
 `sandbox/0001-sandbox-Enable-seccomp_bpf-for-ppc64.patch`.
 
 The ppc64 seccomp-bpf support in the Debian chromium-team series (from Raptor
@@ -820,7 +820,7 @@ and Chromium upstream if the ppc64 sandbox code is carried there.
 
 ## Mono (dotnet/runtime): static virtual methods constrained to an interface
 
-`packages/dotnet/dotnet-core/mono-static-virtual-interface-constraint.patch`
+`packaging/dotnet/dotnet-core/mono-static-virtual-interface-constraint.patch`
 
 When generic code calls a static virtual method through a type parameter that
 is itself an interface (`TSender.GetGType()` where `TSender` is an interface

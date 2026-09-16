@@ -1,5 +1,0 @@
-[adios2]
-source = "git"
-git = "https://github.com/ornladios/ADIOS2.git"
-prefix = "v"
-exclude_regex = ".*(pre|rc|alpha|beta).*"

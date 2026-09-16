@@ -1,8 +1,10 @@
 # Dependency closure for the Omarchy ppc64le build queue
 
 Resolved on `witherspoon-arkamedes` against the live Arch POWER sync DB
-(`base`, `base-any`; 5936 packages, 1374 installed) plus Arch POWER's PKGBUILD
-tree at `~/Development/repo/archpower`.
+(`base`, `base-any`; 5936 packages, 1374 installed) plus the packaging tree at
+`$OMARCHY_PACKAGING`. (This run predates the consolidation, when the recipes
+were still split across `packages/` and the archpower checkout; the counts
+below are from that resolution.)
 
 Method: fetch each target's upstream PKGBUILD from
 `gitlab.archlinux.org/archlinux/packaging/packages/<pkgbase>`, source it with
@@ -218,8 +220,9 @@ in a sync repo, and that set is the entire point of the exercise. So
 2. every package we have already built, read from the authoritative `.PKGINFO`
    inside `repo/*.pkg.tar.zst` — not guessed from a PKGBUILD, which is free to
    set `provides` inside `package_()` and frequently does;
-3. the recipe trees — `packages/` and the archpower checkout — via `.SRCINFO`,
-   falling back to sourcing the `PKGBUILD` with `CARCH=powerpc64le`.
+3. the packaging tree — every build script we have, at any depth — via
+   `.SRCINFO`, falling back to sourcing the `PKGBUILD` with
+   `CARCH=powerpc64le`.
 
 Soname `provides` are indexed alongside real names, which is what resolves
 entries like `libsdbus-c++.so`.

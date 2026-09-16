@@ -314,7 +314,7 @@ predicate in CR3 across thousands of instructions and many calls, and a
 FileType autocommand runs Lua in between. A Lua-only test suite cannot see a
 CR clobber at all, which is why LuaJIT's own 383/3/0 differential suite and
 upstream's `ffi_call.lua` ABI test were both green with the bug present.
-`packages/luajit/nvcr-probe.c` is the regression test — it sets CR2/CR3/CR4
+`packaging/luajit/nvcr-probe.c` is the regression test — it sets CR2/CR3/CR4
 from C, calls into the VM, and checks them afterwards — and it runs in
 `check()`.
 

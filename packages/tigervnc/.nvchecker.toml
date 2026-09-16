@@ -1,5 +1,0 @@
-[tigervnc]
-source = "git"
-git = "https://github.com/TigerVNC/tigervnc.git"
-prefix = "v"
-exclude_regex = ".*.90"

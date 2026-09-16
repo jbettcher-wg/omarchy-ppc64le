@@ -1,3 +1,0 @@
-[lsp-plugins]
-source = "git"
-git = "https://github.com/sadko4u/lsp-plugins"

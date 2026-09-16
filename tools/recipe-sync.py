@@ -2,9 +2,10 @@
 """
 recipe-sync -- where each package we shipped stands against Arch POWER and Arch.
 
-Read-only. It reads every repo database under repo/, our recipes under
-packages/, the archpower checkout (working tree and origin/master) and Arch's
-GitLab tags, and writes a report. It never writes into a recipe tree, the repo db or a package:
+Read-only. It reads every repo database under repo/, our build scripts in the
+packaging tree, the archpower checkout (origin/master, as a comparison only --
+it is an import source, not something bq builds from) and Arch's GitLab tags,
+and writes a report. It never writes into a recipe tree, the repo db or a package:
 versions that need `makepkg --printsrcinfo` are computed in a temporary copy of
 the recipe under /var/tmp, and nothing is ever written back as a .SRCINFO. The
 only write to the archpower checkout is `git fetch origin` (remote-tracking
@@ -45,9 +46,9 @@ Usage
 Columns (TSV)
 -------------
   pkgbase    %BASE% from the repo db
-  source     where "ours" came from: local (packages/), archpower (the
-             working tree), gitlab-only (neither tree has it), none (not on
-             GitLab either)
+  source     where "ours" came from: packaging (the packaging tree, the only
+             tree bq builds from), gitlab-only (it is not in the packaging
+             tree), none (not on GitLab either)
   shipped    newest version across every repo database in repo/, which is the
              never-downgrade floor. The p9 -> ppc64le rename keeps two live at
              once (omarchy-power9.db.tar.gz and the partial
@@ -55,12 +56,12 @@ Columns (TSV)
              we did ship look as though they never shipped; older entries are
              listed in the note
   ours       recipe version from the source above -- the recipe bq would
-             build. Both packages/ and the archpower working tree are indexed
-             by pkgbase at any depth with the shared closure.discover_recipes,
-             the same way bq's DirSource resolves them, and a directory that
-             moves while the report runs is re-resolved rather than failing. A
-             pkgbase claimed by more than one directory is reported in the
-             note, never silently resolved to the first
+             build. The packaging tree is indexed by pkgbase at any depth with
+             the shared closure.discover_recipes, the same way bq's DirSource
+             resolves it, and a directory that moves while the report runs is
+             re-resolved rather than failing. A pkgbase claimed by more than
+             one directory is reported in the note, never silently resolved to
+             the first
   archpower  the recipe for this pkgbase in archpower origin/master, at any
              depth: <pkgbase>/, <category>/<pkgbase>/ (kf6/, xorg/, qt6/,
              python/ ...), tde/<group>/<pkgbase>/, kernels/<arch>/<pkgbase>/
@@ -116,7 +117,12 @@ from closure import discover_recipes  # noqa: E402  (shared recipe discovery)
 
 HOME = os.path.expanduser("~")
 OMARCHY = os.path.join(HOME, "Development/omarchy-ppc64le")
-LOCAL = os.path.join(OMARCHY, "packages")
+# The one local source of build scripts -- what bq would actually build.
+PACKAGING = os.environ.get(
+    "OMARCHY_PACKAGING",
+    os.path.join(HOME, "Development/omarchy-ppc64le-packaging"))
+# Read-only comparison input only: the archpower checkout is no longer a build
+# source, but origin/master is still how we see Arch POWER moving ahead of us.
 ARCHPOWER = os.path.join(HOME, "Development/repo/archpower")
 REPO = os.path.join(OMARCHY, "repo")
 CACHE = "/var/tmp/recipe-sync-cache"
@@ -333,8 +339,8 @@ def tree_dirs(root, pkgbase, rescan=False):
         return list(_TREE_IDX["maps"][root].get(pkgbase) or ())
 
 
-def local_dirs(pkgbase, rescan=False):
-    return tree_dirs(LOCAL, pkgbase, rescan)
+def packaging_dirs(pkgbase, rescan=False):
+    return tree_dirs(PACKAGING, pkgbase, rescan)
 
 
 def archpower_dirs(pkgbase, rescan=False):
@@ -660,9 +666,9 @@ def nvchecker_toml(pkgbase, ours_dir, ours_label, trees, max_age, limiter):
     """The .nvchecker.toml to check this pkgbase with, and where it came
     from: our own recipe, the archpower working tree, archpower
     origin/master (category directories included), or Arch GitLab at HEAD."""
-    local, apwt = local_dirs(pkgbase), archpower_dirs(pkgbase)
+    local, apwt = packaging_dirs(pkgbase), archpower_dirs(pkgbase)
     for d, label in ((ours_dir, ours_label or "ours"),
-                     (local[0] if local else None, "local"),
+                     (local[0] if local else None, "packaging"),
                      (apwt[0] if apwt else None, "archpower")):
         if not d:
             continue
@@ -866,26 +872,20 @@ def cmd_report(args):
     max_age = args.max_age * 3600
 
     def ours_job(b):
-        # Two passes: if the recipe directory moved between the scan and the
-        # read (packages/ was reorganised into the category layout), re-scan
-        # and take the new path instead of failing.
+        # One tree now: whatever the packaging tree holds for this pkgbase is
+        # what bq would build. The archpower working tree is deliberately NOT
+        # a fallback any more -- it is an import source, and reading it here
+        # would report a version no builder would actually produce.
+        #
+        # Two passes: if the recipe directory moves between the scan and the
+        # read, re-scan and take the new path instead of failing.
         for attempt in (0, 1):
-            dirs = local_dirs(b, rescan=attempt == 1)
+            dirs = packaging_dirs(b, rescan=attempt == 1)
             if not dirs:
                 break
             files = dir_files(dirs[0])
             if files.get("PKGBUILD"):
-                return ("local", dirs[0]) + recipe_version(files) + (dirs,)
-        # The archpower working tree is indexed the same way, at any depth,
-        # because bq's DirSource resolves it by pkgbase rather than by
-        # <root>/<pkgbase>: a nested recipe there is what bq would build.
-        for attempt in (0, 1):
-            dirs = archpower_dirs(b, rescan=attempt == 1)
-            if not dirs:
-                break
-            files = dir_files(dirs[0])
-            if files.get("PKGBUILD"):
-                return ("archpower", dirs[0]) + recipe_version(files) + (dirs,)
+                return ("packaging", dirs[0]) + recipe_version(files) + (dirs,)
         return (None, None, None, None, None, [])
 
     def origin_job(b):
@@ -941,8 +941,9 @@ def cmd_report(args):
         if len(o_dirs) > 1:
             notes.append("%d directories claim this pkgbase: %s; ours uses %s"
                          % (len(o_dirs),
-                            ", ".join(os.path.relpath(x, LOCAL) for x in o_dirs),
-                            os.path.relpath(o_dirs[0], LOCAL)))
+                            ", ".join(os.path.relpath(x, PACKAGING)
+                                      for x in o_dirs),
+                            os.path.relpath(o_dirs[0], PACKAGING)))
 
         a_ver, _, a_err = orig[b]
         if a_err:

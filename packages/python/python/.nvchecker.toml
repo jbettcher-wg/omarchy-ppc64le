@@ -1,5 +1,0 @@
-[python]
-source = "git"
-git = "https://github.com/python/cpython.git"
-prefix = "v"
-exclude_regex = ".*(a|b|rc).*"

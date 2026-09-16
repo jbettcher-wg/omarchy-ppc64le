@@ -2,7 +2,7 @@
 
 How to get a source-built .NET 10 SDK on a ppc64le Linux machine that has no
 .NET yet, and how to stop depending on anyone else's binaries after the first
-build. Written from the Arch POWER recipe in `packages/dotnet/dotnet-core`, but nothing
+build. Written from the Arch POWER recipe in `packaging/dotnet/dotnet-core`, but nothing
 here is specific to Arch: the same steps apply on Debian, Fedora, Void, Gentoo
 or a bare `./build.sh` checkout.
 
@@ -81,7 +81,7 @@ ELFv2 rules wrong on ppc64le, and IBM's builds carry the same code:
 
 GirCore-based GTK apps (pinta) die at startup on both, with "Could not connect to
 event OnStartup" and then "... OnActivate". The fix is
-`packages/dotnet/dotnet-core/mono-ppc64le-elfv2-small-aggregates.patch`. It applies to
+`packaging/dotnet/dotnet-core/mono-ppc64le-elfv2-small-aggregates.patch`. It applies to
 dotnet/runtime `src/mono` as well as to the VMR's `src/runtime`, is written to be
 sent upstream, and its header lists the rules and the GCC-checked test matrix.
 Apply it on any ppc64le source-build of .NET 10.
@@ -105,7 +105,7 @@ Pinta hits the first one while building its main window, before it creates its
 action handlers, and no error dialog exists yet to report it. This is
 dotnet/runtime #82217, closed as a duplicate of the still-open #79331 and
 unfixed in `main`.
-`packages/dotnet/dotnet-core/mono-static-virtual-interface-constraint.patch` resolves
+`packaging/dotnet/dotnet-core/mono-static-virtual-interface-constraint.patch` resolves
 the implementation from the constraining interface's MethodImpls. Any Mono-based
 .NET (Android, iOS, wasm, s390x, ppc64le) running GirCore apps needs it.
 
@@ -237,7 +237,7 @@ tags in order, or seed from the matching IBM release again.
 
 ## How the Arch recipe automates this
 
-`packages/dotnet/dotnet-core/PKGBUILD` has a `_bootstrap` switch, default `auto`,
+`packaging/dotnet/dotnet-core/PKGBUILD` has a `_bootstrap` switch, default `auto`,
 evaluated when the PKGBUILD is sourced:
 
 | host state | `auto` becomes | effect |

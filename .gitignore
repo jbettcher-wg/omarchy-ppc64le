@@ -3,12 +3,12 @@
 *.pkg.tar.zst.sig
 *.log
 
-# makepkg working directories
-packages/**/src/
-packages/**/pkg/
-packages/**/*.tar.gz
-packages/**/*.tar.xz
-packages/**/*.tar.zst
+# Build scripts moved to their own repository (omarchy-ppc64le-packaging), so
+# there is no recipe tree here any more. These rules stay only to keep the
+# leftover makepkg working trees in packages/ from showing up as untracked
+# until that directory is cleared; the packaging repo carries its own
+# .gitignore for the same residue.
+packages/
 
 # Local repo database (regenerate with repo-add)
 repo/*.db*
@@ -39,12 +39,6 @@ __pycache__/
 # bq's repo-add lock, held while it writes a package db. Created next to the db
 # it guards (repo/, or a BQ_REPO side pool); ephemeral, never a recipe.
 .bq-repo-add.lock
-
-# makepkg VCS mirrors, cloned next to the recipe when SRCDEST is unset.
-packages/luajit/luajit-ppc64le/
-packages/neovim/neovim/
-packages/qwen-code/qwen-code/
-packages/ours/omarchy-theme-power9/power9.bak.*
 
 # Built ISO images (multi-GB). Reproducible from iso/build.sh + the repo.
 iso/out/

@@ -4,11 +4,10 @@ closure.py -- compute the complete bare-install dependency closure for an
 Omarchy ppc64le system, across two package universes at once:
 
   1. the Arch POWER sync DB (what the distro already has), and
-  2. the local recipe trees (what we have to build ourselves) --
-     omarchy-ppc64le/packages/ and repo/archpower/, both walked recursively
-     and keyed by pkgbase -- Arch POWER nests most of its recipes under
-     category directories (kf6/, xorg/, python/, ...) and our tree mirrors
-     that layout, so a flat listing of either one misses thousands.
+  2. the packaging tree (what we have to build ourselves) --
+     omarchy-ppc64le-packaging, walked recursively and keyed by pkgbase.
+     Most of its recipes sit under category directories (kf6/, xorg/,
+     python/, ...), so a flat listing of it misses thousands.
 
 `pacman -Sp` alone cannot do this: it stops at the first name that is not in a
 sync repo, which is precisely the set we care about.  So the sync DBs are
@@ -29,7 +28,10 @@ from collections import defaultdict
 
 SYNCDIR = "/var/lib/pacman/sync"
 OMARCHY = os.path.expanduser("~/Development/omarchy-ppc64le")
-ARCHPOWER = os.path.expanduser("~/Development/repo/archpower")
+# The one local source of build scripts; see tools/bq.py.
+PACKAGING = os.environ.get(
+    "OMARCHY_PACKAGING",
+    os.path.expanduser("~/Development/omarchy-ppc64le-packaging"))
 CARCH = "powerpc64le"
 
 VERSTRIP = re.compile(r"[<>=]+.*$")
@@ -480,13 +482,12 @@ def tarjan(graph):
 def main():
     sync = load_sync()
     built = load_built(os.path.join(OMARCHY, "repo"), "omarchy-built")
-    local_om = load_tree(os.path.join(OMARCHY, "packages"), "omarchy-local")
-    local_ap = load_tree(ARCHPOWER, "archpower-tree")
+    packaging = load_tree(PACKAGING, "packaging")
 
     # Resolution priority: Arch POWER sync DB first (it is what an install
-    # actually pulls), then our own built recipes, then the archpower tree
+    # actually pulls), then our own built recipes, then the packaging tree
     # (recipes for things the sync DB has not published yet).
-    byname, byprov = build_index(sync, built, local_om, local_ap)
+    byname, byprov = build_index(sync, built, packaging)
 
     # ---- targets
     groups = defaultdict(list)
@@ -540,10 +541,9 @@ def main():
         "omarchy_unresolvable": sorted(om_missing),
         "unresolved_deps": sorted(missing),
         "cycles": sorted(cycles),
-        "to_build": sorted(by_origin["omarchy-built"] + by_origin["omarchy-local"]
-                           + by_origin["archpower-tree"]),
+        "to_build": sorted(by_origin["omarchy-built"] + by_origin["packaging"]),
         "already_built": sorted(by_origin["omarchy-built"]),
-        "still_to_build": sorted(by_origin["omarchy-local"] + by_origin["archpower-tree"]),
+        "still_to_build": sorted(by_origin["packaging"]),
     }
 
     outdir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/closure-out"

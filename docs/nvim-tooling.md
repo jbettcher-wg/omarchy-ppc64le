@@ -153,7 +153,7 @@ extra enabled.
 ## Related
 
 - `package-status.md` — the full Omarchy package gap analysis.
-- `../packages/neovim/` — the neovim package itself.
+- `../packaging/neovim/` — the neovim package itself.
 - `../../powerpc64le-handbook/docs/luajit-ppc64le-jit-backend.md` — the LuaJIT
   work underneath all of this. As of the `luajit` package in this repo,
   `jit.status()` is true inside neovim and `string.buffer` is present, so

@@ -1,8 +1,8 @@
 # Maintainer: Jordan Bettcher <thebettcher@gmail.com>
 #
 # Reference recipe, not a bq package (README.md). Chromium 150 for powerpc64le
-# at 150.0.7871.250, the release Electron 43.7.0 pins; packages/electron43 is
-# built on this.
+# at 150.0.7871.250, the release Electron 43.7.0 pins; electron43 in the
+# packaging tree is built on this.
 #
 # Sources. Google published no release tarball for 150.0.7871.250; the newest
 # 150 tarball is .222. So source[0] is Google's 150.0.7871.222 -lite tarball,
@@ -12,7 +12,7 @@
 # rewrites the revision stamps generated into the .222 tarball to .250.
 #
 # Changes from 150.0.7871.128-1 (the previous commit has it verbatim), each one
-# something packages/chromium learned on 151:
+# something the packaging tree's chromium learned on 151:
 #   - the _power8_compat toggle, with the same values and semantics
 #   - build() sets -mcpu/-mtune per toggle value; it no longer strips them
 #   - chromium-launcher's Makefile version is pinned to pkgver-pkgrel

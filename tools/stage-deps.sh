@@ -10,16 +10,18 @@
 # Two bugs fixed here:
 #  * checkdepends were never staged (only DEP and MAKEDEP were read), so
 #    packages that check at build time lost their tools.
-#  * the recipe was only ever looked for in $REPOROOT/packages/<pkg>, which is
-#    where OUR ~130 recipes live.  The other ~640 packages in the queue come
-#    from archpower's PKGBUILDs in the build tree, so this script exited 2
-#    ("no PKGBUILD") before staging anything at all -- which is why bluez lost
-#    `ell libical` and bolt lost `asciidoc` even though asciidoc is packaged.
-#    Accept an explicit recipe directory as $2, and fall back to the queue's
-#    materialised build tree before giving up.
+#  * the recipe was once looked for at one flat path holding only our own
+#    ~130 recipes, while the other ~640 packages in the queue came from
+#    elsewhere, so this script exited 2 ("no PKGBUILD") before staging
+#    anything at all -- which is why bluez lost `ell libical` and bolt lost
+#    `asciidoc` even though asciidoc is packaged.  Accept an explicit recipe
+#    directory as $2, and fall back to the queue's materialised build tree
+#    before giving up.
 set -uo pipefail
 here=$(dirname "$(readlink -f "$0")")
 REPOROOT=/home/jbettcher/Development/omarchy-ppc64le
+# One local source of build scripts; see tools/bq.py.
+PACKAGING=${OMARCHY_PACKAGING:-/home/jbettcher/Development/omarchy-ppc64le-packaging}
 # BQ_REPO lets a side build keep its own package pool; see tools/bq.py.
 REPO=${BQ_REPO:-$REPOROOT/repo}
 BUILDROOT=${BUILDROOT:-/var/tmp/omarchy-bq}
@@ -27,9 +29,9 @@ BUILDROOT=${BUILDROOT:-/var/tmp/omarchy-bq}
 pkg=${1:?usage: stage-deps.sh <package> [recipedir]}
 recipedir=${2:-}
 
-# packages/ is nested now (see packages/README.md), so find our copy by
-# pkgbase rather than assuming packages/<pkg>.
-_local=$(find "$REPOROOT/packages" -mindepth 1 -maxdepth 3 -type d \
+# The packaging tree is nested (see its README), so find the recipe by
+# pkgbase rather than assuming <root>/<pkg>.
+_local=$(find "$PACKAGING" -mindepth 1 -maxdepth 3 -type d \
   -name "$pkg" -exec test -f '{}/PKGBUILD' \; -print -quit 2>/dev/null)
 for cand in "$recipedir" "$_local" "$BUILDROOT/build/$pkg"; do
   [ -n "$cand" ] && [ -f "$cand/PKGBUILD" ] && { f="$cand/PKGBUILD"; break; }

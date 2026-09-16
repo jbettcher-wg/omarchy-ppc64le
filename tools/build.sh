@@ -9,6 +9,10 @@
 set -uo pipefail
 
 REPOROOT=/home/jbettcher/Development/omarchy-ppc64le
+# One local source of build scripts: the packaging tree. A builder clones
+# https://github.com/jbettcher-wg/omarchy-ppc64le-packaging and points
+# OMARCHY_PACKAGING at it; the default is where a normal checkout lands.
+PACKAGING=${OMARCHY_PACKAGING:-/home/jbettcher/Development/omarchy-ppc64le-packaging}
 WORK=/home/jbettcher/omarchy-work
 SYSROOT=$WORK/sysroot
 PKGDEST=$REPOROOT/repo
@@ -18,13 +22,13 @@ pkg=${1:?usage: build.sh <package>}
 shift || true
 
 mkdir -p "$SYSROOT" "$PKGDEST" "$LOGDIR" "$WORK/build"
-# packages/ mirrors Arch POWER's layout, so a recipe sits at either
-# packages/<pkgbase>/ or packages/<category>/<pkgbase>/. Resolve it by
-# pkgbase, and refuse to guess if two directories claim one.
-mapfile -t _cand < <(find "$REPOROOT/packages" -mindepth 1 -maxdepth 3 \
+# The packaging tree mirrors Arch POWER's layout, so a recipe sits at either
+# <pkgbase>/ or <category>/<pkgbase>/. Resolve it by pkgbase, and refuse to
+# guess if two directories claim one.
+mapfile -t _cand < <(find "$PACKAGING" -mindepth 1 -maxdepth 3 \
   -type d -name "$pkg" -exec test -f '{}/PKGBUILD' \; -print | sort)
 case ${#_cand[@]} in
-  0) echo "no recipe for $pkg under $REPOROOT/packages"; exit 2 ;;
+  0) echo "no recipe for $pkg under $PACKAGING"; exit 2 ;;
   1) src="${_cand[0]}" ;;
   *) echo "ambiguous pkgbase $pkg, $((${#_cand[@]})) directories claim it:"
      printf '  %s\n' "${_cand[@]}"; exit 2 ;;

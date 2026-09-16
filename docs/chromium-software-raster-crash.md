@@ -1,7 +1,7 @@
 # Chromium software-rendering crash on ppc64le (POWER9)
 
 **Status:** root-caused and fixed by `ppc64le-seccomp-scv-return-abi.patch`,
-carried in `packages/chromium` (151.0.7922.108-3) and `packages/electron43`
+carried in `packaging/chromium` (151.0.7922.108-3) and `packaging/electron43`
 (43.7.0-2, Chromium 150.0.7871.250).
 
 **Bug.** The crash is not in Skia, SwiftShader, SIMD code or an ELFv2 ABI path.
@@ -183,8 +183,8 @@ with the fix. The exit status is 0 only if the fixed variant passes.
 
 ## Fix
 
-`packages/chromium/ppc64le-seccomp-scv-return-abi.patch`, with an identical copy
-in `packages/electron43/`. It is a standalone patch applied right after the
+`packaging/chromium/ppc64le-seccomp-scv-return-abi.patch`, with an identical copy
+in `packaging/electron43/`. It is a standalone patch applied right after the
 ppc64le patch tarball in both recipes. The trap value in the saved registers
 records which instruction the caller used, and the patch uses it:
 

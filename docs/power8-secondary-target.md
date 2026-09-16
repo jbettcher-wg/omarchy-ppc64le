@@ -94,7 +94,7 @@ keeping:
   (see §4). Proof that a recipe-level floor holds against the host's
   `-mcpu=power9`.
 * **`eza` — 0** and **`blink-cmp-fuzzy` — 0.** Rust packages built before
-  `packages/rust` 1.98.1 landed, so they link Arch POWER's POWER8 `libstd`.
+  `packaging/rust` 1.98.1 landed, so they link Arch POWER's POWER8 `libstd`.
   Their exposure is new, not absent — see §4, `rust`.
 
 ### The scan method, and the control that proves it can fail
@@ -243,7 +243,7 @@ maintenance surface.
 
 ### The template already exists
 
-`packages/chromium/` is the pattern to generalise. `power9-toggle.patch` adds a
+`packaging/chromium/` is the pattern to generalise. `power9-toggle.patch` adds a
 single `_power8_compat` switch to Arch POWER's chromium PKGBUILD, default `0`
 (POWER9); `_power8_compat=1 makepkg -e` produces the POWER8-legal artifact. Its
 `README.md` states the policy, and it is the right one for the whole second
@@ -294,7 +294,7 @@ above in force, nothing touching `repo/`):
 correctly applied, it still came out with 2,676 ISA 3.0 instructions, whose
 mnemonic profile (`lxv` x952, `stxv` x1006, `lxvx` x259, `stxvx` x257, `setb`
 x6, `modud` x1, `moduw` x1, `cnttzw` x10) is a subset of the shipped
-`libstd`'s. The repo's `fd` is clean only because it predates `packages/rust`
+`libstd`'s. The repo's `fd` is clean only because it predates `packaging/rust`
 1.98.1 and linked Arch POWER's POWER8 `libstd`.
 
 **A POWER8 Rust toolchain has to be built first; it is a prerequisite for all
@@ -323,7 +323,7 @@ dispatch mechanism* — internals were not audited.
 |---|---|---|
 | **`luajit`** | Full ppc64 JIT. | **Capability check — verified.** `src/lib_jit.c:712-720` reads `getauxval(AT_HWCAP2)` and tests `PPC_FEATURE2_ARCH_3_00` (`0x00800000`), setting `JIT_F_ISA30`; `LUAJIT_PPC_ISA30=0` forces it off. Exactly **one** ISA 3.0 opcode exists in the whole backend — `PPCI_MCRXRX` (`lj_target_ppc.h:372`), emitted at exactly one site (`lj_asm_ppc.h:2618`) behind that flag, with the ISA 2.07 path as the floor. The VM itself is floored at `-mcpu=power8` by the PKGBUILD because `LJ_ARCH_VERSION` derives from `_ARCH_PWR*`, and the shipped package scans **0**. The forced-off path runs correctly on this box. **No toggle needed; this is the model.** |
 | `neovim`, `luarocks`, `libluv`, `lua-language-server`, `omarchy-nvim` | Link LuaJIT; inherit its gate. | Safe via LuaJIT. (`neovim`'s own 19,088 ISA 3.0 words are compiled C, covered by the drop-in.) |
-| `chromium`, `qt6-webengine` | V8 JIT; BoringSSL's ppc64 assembly. | BoringSSL is `.machine "any"` with a runtime `getauxval(AT_HWCAP2)` / `PPC_FEATURE2_HAS_VCRYPTO` gate — the LuaJIT pattern, safe, per `packages/chromium/README.md`. **V8's ppc64 `CpuFeatures` was not audited.** Must be confirmed to be `AT_HWCAP2`-driven, not build-time, before a POWER8 repo ships chromium. |
+| `chromium`, `qt6-webengine` | V8 JIT; BoringSSL's ppc64 assembly. | BoringSSL is `.machine "any"` with a runtime `getauxval(AT_HWCAP2)` / `PPC_FEATURE2_HAS_VCRYPTO` gate — the LuaJIT pattern, safe, per `packaging/chromium/README.md`. **V8's ppc64 `CpuFeatures` was not audited.** Must be confirmed to be `AT_HWCAP2`-driven, not build-time, before a POWER8 repo ships chromium. |
 | `python` + numpy (upstream) | numpy `cpu_dispatch` runtime kernel selection. | Upstream numpy's dispatch is a runtime CPU check; its 35,317 ISA 3.0 words are in dispatched VSX3 kernels. Behaviour on POWER8 is Arch POWER's answer, and it is already shipping this to POWER8 users. Not re-verified here. |
 | `mesa`, `opencl-mesa`, `vulkan-*` | LLVM JIT for llvmpipe / gallivm. | LLVM selects the host CPU at runtime (`sys::getHostCPUName` via auxv/`AT_PLATFORM`), so it self-limits on a POWER8. Not verified here. |
 | `dotnet-runtime` | RyuJIT. | Not audited. ppc64le is not a first-class .NET target; treat as unknown. |
@@ -358,7 +358,7 @@ onto the medium at `p9repo/omarchy-power9/`, which `p9-install` reads with
 
 A POWER8 ISO needs three things beyond a POWER8 package repo:
 
-1. **A POWER8 kernel. This is the blocker.** `packages/ours/linux-power9` sets, in
+1. **A POWER8 kernel. This is the blocker.** `packaging/ours/linux-power9` sets, in
    *both* `config.4k` and `config.64k`:
 
    ```
@@ -451,7 +451,7 @@ POWER8/gfx1030 ROCm drop slots underneath unchanged.
 
 **Would still be missing:**
 
-* **A POWER8 Rust toolchain**, until `packages/rust` gets its toggle — and
+* **A POWER8 Rust toolchain**, until `packaging/rust` gets its toggle — and
   without it, 18 Rust recipes silently ship POWER9 `libstd` (§4).
 * **`ispc` and its three consumers** (`openimagedenoise`, `openvkl`, `ospray`),
   and therefore the parts of `blender` and `freecad` that lean on them, until
@@ -476,7 +476,7 @@ Two packages were built POWER8 to test the method, and are kept in
 | file | flags | ISA 3.0 | status |
 |---|---|---:|---|
 | `repo-power8/libde265-1.1.2-1-powerpc64le.pkg.tar.zst` | POWER8 drop-in in force (`-mcpu=power8 -mtune=power8`) | **0** | genuine POWER8 package |
-| `repo-power8/needs-rebuild/fd-10.5.0-3-powerpc64le.pkg.tar.zst` | POWER8 drop-in in force (`-C target-cpu=pwr8`) | **2,676** | **not POWER8-legal** — statically linked POWER9 `libstd`; held apart deliberately. Rebuild after `packages/rust` gets its POWER8 toggle. |
+| `repo-power8/needs-rebuild/fd-10.5.0-3-powerpc64le.pkg.tar.zst` | POWER8 drop-in in force (`-C target-cpu=pwr8`) | **2,676** | **not POWER8-legal** — statically linked POWER9 `libstd`; held apart deliberately. Rebuild after `packaging/rust` gets its POWER8 toggle. |
 
 Both carry `arch = powerpc64le` and this machine's packager line. Neither
 inherited the host's `-mcpu=power9`: the drop-in was verified in force before

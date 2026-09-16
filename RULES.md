@@ -24,7 +24,9 @@ packages exist.
 Allowed:
 
 - Reading any Omarchy file, install scripts included, to learn what a package needs.
-- Writing PKGBUILDs and patches under `packages/`.
+- Writing PKGBUILDs and patches in the packaging tree
+  ([omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging),
+  `$OMARCHY_PACKAGING`).
 - `makepkg` builds; running the built binaries from `repo/` or a temp directory
   to verify them.
 - `sudo pacman -S --needed` for **build dependencies**.

@@ -1,7 +1,0 @@
-[gegl]
-source = 'git'
-git = 'https://gitlab.gnome.org/GNOME/gegl.git'
-include_regex = "(GEGL\\_).*_.*_.*"
-prefix = 'GEGL_'
-from_pattern = '_'
-to_pattern = '.'

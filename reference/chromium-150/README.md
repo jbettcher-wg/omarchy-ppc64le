@@ -1,8 +1,8 @@
 # reference/chromium-150
 
-A **reference recipe**, not a package. bq's `local` source reads `packages/`,
-so nothing here is ever built as `chromium`; `packages/chromium` (151) is the
-browser this tree ships.
+A **reference recipe**, not a package. bq builds only from the packaging
+tree, so nothing here is ever built as `chromium`; `chromium` (151) there is
+the browser this tree ships.
 
 ## What it is
 
@@ -23,7 +23,7 @@ comment records what changed since.
 ## Why it exists
 
 Electron pins a Chromium release, and Electron 43 pins **150**, not the 151 we
-ship. `packages/electron43` needs a known-good 150 base on ppc64le: its patch
+ship. `electron43` needs a known-good 150 base on ppc64le: its patch
 list, the Debian-derived ppc64le series, the gn and system-library choices, and
 the `_power8_compat` toggle. This recipe is that base. Keeping it in git means
 it can't be lost the way the earlier out-of-tree builds were (RULES.md #3).
@@ -58,7 +58,7 @@ but they're rewritten to .250 anyway: `LASTCHANGE`, `LASTCHANGE.committime`,
 ### ppc64le patches: r1 vs r2, and r3
 
 `r1` is Debian's set as of 150.0.7871.124 (the tarball the .128 build used).
-`r2` is `packages/chromium`'s, rebased by Debian for 151. The comparison,
+`r2` is the packaging tree's, rebased by Debian for 151. The comparison,
 ignoring Index/offset churn:
 
 | r2 change | applies to 150? | r3 |
@@ -76,7 +76,7 @@ time the way the 151 recipe does it: it can only match the line
 Force-baseline-POWER8-AltiVec-VSX inserts, and the POWER9 build is the one that
 skips that patch.
 
-The toggle applies exactly as in `packages/chromium`:
+The toggle applies exactly as in the packaging tree's `chromium`:
 
 | | `_power8_compat=0` (default) | `_power8_compat=1` |
 |---|---|---|
@@ -86,7 +86,7 @@ The toggle applies exactly as in `packages/chromium`:
 | `build()` CFLAGS/CXXFLAGS | `-mcpu=power9 -mtune=power9` | `-mcpu=power8 -mtune=power8` |
 
 Verified with `makepkg --nobuild` (sources, checksums, `prepare()`) for both
-values. The browser itself was not rebuilt; `packages/electron43` builds this
+values. The browser itself was not rebuilt; `electron43` builds this
 tree.
 
 `README-archpower.md` describes the .128 recipe. Its "strip `-mcpu`" paragraph

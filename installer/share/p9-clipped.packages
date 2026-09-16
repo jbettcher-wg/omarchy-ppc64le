@@ -58,5 +58,5 @@ yay-debug               # separate debug package; the design keeps *-debug out o
                         # ISO entirely (docs/power9-distro-spin.md 6.4)
 
 # --- Omarchy's own repo -------------------------------------------------------
-# Omarchy's own packages are all built for ppc64le now (packages/), except:
+# Omarchy's own packages are all built for ppc64le now (the packaging tree), except:
 omarchy-keyring         # verifies signatures from pkgs.omarchy.org, which is not configured

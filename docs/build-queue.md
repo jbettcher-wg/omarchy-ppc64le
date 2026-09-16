@@ -161,7 +161,7 @@ Two incidents, both on 2026-09-13:
   `/usr/bin/go` and `/usr/bin/gofmt` (`provides=go=1.17`). Staged from `repo/`,
   those replaced the host's real Go in every build (chromium's dawn step on
   2026-09-12). That one was a packaging decision rather than a staging bug:
-  gcc-go and libgo left `repo/`, and `packages/gcc` no longer builds the Go
+  gcc-go and libgo left `repo/`, and `packaging/gcc` no longer builds the Go
   front end.
 - **go 1.27.1 over host go 1.26.5.** stage-deps prefers our build over the
   installed one, so it staged 1.27.1. 1.27.1 no longer ships 165 files that
@@ -297,10 +297,10 @@ Sets known to need this treatment here:
 | set | keep together |
 |---|---|
 | Vulkan SDK | `glslang`, `spirv-tools`, `spirv-headers`, `shaderc` |
-| Qt 6 | every `qt6-*` module at one version -- see `packages/qt6/qt6-base` |
+| Qt 6 | every `qt6-*` module at one version -- see `packaging/qt6/qt6-base` |
 | Qt for Python | `pyside6` and `shiboken6` at the **same version as Qt**, generated from its headers |
 | ROCm | `rocm-llvm`, `comgr`, `rocm-device-libs`, `hsa-rocr`, `hip-runtime`, `rocminfo` -- they version-check each other at runtime |
-| VTK third-party | bundled `ioss` expects the bundled `fmt`; see `packages/vtk` |
+| VTK third-party | bundled `ioss` expects the bundled `fmt`; see `packaging/vtk` |
 
 Before bumping one member of a set, bump them all in the same queue. Before
 concluding an application is broken on this platform, check whether we have
@@ -308,11 +308,11 @@ split a set.
 
 ## Never in a checkout
 
-Recipes are **copied out** of their source tree into `$BUILDROOT/build/<pkgbase>`
-and built there. The `~/Development/repo/archpower` checkout is read-only input.
-Building in place is what leaves `src/`, `pkg/` and stray tarballs scattered
-through a checkout — 6.5 GiB of it, in that tree's case — and makes the next
-`git pull` awkward.
+Recipes are **copied out** of the packaging tree into
+`$BUILDROOT/build/<pkgbase>` and built there; the tree itself is never written
+to. Building in place is what leaves `src/`, `pkg/` and stray tarballs
+scattered through a checkout — 6.5 GiB of it, in the archpower tree's case —
+and makes the next `git pull` awkward.
 
 `PKGDEST` is `repo/`, `SRCDEST` is shared under the buildroot so a resumed run
 does not re-download, and the whole per-package work directory is removed after
@@ -546,25 +546,39 @@ fix:
 carrying the offending log line and the path to the full log, plus a matching
 `.json` for tooling.
 
-## Pluggable sources
+## Sources
 
-The AUR triage tool is this same engine with a different front end, so the
-recipe source is a plugin rather than a fork:
+There is **one** local source of build scripts, and it is the only one in the
+default `--sources`:
 
 | source | where from |
 |---|---|
-| `local` | `packages/**/<pkgbase>/` — our own recipes, found recursively |
-| `archpower` | `~/Development/repo/archpower/**/<pkgbase>/` — read-only, found recursively |
-| `gitlab` | `gitlab.archlinux.org/archlinux/packaging/packages/<pkgbase>` |
-| `aur` | `aur.archlinux.org/<pkgbase>.git` |
+| `packaging` | `$OMARCHY_PACKAGING/**/<pkgbase>/` — the packaging tree, found recursively (default `~/Development/omarchy-ppc64le-packaging`) |
 
-`--sources local,archpower,gitlab` is the default. It names which sources to
-consider and breaks ties among them; it does **not** decide the winner.
-Selection is by version: the newest recipe wins, `packages/` takes a tie, and
-anything older than what our repo database already ships is refused and
-logged unless `--allow-downgrade` is passed. Every resolution is logged as
-`bq: recipe <pkgbase> -> <source> <path> <version>`, so a fall-through to
-GitLab is visible in the run log instead of being silent.
+Arch POWER and Arch are trees we **import from**, not trees anything reads at
+build time. `tools/fetch.sh <pkgbase>` (or `--aur`) brings a build script into
+the packaging tree, in the right category, where it is reviewed and committed.
+The git sources stay registered — the AUR triage tool is this same engine with
+a different front end — but are reachable only by naming them explicitly:
+
+| source | where from | |
+|---|---|---|
+| `gitlab` | `gitlab.archlinux.org/archlinux/packaging/packages/<pkgbase>` | import |
+| `aur` | `aur.archlinux.org/<pkgbase>.git` | import, AUR triage |
+
+Naming one in `--sources` builds straight from upstream without the recipe ever
+entering the packaging tree, which is exactly the drift this layout removes:
+the POWER8 builder once took KF6 6.30 from GitLab while the POWER9 box had
+built 6.29 from a tree, and 41 packages failed.
+
+Within a source, selection is by version: the newest recipe wins, `packaging`
+takes a tie, and anything older than what our repo database already ships is
+refused and logged unless `--allow-downgrade` is passed. The floor is merged
+across **every** live repo database in `repo/`, so a package that shipped from
+one db is not read as "never shipped" against another. A pkgbase claimed by two
+directories in the tree is an error, never resolved by picking one. Every
+resolution is logged as `bq: recipe <pkgbase> -> <source> <path> <version>`, so
+a fall-through to GitLab is visible in the run log instead of being silent.
 
 The `aur` source additionally rewrites `arch=()` and regenerates `.SRCINFO`.
 That is not a convenience. **libalpm enforces the architecture guard itself**,
