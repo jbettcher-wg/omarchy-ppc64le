@@ -339,8 +339,18 @@ dispatch mechanism* — internals were not audited.
 | `qemu-user`, `qemu-user-static` | TCG — generates host code at runtime. | TCG's ppc64 backend has `have_isa_3_00` style runtime feature detection. Not verified here. |
 | `ispc` | AOT, not runtime — but see §4; its output ignores `CFLAGS`. | Build-time assumption, **not** gated. Needs a target-level answer. |
 
-Go binaries are not in this class: Go emits at build time and `GOPPC64` defaults
-to `power8`.
+Go binaries are not in the runtime-codegen class -- Go emits at build time -- but
+the claim this line used to make, that `GOPPC64` defaults to `power8`, was
+**false here and it shipped POWER9 code**. The go toolchain bakes its default
+`GOPPC64` in when the toolchain itself is built; ours was built on POWER9, so
+`go env GOPPC64` answers `power9`, and no makepkg flag reaches it. Every Go
+package the POWER8 builder produced was compiled for ISA 3.0: `gum` 2.0.0-1
+scanned 52,485 ISA 3.0 instructions, `go version -m` reports `GOPPC64=power9`,
+and it took an illegal instruction on the first `gum style` in a
+`max-cpu-compat=power8` guest. `tools/makepkg.conf.d/00-power8.conf` now exports
+and asserts `GOPPC64=power8`; the baseline pool's `go` itself must be rebuilt
+with it (its own binaries are Go, and its baked default must become power8), then
+every Go package after it.
 
 ### Forward note: JSC / WebKit
 
