@@ -28,9 +28,12 @@
 # useless in practice. Enable and start, so the first boot behaves like every
 # boot after it.
 #
-# sddm is the exception: omp-firstboot is ordered Before=display-manager.service,
-# so systemd starts it in this same transaction once we exit. Starting it here
-# would race that.
+# sddm is started too, and the ordering is what keeps it from racing this layer:
+# omp-firstboot is Before=display-manager.service sddm.service, so the queued
+# start waits until the whole first-boot layer has exited. It used to be enabled
+# only, on the theory that the boot transaction would pick it up once we exited.
+# It cannot: that transaction was computed at boot, before sddm was enabled, so
+# the first install came up at a text console until sddm was started by hand.
 #
 # --no-block is load-bearing, not a tidy-up. A blocking `systemctl start` from
 # inside a oneshot that other units are ordered against deadlocks: the start
@@ -42,8 +45,6 @@
 # and because the whole layer died there, the /etc overrides after it never ran:
 # no dot.bashrc (so no starship prompt), no nsswitch, no faillock, and no
 # firstboot-done marker. Enqueue the jobs and let systemd order them itself.
-NO_START=" sddm.service "
-
 enable_unit() {
   local unit="$1"
   if ! systemctl cat "$unit" >/dev/null 2>&1; then
@@ -54,9 +55,7 @@ enable_unit() {
     echo "FAILED   $unit" >&2
     return
   fi
-  if [[ $NO_START == *" $unit "* ]]; then
-    echo "enabled  $unit (start deferred to display-manager ordering)"
-  elif systemctl start --no-block "$unit" >/dev/null 2>&1; then
+  if systemctl start --no-block "$unit" >/dev/null 2>&1; then
     echo "started  $unit"
   else
     echo "enabled  $unit (but failed to start)" >&2

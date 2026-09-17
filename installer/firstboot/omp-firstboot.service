@@ -13,7 +13,9 @@
 Description=Omarchy ppc64le first-boot system configuration
 ConditionPathExists=!/var/lib/omp/firstboot-done
 After=systemd-user-sessions.service local-fs.target
-Before=omarchy-provision-owner.service display-manager.service
+# sddm.service by name as well: display-manager.service is only an alias, and it
+# does not exist on first boot until enable-services.sh creates it.
+Before=omarchy-provision-owner.service display-manager.service sddm.service
 
 [Service]
 Type=oneshot
