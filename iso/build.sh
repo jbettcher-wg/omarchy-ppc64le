@@ -19,9 +19,12 @@
 #      anyone might boot. --power9 selects the POWER9-optimised pool instead
 #      (--repo-name/--pool name the two halves by hand). The image carries what
 #      the live system needs and the install downloads the rest, as it already
-#      has to for Arch POWER [base]. --bundle-repo also injects the pool
-#      directory onto the medium at omp-repo/<repo name>/, read ahead of the
-#      network servers -- for testing packages that are not published yet.
+#      has to for Arch POWER [base]. --bundle-repo also puts the pool's share
+#      of the install onto the medium at omp-repo/<repo name>/, read ahead of
+#      the network servers -- for testing packages that are not published yet.
+#      Only what omp-install will pacstrap from the pool goes on (the manifest,
+#      the kernel, grub, and their dependencies), with its own database; the
+#      rest of the pool stays on the network servers.
 #
 #      archiso has no mechanism for putting arbitrary files in the ISO
 #      filesystem (airootfs goes *inside* the squashfs, which is the wrong side
@@ -47,10 +50,9 @@ ARCHISO="${ARCHISO:-$_home/Development/archiso-power}"
 PROFILE="$HERE/profile"
 OUTDIR="$HERE/out"
 WORKDIR="${TMPDIR:-/var/tmp}/omarchy-iso-work"
-# Network install by default. A bundled repo makes the image the size of repo/
-# (12G by 2026-09), and archiso boots copytoram, so all of it is read off the
-# medium into RAM and thrown away when the medium is unmounted -- the install
-# pays for it twice and keeps none of it. --no-repo is still accepted; it is
+# Network install by default. A bundled repo is read off the medium into RAM
+# (archiso boots copytoram) and thrown away when the medium is unmounted, so it
+# carries only the install closure, never the whole pool. --no-repo is still accepted; it is
 # the default now.
 # Which package pool this ISO installs from.
 #
@@ -161,6 +163,52 @@ MKARCHISO="$ARCHISO/archiso/mkarchiso"
 grep -q openpower "$MKARCHISO" || { echo "$MKARCHISO has no openpower bootmode; wrong archiso" >&2; exit 1; }
 [[ -f $REPO_DB ]] || { echo "no repo db at $REPO_DB -- run repo-add first" >&2; exit 1; }
 kernel_in_pool || { echo "kernel $KERNEL_PKG is not in [$REPO_NAME] ($REPO_DB) -- build it into the pool or pass --kernel" >&2; exit 1; }
+
+# --bundle-repo carries the install closure, not the pool. The whole pool made
+# an 8.9G image of which the install used a few hundred packages, and archiso
+# boots copytoram, so every byte was read into RAM for nothing. Resolve exactly
+# what omp-install resolves -- the manifest plus the kernel, plus grub for
+# pSeries -- against the pool and Arch POWER [base], and keep the files that
+# come from the pool. Done before mkarchiso so a manifest the pool cannot
+# satisfy fails in seconds instead of after the image is built.
+BUNDLE_DIR="${TMPDIR:-/var/tmp}/omarchy-iso-bundle/$REPO_NAME"
+if ((BUNDLE_REPO)); then
+  _res=$(mktemp -d)
+  mkdir -p "$_res/db/sync"
+  cp "$REPO_DB" "$_res/db/sync/$REPO_NAME.db"
+  for _r in base-any:any base:powerpc64le; do
+    curl -sfL -o "$_res/db/sync/${_r%%:*}.db" \
+      "https://repo.archlinuxpower.org/base/${_r#*:}/${_r%%:*}.db" ||
+      { echo "could not fetch the Arch POWER ${_r%%:*} database to resolve the bundle" >&2; exit 1; }
+  done
+  printf '[options]\nArchitecture = powerpc64le\nSigLevel = Never\n[%s]\nServer = file:///nonexistent\n[base-any]\nServer = file:///nonexistent\n[base]\nServer = file:///nonexistent\n' \
+    "$REPO_NAME" > "$_res/pacman.conf"
+  mapfile -t _want < <(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$PROJECT/installer/share/omp-base.packages" | awk 'NF')
+  _want+=("$KERNEL_PKG" grub)
+  if ! _closure=$(pacman --config "$_res/pacman.conf" --dbpath "$_res/db" --arch powerpc64le \
+        -Sp --print-format '%r %f' "${_want[@]}" 2>"$_res/err"); then
+    echo "the install manifest does not resolve against [$REPO_NAME] + [base]:" >&2
+    sed 's/^/  /' "$_res/err" >&2
+    # "could not satisfy dependencies" names nothing; say which entries break.
+    for _n in "${_want[@]}"; do
+      pacman --config "$_res/pacman.conf" --dbpath "$_res/db" --arch powerpc64le \
+        -Sp --print-format '%n' "$_n" >/dev/null 2>&1 || echo "  unresolvable: $_n" >&2
+    done
+    rm -rf "$_res"; exit 1
+  fi
+  rm -rf "$_res"
+  rm -rf "$BUNDLE_DIR"; mkdir -p "$BUNDLE_DIR"
+  _files=()
+  while read -r _repo _file; do
+    [[ $_repo == "$REPO_NAME" ]] || continue
+    [[ -f $REPO_POOL/$_file ]] || { echo "[$REPO_NAME] db lists $_file but $REPO_POOL has no such file" >&2; exit 1; }
+    cp --reflink=auto "$REPO_POOL/$_file" "$BUNDLE_DIR/"
+    [[ -f $REPO_POOL/$_file.sig ]] && cp --reflink=auto "$REPO_POOL/$_file.sig" "$BUNDLE_DIR/"
+    _files+=("$BUNDLE_DIR/$_file")
+  done <<<"$_closure"
+  LC_ALL=C.UTF-8 repo-add -q "$BUNDLE_DIR/$REPO_NAME.db.tar.gz" "${_files[@]}"
+  echo "==> bundle: ${#_files[@]} of $(wc -l <<<"$_closure") install packages come from [$REPO_NAME] ($(du -sh "$BUNDLE_DIR" | cut -f1))"
+fi
 
 mkdir -p "$OUTDIR"
 # mkarchiso builds the airootfs as root, so everything it leaves behind is
@@ -310,15 +358,13 @@ if ((!BUNDLE_REPO)); then
   exit 0
 fi
 
-echo "==> injecting repo at $MEDIUM_DIR/ ($(du -sh "$REPO_POOL" | cut -f1))"
-# Map the pool straight into the image rather than staging a copy: the repo is
-# several GiB, and after mkarchiso has run $WORKDIR is root-owned anyway, so a
-# staging directory there would need sudo to create and double the I/O for
-# nothing. xorriso reads the source tree directly.
+echo "==> injecting the install closure at $MEDIUM_DIR/ ($(du -sh "$BUNDLE_DIR" | cut -f1))"
+# The closure was staged in $BUNDLE_DIR before mkarchiso (outside $WORKDIR,
+# which mkarchiso leaves root-owned); xorriso maps it straight into the image.
 out="${iso%.iso}-repo.iso"
 xorriso -indev "$iso" -outdev "$out" \
         -boot_image any replay \
-        -map "$REPO_POOL" "/$MEDIUM_DIR" \
+        -map "$BUNDLE_DIR" "/$MEDIUM_DIR" \
         -commit -eject all
 
 mv -f "$out" "$iso"
