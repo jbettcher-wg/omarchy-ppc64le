@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n $ISO ]] || ISO=$(find "$PROJECT/iso/out" -maxdepth 1 -name 'omarchy-p9-*.iso' | sort | tail -1)
+[[ -n $ISO ]] || ISO=$(find "$PROJECT/iso/out" -maxdepth 1 -name 'omarchy-*-ppc64le.iso' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
 [[ -f $ISO ]] || { echo "no ISO (looked in $PROJECT/iso/out)" >&2; exit 1; }
 
 command -v qemu-system-ppc64 >/dev/null || { echo "qemu-system-ppc64 not installed" >&2; exit 1; }

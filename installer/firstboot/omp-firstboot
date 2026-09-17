@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# p9-firstboot -- the root-side Omarchy configuration layer, run once on the
+# omp-firstboot -- the root-side Omarchy configuration layer, run once on the
 # installed machine's first boot.
 #
 # Upstream runs this work as `omarchy-apply-system` inside the target chroot at
@@ -30,11 +30,11 @@
 
 set -uo pipefail
 
-STATE_DIR=/var/lib/omarchy-p9
+STATE_DIR=/var/lib/omp
 MARKER="$STATE_DIR/firstboot-done"
-LOG_FILE=/var/log/p9-firstboot.log
+LOG_FILE=/var/log/omp-firstboot.log
 SELF_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-CONFIG_DIR="${P9_FIRSTBOOT_CONFIG:-/usr/local/lib/omarchy-p9/config}"
+CONFIG_DIR="${OMP_FIRSTBOOT_CONFIG:-/usr/local/lib/omp/config}"
 
 export OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
 export OMARCHY_INSTALL="${OMARCHY_INSTALL:-$OMARCHY_PATH/install}"
@@ -42,12 +42,12 @@ export OMARCHY_INSTALL_LOG_FILE="$LOG_FILE"
 export OMARCHY_FIRST_INSTALL=1
 export PATH="$OMARCHY_PATH/bin:$PATH"
 
-((EUID == 0)) || { echo "p9-firstboot must run as root" >&2; exit 1; }
+((EUID == 0)) || { echo "omp-firstboot must run as root" >&2; exit 1; }
 
 force=0
 [[ ${1:-} == --force ]] && force=1
 if [[ -f $MARKER && $force -eq 0 ]]; then
-  echo "p9-firstboot: already done ($MARKER); pass --force to rerun"
+  echo "omp-firstboot: already done ($MARKER); pass --force to rerun"
   exit 0
 fi
 
@@ -78,12 +78,12 @@ run_step() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. The repository configuration is already correct: p9-install wrote
+# 1. The repository configuration is already correct: omp-install wrote
 #    /etc/pacman.conf and the machine installed itself from it. Upstream's
 #    post-install/pacman.sh is deliberately not run. What is kept from it is
 #    the CUPS ownership fix, in config/pacman.sh.
 # ---------------------------------------------------------------------------
-run_step "$CONFIG_DIR/pacman.sh" "p9: pacman/cups"
+run_step "$CONFIG_DIR/pacman.sh" "omp: pacman/cups"
 
 # ---------------------------------------------------------------------------
 # 2. Upstream's config layer, verbatim, minus snapper.
@@ -108,15 +108,15 @@ for leaf in "${UPSTREAM_CONFIG[@]}"; do
   run_step "$OMARCHY_INSTALL/config/$leaf" "omarchy: config/$leaf"
 done
 
-run_step "$CONFIG_DIR/snapshots.sh"      "p9: snapshots (replaces config/snapper.sh)"
-run_step "$CONFIG_DIR/enable-services.sh" "p9: services (replaces config/enable-services.sh)"
+run_step "$CONFIG_DIR/snapshots.sh"      "omp: snapshots (replaces config/snapper.sh)"
+run_step "$CONFIG_DIR/enable-services.sh" "omp: services (replaces config/enable-services.sh)"
 
 # ---------------------------------------------------------------------------
 # 3. Hardware. Upstream's install/hardware/all.sh is x86 laptop vendor quirks;
 #    config/hardware.sh keeps the four leaves that are platform-neutral and
 #    adds nothing POWER-specific beyond what is already in the package set.
 # ---------------------------------------------------------------------------
-run_step "$CONFIG_DIR/hardware.sh" "p9: hardware (replaces hardware/all.sh)"
+run_step "$CONFIG_DIR/hardware.sh" "omp: hardware (replaces hardware/all.sh)"
 
 # ---------------------------------------------------------------------------
 # 4. Login and post-install, upstream's, unchanged.
@@ -129,12 +129,12 @@ run_step "$OMARCHY_INSTALL/post-install/localdb.sh" "omarchy: post-install/local
 # 5. The /etc overrides omarchy-settings ships but no longer applies from its
 #    scriptlet. Once, here, deliberately -- not from a pacman hook.
 # ---------------------------------------------------------------------------
-run_step "$CONFIG_DIR/etc-overrides.sh" "p9: /etc overrides (once)"
+run_step "$CONFIG_DIR/etc-overrides.sh" "omp: /etc overrides (once)"
 
 # ---------------------------------------------------------------------------
 if ((${#FAILED[@]})); then
   log "finished with ${#FAILED[@]} failed step(s): ${FAILED[*]}"
-  log "see $LOG_FILE; rerun with: p9-firstboot --force"
+  log "see $LOG_FILE; rerun with: omp-firstboot --force"
 else
   log "finished cleanly"
 fi
@@ -145,6 +145,6 @@ fi
 date -Is >"$MARKER"
 
 # Do not run again.
-rm -f /etc/systemd/system/multi-user.target.wants/p9-firstboot.service
+rm -f /etc/systemd/system/multi-user.target.wants/omp-firstboot.service
 systemctl daemon-reload 2>/dev/null || true
 exit 0

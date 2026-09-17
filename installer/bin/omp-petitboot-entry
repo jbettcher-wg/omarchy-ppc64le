@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# p9-petitboot-entry -- write the boot entries petitboot reads.
+# omp-petitboot-entry -- write the boot entries petitboot reads.
 #
 # THE BOOTLOADER SUBSTITUTION. Upstream Omarchy installs limine, generates a
 # limine.conf and drives it with limine-entry-tool / limine-snapper-sync.
@@ -33,15 +33,15 @@
 
 set -euo pipefail
 
-BOOT_DIR="${P9_BOOT_DIR:-/boot}"
+BOOT_DIR="${OMP_BOOT_DIR:-/boot}"
 GRUB_CFG="$BOOT_DIR/grub/grub.cfg"
 BEGIN_MARK='### BEGIN petitboot-entry ###'
 END_MARK='### END petitboot-entry ###'
-DEFAULTS="${P9_ENTRY_DEFAULTS:-/etc/default/petitboot-entry}"
+DEFAULTS="${OMP_ENTRY_DEFAULTS:-/etc/default/petitboot-entry}"
 
 usage() {
   cat <<'USAGE'
-Usage: p9-petitboot-entry [--check]
+Usage: omp-petitboot-entry [--check]
 
 Regenerates the marker block in /boot/grub/grub.cfg from the kernels present
 under /usr/lib/modules/*/pkgbase. Intended to be run by a pacman hook after
@@ -50,12 +50,12 @@ mkinitcpio, and once by the installer inside the target chroot.
   --check   report what would be written and exit without touching anything
 
 Environment overrides (the installer sets these; standalone runs detect them):
-  P9_BOOT_DIR     default /boot
-  P9_ROOT_UUID    UUID of the filesystem holding /
-  P9_BOOT_UUID    UUID of the filesystem holding /boot
-  P9_ROOTFLAGS    e.g. subvol=@   (empty for a whole-device root)
-  P9_CMDLINE      extra kernel arguments
-  P9_ENTRY_TITLE  menu title prefix, default "Omarchy POWER9"
+  OMP_BOOT_DIR     default /boot
+  OMP_ROOT_UUID    UUID of the filesystem holding /
+  OMP_BOOT_UUID    UUID of the filesystem holding /boot
+  OMP_ROOTFLAGS    e.g. subvol=@   (empty for a whole-device root)
+  OMP_CMDLINE      extra kernel arguments
+  OMP_ENTRY_TITLE  menu title prefix, default "Omarchy POWER9"
 USAGE
 }
 
@@ -77,37 +77,37 @@ esac
 # the root filesystem's /boot *directory* while the real /boot partition sits
 # unmounted. Petitboot then finds nothing and the machine does not boot.
 if ((!check_only)) && ! mountpoint -q "$BOOT_DIR"; then
-  echo "p9-petitboot-entry: $BOOT_DIR is not a mount point." >&2
+  echo "omp-petitboot-entry: $BOOT_DIR is not a mount point." >&2
   echo "  /boot must be its own ext4 partition for petitboot to read it." >&2
   exit 1
 fi
 
-root_uuid="${P9_ROOT_UUID:-$(findmnt -no UUID / 2>/dev/null || true)}"
-boot_uuid="${P9_BOOT_UUID:-$(findmnt -no UUID "$BOOT_DIR" 2>/dev/null || true)}"
+root_uuid="${OMP_ROOT_UUID:-$(findmnt -no UUID / 2>/dev/null || true)}"
+boot_uuid="${OMP_BOOT_UUID:-$(findmnt -no UUID "$BOOT_DIR" 2>/dev/null || true)}"
 
-if [[ -z ${P9_ROOTFLAGS+x} ]]; then
+if [[ -z ${OMP_ROOTFLAGS+x} ]]; then
   # Carry the btrfs subvolume through; nothing else from the live mount
   # options belongs on the kernel command line.
   subvol=$(findmnt -no OPTIONS / 2>/dev/null |
     tr ',' '\n' | awk -F= '$1=="subvol" {print $2; exit}' || true)
-  P9_ROOTFLAGS=""
-  [[ -n ${subvol:-} && $subvol != "/" ]] && P9_ROOTFLAGS="subvol=$subvol"
+  OMP_ROOTFLAGS=""
+  [[ -n ${subvol:-} && $subvol != "/" ]] && OMP_ROOTFLAGS="subvol=$subvol"
 fi
 
 [[ -n $root_uuid ]] || {
-  echo "p9-petitboot-entry: cannot determine the root filesystem UUID" >&2
+  echo "omp-petitboot-entry: cannot determine the root filesystem UUID" >&2
   exit 1
 }
 [[ -n $boot_uuid ]] || {
-  echo "p9-petitboot-entry: cannot determine the $BOOT_DIR filesystem UUID" >&2
+  echo "omp-petitboot-entry: cannot determine the $BOOT_DIR filesystem UUID" >&2
   exit 1
 }
 
-cmdline="${P9_CMDLINE:-}"
-title="${P9_ENTRY_TITLE:-Omarchy POWER9}"
+cmdline="${OMP_CMDLINE:-}"
+title="${OMP_ENTRY_TITLE:-Omarchy POWER9}"
 # shellcheck source=/dev/null
 [[ -r $DEFAULTS ]] && . "$DEFAULTS"
-cmdline="${P9_CMDLINE:-$cmdline}"
+cmdline="${OMP_CMDLINE:-$cmdline}"
 
 emit_entry() {
   local label="$1" kernel="$2" initrd="$3" extra="${4:-}"
@@ -115,7 +115,7 @@ emit_entry() {
   printf '    search --set=root --fs-uuid %s\n' "$boot_uuid"
   printf '    linux /%s root=UUID=%s%s rw%s%s\n' \
     "$kernel" "$root_uuid" \
-    "${P9_ROOTFLAGS:+ rootflags=$P9_ROOTFLAGS}" \
+    "${OMP_ROOTFLAGS:+ rootflags=$OMP_ROOTFLAGS}" \
     "${cmdline:+ $cmdline}" "${extra:+ $extra}"
   [[ -n $initrd ]] && printf '    initrd /%s\n' "$initrd"
   printf '}\n'
@@ -126,8 +126,8 @@ emit_entry() {
 # forever for a keypress on hvc0, and the virtio display never comes up. Found
 # on the POWER8 builder VM. Petitboot on PowerNV applies its own timeout, so
 # these lines change nothing there. Inside the marker block, so every
-# regeneration carries them. P9_GRUB_TIMEOUT overrides (seconds).
-block="set timeout=${P9_GRUB_TIMEOUT:-5}"$'\n'"set default=0"$'\n'
+# regeneration carries them. OMP_GRUB_TIMEOUT overrides (seconds).
+block="set timeout=${OMP_GRUB_TIMEOUT:-5}"$'\n'"set default=0"$'\n'
 found=0
 for pkgbase_file in /usr/lib/modules/*/pkgbase; do
   [[ -r $pkgbase_file ]] || continue
@@ -148,7 +148,7 @@ for pkgbase_file in /usr/lib/modules/*/pkgbase; do
 done
 
 if ((!found)); then
-  echo "p9-petitboot-entry: no packaged kernel found." >&2
+  echo "omp-petitboot-entry: no packaged kernel found." >&2
   echo "  Expected /usr/lib/modules/<release>/pkgbase with a matching" >&2
   echo "  $BOOT_DIR/vmlinuz-<pkgbase>. A hand-installed kernel has no" >&2
   echo "  pkgbase file, which is also why mkinitcpio's hook skips it." >&2
@@ -176,11 +176,11 @@ else
   {
     printf '\n%s\n%s%s\n' "$BEGIN_MARK" "$block" "$END_MARK"
   } >>"$tmp"
-  echo "p9-petitboot-entry: added the petitboot-entry block to $GRUB_CFG" >&2
+  echo "omp-petitboot-entry: added the petitboot-entry block to $GRUB_CFG" >&2
 fi
 
 chmod 0644 "$tmp"
 mv -f "$tmp" "$GRUB_CFG"
 trap - EXIT
 sync "$GRUB_CFG" 2>/dev/null || sync
-echo "p9-petitboot-entry: updated $GRUB_CFG" >&2
+echo "omp-petitboot-entry: updated $GRUB_CFG" >&2

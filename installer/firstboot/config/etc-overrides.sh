@@ -7,15 +7,15 @@
 # build host is an existing Arch workstation, not an Omarchy install, and it is
 # NOT reintroduced -- not as a scriptlet, not as a pacman hook.
 #
-# A machine that came out of p9-install, however, *is* an Omarchy install, so
+# A machine that came out of omp-install, however, *is* an Omarchy install, so
 # the overrides are correct here. They are applied exactly once, from a first-
 # boot service, and never again: a later `pacman -Syu` of omarchy-settings will
 # not silently rewrite a file the operator has since edited.
 #
-# Which overrides are applied is a list in /etc/omarchy-p9.conf, so this is a
+# Which overrides are applied is a list in /etc/omp.conf, so this is a
 # visible decision rather than a hidden one.
 
-CONF=/etc/omarchy-p9.conf
+CONF=/etc/omp.conf
 [[ -r $CONF ]] && . "$CONF"
 
 SRC="${OMARCHY_PATH:-/usr/share/omarchy}/etc-overrides"
@@ -31,11 +31,11 @@ declare -A DEST=(
   [cups-cups-files.conf]=/etc/cups/cups-files.conf
 )
 
-for name in ${P9_ETC_OVERRIDES:-}; do
+for name in ${OMP_ETC_OVERRIDES:-}; do
   src="$SRC/$name"
   dst="${DEST[$name]:-}"
   if [[ -z $dst ]]; then
-    echo "unknown override '$name' in P9_ETC_OVERRIDES; skipping" >&2
+    echo "unknown override '$name' in OMP_ETC_OVERRIDES; skipping" >&2
     continue
   fi
   if [[ ! -f $src ]]; then

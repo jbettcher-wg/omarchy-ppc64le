@@ -1,4 +1,4 @@
-# Stage 1: boot the Arch POWER live ISO under powernv9/OPAL and run p9-install
+# Stage 1: boot the Arch POWER live ISO under powernv9/OPAL and run omp-install
 # against the blank virtual disk. Timeouts are generous because this is TCG
 # emulation on a host that is also running a 644-package build.
 #
@@ -11,8 +11,8 @@ expect 900 root@archiso
 send mkdir -p /run/payload; mount -o ro /dev/disk/by-label/P9PAYLOAD /run/payload; echo "mounted=$?"
 expect 600 mounted=0
 send bash /run/payload/guest/run-install.sh
-expect 900 P9G_BEGIN
-expect 28800 P9G_FINISHED
+expect 900 OMPG_BEGIN
+expect 28800 OMPG_FINISHED
 sleep 5
 send sync
 sleep 20

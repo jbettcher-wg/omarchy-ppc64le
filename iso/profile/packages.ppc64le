@@ -51,7 +51,7 @@ libusb-compat
 # that and is only in our tree. Same 4K pages, same amdgpu=m.
 # Rendered by iso/build.sh from the pool: linux-omarchy (POWER8-configured, same
 # patch set) for the baseline, linux-power9 for --power9.
-@P9_KERNEL_PKG@
+@OMP_KERNEL_PKG@
 linux-atm
 linux-firmware-amdgpu
 linux-firmware-radeon
@@ -135,8 +135,8 @@ omarchy
 #                        POWER9 branding) is deliberately not on the stock
 #                        medium; it stays installable from the pool.
 omarchy-theme-powerpc
-# jq, ttfx  omarchy-install-dashboard, which p9-configurator runs
-#           p9-install under: jq reads the install state file, ttfx
+# jq, ttfx  omarchy-install-dashboard, which omp-configurator runs
+#           omp-install under: jq reads the install state file, ttfx
 #           animates the logo on the finish screen.
 jq
 ttfx

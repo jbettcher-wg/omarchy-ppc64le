@@ -1,16 +1,16 @@
-# p9-clipped.packages -- names present in upstream Omarchy's manifests that are
+# omp-clipped.packages -- names present in upstream Omarchy's manifests that are
 # deliberately NOT installed here, each with the reason. This file is
 # documentation, not input: nothing reads it. It exists so that when upstream
 # moves, a reviewer can diff omarchy-base.packages / omarchy-other.packages
-# against p9-base.packages and find every difference already accounted for.
+# against omp-base.packages and find every difference already accounted for.
 #
 # The audit, verbatim -- it should print nothing:
 #
 #   clean() { sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$1" | awk NF; }
 #   for m in omarchy-base.packages omarchy-other.packages; do
 #     comm -23 <(clean ../upstream/omarchy/install/$m | sort -u) \
-#              <(clean p9-base.packages | sort -u) |
-#     while read -r p; do grep -qw -- "$p" p9-clipped.packages || echo "UNACCOUNTED $p"; done
+#              <(clean omp-base.packages | sort -u) |
+#     while read -r p; do grep -qw -- "$p" omp-clipped.packages || echo "UNACCOUNTED $p"; done
 #   done
 
 # --- the boot chain (see README, "Bootloader") --------------------------------

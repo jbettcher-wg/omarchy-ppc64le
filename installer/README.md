@@ -11,15 +11,15 @@ Design it implements: `~/Development/powerpc64le-handbook/docs/power9-distro-spi
 §2.4 (boot chain), §5.5 (installer), §6 (repo).
 
 ```
-p9-install                  the installer
+omp-install                 the installer
 lib/common.sh               logging, guards, dry-run plumbing
 lib/disk.sh                 enumeration, the destructive-write guard, partitioning
 lib/target.sh               everything inside /mnt after pacstrap
-bin/p9-petitboot-entry      substitution 1 -- writes /boot/grub/grub.cfg
-share/omarchy-p9-hooks.conf substitution 3 -- the mkinitcpio drop-in
+bin/omp-petitboot-entry     substitution 1 -- writes /boot/grub/grub.cfg
+share/omp-hooks.conf        substitution 3 -- the mkinitcpio drop-in
 share/pacman.conf.in        substitution 4 -- the repository layout
-share/p9-base.packages      the manifest
-share/p9-clipped.packages   what was dropped from upstream's manifests, with reasons
+share/omp-base.packages     the manifest
+share/omp-clipped.packages  what was dropped from upstream's manifests, with reasons
 firstboot/                  the configuration layer, moved to the target's first boot
 test/                       a QEMU powernv9 rig that actually runs all of it
 ```
@@ -39,7 +39,7 @@ sector. Petitboot's `pb-discover` mounts every block device it can and looks for
 `/boot/grub/grub.cfg` (among 17 paths) relative to each partition root, parses
 it with its own grub2 grammar, and `kexec`s what it names.
 
-So the boot install step is **one file**, written by `bin/p9-petitboot-entry`:
+So the boot install step is **one file**, written by `bin/omp-petitboot-entry`:
 
 ```
 ### BEGIN petitboot-entry ###
@@ -78,14 +78,14 @@ duplicated, and both scripts are idempotent anyway.
 **Gone with limine, and worth saying out loud:** there are **no bootable
 snapshots**. Upstream gets them from `limine-snapper-sync`. Rolling back here
 means restoring the subvolume from a live medium and re-running
-`p9-petitboot-entry`. Emitting one `menuentry` per snapshot with
+`omp-petitboot-entry`. Emitting one `menuentry` per snapshot with
 `rootflags=subvol=<snapshot>` is grammatically possible and is *not* in this
 installer because nobody has tested it.
 
 `snapper` itself is demoted from a base package to an optional one: it was in
 the base set to feed limine, and it is a perfectly good btrfs tool without it.
 
-### 2. Kernel — `linux` → `$P9_KERNEL_PKG`, default `linux-power9`
+### 2. Kernel — `linux` → `$OMP_KERNEL_PKG`, default `linux-power9`
 
 Upstream pacstraps stock `linux`. This spin wants the user's own kernel: 7.2.2
 built from `~/Development/linux-7.2.2` with three local patches (two AMD
@@ -95,7 +95,7 @@ Promontory xHCI quirks, one powerpc `exit_result` fix), `CONFIG_POWER9_CPU=y`,
 **That package does not exist yet.** The kernel is currently hand-installed
 (`cp vmlinux /boot/vmlinuz-power9`, `make modules_install`, a manual
 `mkinitcpio -k`). So the kernel package name is a **variable**, `--kernel` /
-`$P9_KERNEL_PKG`. It now follows the pool: `share/kernel-pkg.conf` baked by
+`$OMP_KERNEL_PKG`. It now follows the pool: `share/kernel-pkg.conf` baked by
 `iso/build.sh` (the kernel the medium booted), else `linux-omarchy` for the
 baseline `omarchy-ppc64le` and `linux-power9` for `omarchy-power9`.
 
@@ -106,7 +106,7 @@ What the installer expects of whatever you name:
   containing the package name. mkinitcpio's own pacman hook keys *everything* on
   that `pkgbase` file — a module directory without one is skipped silently,
   which is exactly why the hand-installed 7.2.2 never got an automatic
-  initramfs, and why `p9-petitboot-entry` iterates `/usr/lib/modules/*/pkgbase`
+  initramfs, and why `omp-petitboot-entry` iterates `/usr/lib/modules/*/pkgbase`
   rather than globbing `/boot`.
 * it must therefore produce `/boot/vmlinuz-<pkgbase>` and, after `mkinitcpio -P`,
   `/boot/initramfs-<pkgbase>.img`. Those are the names the boot entry uses, and
@@ -137,7 +137,7 @@ On this platform `mkinitcpio -P` against that array fails outright:
 | `udev` (not `systemd`) | converts a working *systemd* initramfs into a busybox one — a whole-boot-path change, and `sd-vconsole` has no busybox equivalent configured here |
 
 The ppc64le `omarchy-settings` package already deletes that file. This installer
-supplies `share/omarchy-p9-hooks.conf` in its place (and removes upstream's if a
+supplies `share/omp-hooks.conf` in its place (and removes upstream's if a
 future version reintroduces it):
 
 ```
@@ -220,12 +220,12 @@ for either pool yet (`gpg` on the build host has no secret key), so:
   signature limit, and plain `Optional` then aborts the whole transaction.
   The stopgap until the repo is signed.
 
-`p9-install` **refuses to start** without one of them, and prints a warning when
+`omp-install` **refuses to start** without one of them, and prints a warning when
 `TrustAll` is chosen. Nothing here quietly turns verification off.
 
 The repository *name* and *server* are variables, because either pool can be
 installed from. The precedence for the name is command line (`--repo-name`),
-then `$P9_REPO_NAME`, then `share/repo-name.conf` — which `iso/build.sh` writes
+then `$OMP_REPO_NAME`, then `share/repo-name.conf` — which `iso/build.sh` writes
 with the pool the image was built for, next to the `repo-servers.conf` it
 already wrote. That pairing matters: an ISO built `--power9` carries POWER9
 servers, and serving those under the baseline's repo name would have pacman ask
@@ -242,7 +242,7 @@ them for an `omarchy-ppc64le.db` they do not have.
 * **`pacstrap` / `genfstab` / `arch-chroot`.** `arch-install-scripts`, as the
   design specifies. `archinstall` is not in Arch POWER and has no petitboot
   notion.
-* **The account step.** By default `p9-install` creates no user: it arms
+* **The account step.** By default `omp-install` creates no user: it arms
   `/var/lib/omarchy/provisioning/pending` and enables upstream's own
   `omarchy-provision-owner.service`, so Omarchy's setup form — keyboard,
   username, password, full name, hostname, timezone, all of
@@ -258,7 +258,7 @@ them for an `omarchy-ppc64le.db` they do not have.
 ## The configuration layer, moved to first boot
 
 Upstream runs `omarchy-apply-system` inside the target chroot at ISO
-finalization. Here `firstboot/p9-firstboot` runs the same work on the target's
+finalization. Here `firstboot/omp-firstboot` runs the same work on the target's
 own first boot, ordered `Before=omarchy-provision-owner.service` and
 `Before=display-manager.service`.
 
@@ -279,7 +279,7 @@ Two differences in *how* they run:
   `set -e`, so one failing leaf takes the whole run down. On a first boot that
   would leave a machine with no configuration and — in the deferred case — no
   user account. Here every step runs in its own `bash -eE` child; failures are
-  logged to `/var/log/p9-firstboot.log`, named in a summary, and stepped over.
+  logged to `/var/log/omp-firstboot.log`, named in a summary, and stepped over.
 * **`vulkan-radeon` and `lsp-plugins-lv2` are in the manifest** rather than
   installed by `omarchy-pkg-add` at first boot, because a fresh target may have
   no network.
@@ -297,16 +297,16 @@ reintroduced here** — not as a scriptlet, not as a pacman hook. Neither is
 `omarchy update`, a command that needs the Omarchy channel this architecture
 does not have.
 
-A machine that came out of `p9-install`, however, *is* an Omarchy install, so
+A machine that came out of `omp-install`, however, *is* an Omarchy install, so
 the overrides are correct there. `firstboot/config/etc-overrides.sh` applies
 them **once**, from the first-boot service, from a list in
-`/etc/omarchy-p9.conf` — so it is a visible decision and a later upgrade never
+`/etc/omp.conf` — so it is a visible decision and a later upgrade never
 silently rewrites a file the operator has since edited.
 
 `os-release` is **held out of that list by default**: this spin is Arch POWER
 with Omarchy on top, and `/etc/os-release` is what pacman tooling, bug reports
 and half the desktop read to decide what they are running. Add it to
-`P9_ETC_OVERRIDES` if you disagree; the file is shipped either way.
+`OMP_ETC_OVERRIDES` if you disagree; the file is shipped either way.
 
 ---
 
@@ -336,14 +336,14 @@ KVM cannot host a PowerNV guest) and runs the installer in it. See
 **Both stages pass.** With a minimal package set (`base mkinitcpio libxkbcommon
 btrfs-progs e2fsprogs` + `--kernel linux-4k`), on a blank 20 GiB virtual disk:
 
-*Stage 1 — install.* Arch POWER's live ISO under OPAL; `p9-install` resolves
+*Stage 1 — install.* Arch POWER's live ISO under OPAL; `omp-install` resolves
 145 packages against our pool (served over HTTP from this project's `repo/`)
 plus Arch POWER `[base]`; refuses everything but the disk whose virtio serial
 matches `--serial`; partitions; `mkfs`; reads the UUIDs back; `pacstrap`s;
 writes fstab; installs the mkinitcpio drop-in and rebuilds the initramfs
 cleanly; writes the boot entry; stages the first-boot layer. Exit 0, with
-`/boot/grub/grub.cfg`, `/etc/fstab`, `/etc/mkinitcpio.conf.d/omarchy-p9-hooks.conf`
-and the enabled `p9-firstboot.service` read back off the disk afterwards.
+`/boot/grub/grub.cfg`, `/etc/fstab`, `/etc/mkinitcpio.conf.d/omp-hooks.conf`
+and the enabled `omp-firstboot.service` read back off the disk afterwards.
 
 *Stage 2 — boot.* Nothing attached but the installed disk, and the payload
 skiboot jumps to is **petitboot 1.15 taken out of the AC922's own PNOR backup**
@@ -360,13 +360,13 @@ kernel image from file:///var/petitboot/mnt/dev/vda1/vmlinuz-linux-4k
 Running boot hooks / Performing kexec load / booting...
 ...
 Arch POWER 7.1.4-1-4k (hvc0)
-p9test login:
+omptest login:
 ```
 
 So the generated `grub.cfg` is parsed by the real petitboot, the entry is
 offered by name, the kernel and initramfs are found by partition-relative path
 on the ext4 `/boot`, and the initramfs built from
-`share/omarchy-p9-hooks.conf` mounts the btrfs `subvol=@` root and reaches a
+`share/omp-hooks.conf` mounts the btrfs `subvol=@` root and reaches a
 login prompt. That is the whole boot chain, end to end.
 
 ### Three real bugs the guest run found that reading could not
@@ -391,7 +391,7 @@ login prompt. That is the whole boot chain, end to end.
 * **`linux-power9`.** The package does not exist, so the default `--kernel` has
   never been exercised. The rig used `linux-4k`; what the installer asks of a
   kernel package is written down above and is what Arch's own packaging does.
-* **The real manifest.** `share/p9-base.packages` cannot resolve today: the
+* **The real manifest.** `share/omp-base.packages` cannot resolve today: the
   Omarchy packages (`omarchy`, `omarchy-settings`, `aether`, `yay`, `mise` and
   Omarchy's ten own-repo packages) are not published in a repository yet. The
   resolve step is written so that this failure names them; that list is the
@@ -417,7 +417,7 @@ rewrite landed after the guest runs above; they change enumeration and the
 host — `--disk /dev/mtdblock0` is refused, `--list-disks` shows only the three
 NVMe drives.)
 
-Static checking on the build host is `bash -n` plus `p9-install --dry-run`,
+Static checking on the build host is `bash -n` plus `omp-install --dry-run`,
 which prints every command and writes nothing (the read-only disk guard still
 runs, so it needs a device that exists). `--dry-run` as a non-root user
 cannot do the package-resolution step (pacman needs root even with `-r`) and

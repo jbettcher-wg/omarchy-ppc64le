@@ -20,7 +20,7 @@
 #      (--repo-name/--pool name the two halves by hand). The image carries what
 #      the live system needs and the install downloads the rest, as it already
 #      has to for Arch POWER [base]. --bundle-repo also injects the pool
-#      directory onto the medium at p9repo/<repo name>/, read ahead of the
+#      directory onto the medium at omp-repo/<repo name>/, read ahead of the
 #      network servers -- for testing packages that are not published yet.
 #
 #      archiso has no mechanism for putting arbitrary files in the ISO
@@ -93,7 +93,7 @@ if [[ -z $REPO_POOL ]]; then
   esac
 fi
 REPO_DB="$REPO_POOL/$REPO_NAME.db"
-MEDIUM_DIR="p9repo/$REPO_NAME"
+MEDIUM_DIR="omp-repo/$REPO_NAME"
 DEFAULT_REPO_SERVER="$REPO_BASE_URL/$REPO_NAME"
 
 # The kernel follows the pool the same way the directory does, and for the same
@@ -102,7 +102,7 @@ DEFAULT_REPO_SERVER="$REPO_BASE_URL/$REPO_NAME"
 # carrying it takes an illegal instruction on a POWER8 long before there is a
 # console to say so -- and the baseline pool does not even contain it. The
 # baseline ships linux-omarchy, the same patch set configured POWER8. The name is
-# also baked into share/kernel-pkg.conf below, so p9-install installs the kernel
+# also baked into share/kernel-pkg.conf below, so omp-install installs the kernel
 # the medium booted rather than restating a default of its own.
 if [[ -z $KERNEL_PKG ]]; then
   case "$REPO_NAME" in
@@ -110,9 +110,11 @@ if [[ -z $KERNEL_PKG ]]; then
     *)              KERNEL_PKG="linux-omarchy" ;;
   esac
 fi
+# The ISO filename follows the pool too: omarchy-<date>-ppc64le.iso for the
+# baseline, omarchy-power9-<date>-ppc64le.iso for --power9.
 case "$REPO_NAME" in
-  omarchy-power9) BOOT_LABEL="Omarchy POWER9" ;;
-  *)              BOOT_LABEL="Omarchy ppc64le" ;;
+  omarchy-power9) BOOT_LABEL="Omarchy POWER9";  ISO_NAME="omarchy-power9" ;;
+  *)              BOOT_LABEL="Omarchy ppc64le"; ISO_NAME="omarchy" ;;
 esac
 
 # Is $KERNEL_PKG in the pool's database? Matched on the db entry name
@@ -124,7 +126,7 @@ kernel_in_pool() {
   bsdtar -tf "$REPO_DB" 2>/dev/null | grep -qE "^${KERNEL_PKG//./\\.}-[^-/]+-[^-/]+/\$"
 }
 
-# What p9-install will use when the operator names no --repo-server. A bundled
+# What omp-install will use when the operator names no --repo-server. A bundled
 # repo goes first so the install reads it at local speed; the network servers
 # follow, and are all there is without --bundle-repo. With no --repo-server
 # they are the public repo, bundled or not, so an installed system always
@@ -145,6 +147,7 @@ if ((PRINT_CONFIG)); then
   printf 'kernel        : %s%s\n' "$KERNEL_PKG" \
     "$(kernel_in_pool && echo '  (in pool)' || echo '  (NOT IN POOL -- build it or pass --kernel)')"
   printf 'boot label    : %s\n' "$BOOT_LABEL"
+  printf 'iso name      : %s-<date>-ppc64le.iso\n' "$ISO_NAME"
   printf 'default server: %s\n' "$DEFAULT_REPO_SERVER"
   printf 'medium path   : %s  (--bundle-repo: %s)\n' "$MEDIUM_DIR" \
     "$((BUNDLE_REPO))"
@@ -165,54 +168,56 @@ mkdir -p "$OUTDIR"
 # run. Ask for the sudo ticket now rather than halfway through the build.
 sudo rm -rf "$WORKDIR"
 
-# Render the profile into the work dir: pacman.conf carries @P9_REPO_DIR@ and
-# @P9_REPO_NAME@ rather than an absolute path and a fixed pool name, because
+# Render the profile into the work dir: pacman.conf carries @OMP_REPO_DIR@ and
+# @OMP_REPO_NAME@ rather than an absolute path and a fixed pool name, because
 # the same tree is read from the build host and over an sshfs mount where the
 # prefix differs, and because either pool can be built from.
 rendered="$WORKDIR/profile"
 mkdir -p "$WORKDIR"
 cp -a "$PROFILE" "$rendered"
-sed -i -e "s|@P9_REPO_DIR@|$REPO_POOL|" -e "s|@P9_REPO_NAME@|$REPO_NAME|" \
+sed -i -e "s|@OMP_REPO_DIR@|$REPO_POOL|" -e "s|@OMP_REPO_NAME@|$REPO_NAME|" \
   "$rendered/pacman.conf"
 
 # The live kernel is rendered the same way: packages.ppc64le, grub.cfg and the
-# mkinitcpio preset all carry @P9_KERNEL_PKG@, and the preset's own filename has
+# mkinitcpio preset all carry @OMP_KERNEL_PKG@, and the preset's own filename has
 # to match the pkgbase or mkinitcpio builds no initramfs for the medium.
 _preset_dir="$rendered/airootfs/etc/mkinitcpio.d"
-mv "$_preset_dir/@P9_KERNEL_PKG@.preset" "$_preset_dir/$KERNEL_PKG.preset"
-sed -i -e "s|@P9_KERNEL_PKG@|$KERNEL_PKG|g" -e "s|@P9_BOOT_LABEL@|$BOOT_LABEL|g" \
-  "$rendered/packages.ppc64le" "$rendered/grub/grub.cfg" "$_preset_dir/$KERNEL_PKG.preset"
-if _left=$(grep -rlE "@P9_(KERNEL_PKG|BOOT_LABEL)@" "$rendered" 2>/dev/null) && [[ -n $_left ]]; then
+mv "$_preset_dir/@OMP_KERNEL_PKG@.preset" "$_preset_dir/$KERNEL_PKG.preset"
+sed -i -e "s|@OMP_KERNEL_PKG@|$KERNEL_PKG|g" -e "s|@OMP_BOOT_LABEL@|$BOOT_LABEL|g" \
+  -e "s|@OMP_ISO_NAME@|$ISO_NAME|g" \
+  "$rendered/packages.ppc64le" "$rendered/grub/grub.cfg" "$_preset_dir/$KERNEL_PKG.preset" \
+  "$rendered/profiledef.sh"
+if _left=$(grep -rlE "@OMP_(KERNEL_PKG|BOOT_LABEL|ISO_NAME)@" "$rendered" 2>/dev/null) && [[ -n $_left ]]; then
   echo "build.sh: unrendered kernel placeholder in:" >&2; printf '  %s\n' $_left >&2; exit 1
 fi
 
 # Sync the installer in from installer/ rather than keeping a second copy under
-# iso/profile/airootfs. The first real ISO shipped a p9-install from before the
+# iso/profile/airootfs. The first real ISO shipped an installer from before the
 # repo was renamed to omarchy-power9, so it synced [power9] and looked for
 # power9.db -- because the checked-in copy was stale and nothing said so. One
 # source of truth removes the class.
-inst="$rendered/airootfs/usr/local/share/omarchy-p9"
+inst="$rendered/airootfs/usr/local/share/omp"
 rm -rf "$inst"; mkdir -p "$inst" "$rendered/airootfs/usr/local/bin"
-cp -a "$PROJECT"/installer/{p9-install,lib,bin,share,firstboot} "$inst/"
-ln -sf ../share/omarchy-p9/p9-install "$rendered/airootfs/usr/local/bin/p9-install"
-cp -a "$PROJECT/installer/configurator/p9-configurator" "$rendered/airootfs/root/p9-configurator"
-# Omarchy's install dashboard: p9-configurator runs p9-install under it, so the
+cp -a "$PROJECT"/installer/{omp-install,lib,bin,share,firstboot} "$inst/"
+ln -sf ../share/omp/omp-install "$rendered/airootfs/usr/local/bin/omp-install"
+cp -a "$PROJECT/installer/configurator/omp-configurator" "$rendered/airootfs/root/omp-configurator"
+# Omarchy's install dashboard: omp-configurator runs omp-install under it, so the
 # install shows upstream's centered progress screen and Reboot Now prompt
 # instead of raw pacstrap output.
 cp -a "$PROJECT/installer/configurator/omarchy-install-dashboard" "$rendered/airootfs/usr/local/bin/omarchy-install-dashboard"
-chmod 755 "$rendered/airootfs/root/p9-configurator" "$inst/p9-install" \
+chmod 755 "$rendered/airootfs/root/omp-configurator" "$inst/omp-install" \
   "$rendered/airootfs/usr/local/bin/omarchy-install-dashboard"
-# Into share/, not $inst: p9-install reads $P9_SHARE/repo-servers.conf and
-# P9_SHARE is $P9_ROOT/share. Written one level up it is simply never found,
+# Into share/, not $inst: omp-install reads $OMP_SHARE/repo-servers.conf and
+# OMP_SHARE is $OMP_ROOT/share. Written one level up it is simply never found,
 # and the installer silently falls back to its built-in default.
 printf '%s\n' "${_servers[@]}" | grep . > "$inst/share/repo-servers.conf"
 # The pool NAME travels with the server list. Without it an ISO built --power9
-# would hand p9-install a set of omarchy-power9 servers under the installer's
+# would hand omp-install a set of omarchy-power9 servers under the installer's
 # own default repo name, and pacman would look for omarchy-ppc64le.db on a
 # server that only has the other one.
 printf '%s\n' "$REPO_NAME" > "$inst/share/repo-name.conf"
 # And the kernel with it: the installed system should run the kernel the medium
-# booted. p9-install derives the same default from the repo name, but a
+# booted. omp-install derives the same default from the repo name, but a
 # `--kernel` given here (say linux-omarchy-64k) has to reach the install too.
 printf '%s\n' "$KERNEL_PKG" > "$inst/share/kernel-pkg.conf"
 
@@ -220,18 +225,18 @@ printf '%s\n' "$KERNEL_PKG" > "$inst/share/kernel-pkg.conf"
 # this the live environment knows nothing about [$REPO_NAME] -- pacman -Sy
 # in a second tty cannot install so much as a missing tool. Reuse the profile's
 # conf, which already has the repo ahead of [base], but swap the build host's
-# file:// path for the servers the ISO is actually built with: @P9_REPO_DIR@
+# file:// path for the servers the ISO is actually built with: @OMP_REPO_DIR@
 # is a directory on the machine that ran this script and means nothing here.
 _live="$rendered/airootfs/etc/pacman.conf"
 mkdir -p "$(dirname "$_live")"
 awk -v servers="$(printf '%s\n' "${_servers[@]}" | grep . | sed 's/^/Server = /')" '
-  /^Server = file:\/\/@P9_REPO_DIR@/ { print servers; next }
+  /^Server = file:\/\/@OMP_REPO_DIR@/ { print servers; next }
   { print }
 ' "$PROFILE/pacman.conf" > "$_live"
 # Non-comment lines only: the profile explains the placeholder in a comment,
 # and that comment is still true for the build-side conf.
-if grep -vE '^\s*#' "$_live" | grep -q "@P9_REPO_DIR@"; then
-  echo "build.sh: live pacman.conf still has an unsubstituted @P9_REPO_DIR@" >&2; exit 1
+if grep -vE '^\s*#' "$_live" | grep -q "@OMP_REPO_DIR@"; then
+  echo "build.sh: live pacman.conf still has an unsubstituted @OMP_REPO_DIR@" >&2; exit 1
 fi
 echo "==> installer synced from $PROJECT/installer"
 echo "==> repo servers baked in:"; sed 's/^/      /' "$inst/share/repo-servers.conf"
@@ -239,38 +244,38 @@ echo "==> repo servers baked in:"; sed 's/^/      /' "$inst/share/repo-servers.c
 # Assert the file landed where the installer will actually look for it.
 #
 # This is not paranoia. The first --no-repo ISO wrote repo-servers.conf to
-# $inst/ while p9-install reads $P9_SHARE/repo-servers.conf, and $P9_SHARE is
-# $P9_ROOT/share -- one directory apart. Nothing failed: the installer silently
+# $inst/ while omp-install reads $OMP_SHARE/repo-servers.conf, and $OMP_SHARE is
+# $OMP_ROOT/share -- one directory apart. Nothing failed: the installer silently
 # fell back to its built-in file:///run/archiso/bootmnt/... default, which does
 # not exist on an image built --no-repo, and pacstrap ran against a repo
 # pointing at nothing. The image had already shipped before anyone noticed.
 #
-# So check both halves, and derive the consumer's path from p9-install itself
+# So check both halves, and derive the consumer's path from omp-install itself
 # rather than restating it here -- a guard that hardcodes the same assumption as
 # the code it guards is worth nothing.
-_want=$(grep -oE '\$P9_SHARE/[A-Za-z0-9._-]+' "$inst/p9-install" | grep repo-servers | head -1)
-[[ -n $_want ]] || { echo "build.sh: p9-install no longer reads a repo-servers file; update this guard" >&2; exit 1; }
-_want=${_want/\$P9_SHARE/$inst/share}
+_want=$(grep -oE '\$OMP_SHARE/[A-Za-z0-9._-]+' "$inst/omp-install" | grep repo-servers | head -1)
+[[ -n $_want ]] || { echo "build.sh: omp-install no longer reads a repo-servers file; update this guard" >&2; exit 1; }
+_want=${_want/\$OMP_SHARE/$inst/share}
 if [[ ! -r $_want ]]; then
-  echo "build.sh: wrote the repo server list, but p9-install reads $_want and it is not there" >&2
+  echo "build.sh: wrote the repo server list, but omp-install reads $_want and it is not there" >&2
   exit 1
 fi
-echo "==> verified p9-install will read ${_want#"$inst/"}"
-# Same guard for the repo name: derive the consumer's path from p9-install
+echo "==> verified omp-install will read ${_want#"$inst/"}"
+# Same guard for the repo name: derive the consumer's path from omp-install
 # rather than restating it, so a rename there fails here instead of silently
 # installing from the wrong pool name.
-_wantn=$(grep -oE '\$P9_SHARE/[A-Za-z0-9._-]+' "$inst/p9-install" | grep repo-name | head -1)
-[[ -n $_wantn ]] || { echo "build.sh: p9-install no longer reads a repo-name file; update this guard" >&2; exit 1; }
-_wantn=${_wantn/\$P9_SHARE/$inst/share}
-[[ -r $_wantn ]] || { echo "build.sh: wrote the repo name, but p9-install reads $_wantn and it is not there" >&2; exit 1; }
-echo "==> verified p9-install will read ${_wantn#"$inst/"} ($REPO_NAME)"
-_wantk=$(grep -oE '\$P9_SHARE/[A-Za-z0-9._-]+' "$inst/p9-install" | grep kernel-pkg | head -1)
-[[ -n $_wantk ]] || { echo "build.sh: p9-install no longer reads a kernel-pkg file; update this guard" >&2; exit 1; }
-_wantk=${_wantk/\$P9_SHARE/$inst/share}
-[[ -r $_wantk ]] || { echo "build.sh: wrote the kernel name, but p9-install reads $_wantk and it is not there" >&2; exit 1; }
-echo "==> verified p9-install will read ${_wantk#"$inst/"} ($KERNEL_PKG)"
-if grep -q "@P9_REPO_DIR@" "$rendered/pacman.conf"; then
-  echo "build.sh: @P9_REPO_DIR@ substitution failed" >&2; exit 1
+_wantn=$(grep -oE '\$OMP_SHARE/[A-Za-z0-9._-]+' "$inst/omp-install" | grep repo-name | head -1)
+[[ -n $_wantn ]] || { echo "build.sh: omp-install no longer reads a repo-name file; update this guard" >&2; exit 1; }
+_wantn=${_wantn/\$OMP_SHARE/$inst/share}
+[[ -r $_wantn ]] || { echo "build.sh: wrote the repo name, but omp-install reads $_wantn and it is not there" >&2; exit 1; }
+echo "==> verified omp-install will read ${_wantn#"$inst/"} ($REPO_NAME)"
+_wantk=$(grep -oE '\$OMP_SHARE/[A-Za-z0-9._-]+' "$inst/omp-install" | grep kernel-pkg | head -1)
+[[ -n $_wantk ]] || { echo "build.sh: omp-install no longer reads a kernel-pkg file; update this guard" >&2; exit 1; }
+_wantk=${_wantk/\$OMP_SHARE/$inst/share}
+[[ -r $_wantk ]] || { echo "build.sh: wrote the kernel name, but omp-install reads $_wantk and it is not there" >&2; exit 1; }
+echo "==> verified omp-install will read ${_wantk#"$inst/"} ($KERNEL_PKG)"
+if grep -q "@OMP_REPO_DIR@" "$rendered/pacman.conf"; then
+  echo "build.sh: @OMP_REPO_DIR@ substitution failed" >&2; exit 1
 fi
 echo "==> repo for the build: [$REPO_NAME] from $REPO_POOL"
 
@@ -294,7 +299,7 @@ echo "==> every airootfs executable has a file_permissions entry"
 echo "==> mkarchiso ($MKARCHISO)"
 sudo "$MKARCHISO" -v -w "$WORKDIR" -o "$OUTDIR" "$rendered"
 
-iso=$(find "$OUTDIR" -maxdepth 1 -name 'omarchy-p9-*.iso' -newer "$PROFILE/profiledef.sh" | sort | tail -1)
+iso=$(find "$OUTDIR" -maxdepth 1 -name "$ISO_NAME-[0-9]*-ppc64le.iso" -newer "$PROFILE/profiledef.sh" | sort | tail -1)
 [[ -n $iso ]] || { echo "mkarchiso produced no ISO in $OUTDIR" >&2; exit 1; }
 echo "==> built $iso"
 

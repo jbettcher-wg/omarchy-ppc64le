@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Smoke-test p9-install's logic without hardware.
+# Smoke-test omp-install's logic without hardware.
 #
 # Everything the installer does before it touches a disk -- argument handling,
 # repo-server precedence, the platform branches, manifest resolution, the guard
 # conditions -- is reachable under --dry-run, and none of it needs a POWER9
 # machine or a spare drive. This exists because tonight's changes (repo-server
-# precedence, the timezone prompt, console=/video= defaults, the $P9_MNT guard)
+# precedence, the timezone prompt, console=/video= defaults, the $OMP_MNT guard)
 # were all shipped untested: the only way to exercise them was to cut an ISO and
 # install, which is a twenty-minute round trip per typo.
 #
@@ -16,8 +16,8 @@
 set -uo pipefail
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-INSTALLER="$HERE/../installer/p9-install"
-[[ -x $INSTALLER || -f $INSTALLER ]] || { echo "no p9-install at $INSTALLER" >&2; exit 2; }
+INSTALLER="$HERE/../installer/omp-install"
+[[ -x $INSTALLER || -f $INSTALLER ]] || { echo "no omp-install at $INSTALLER" >&2; exit 2; }
 
 STUB=$(mktemp -d)
 trap 'rm -rf "$STUB"' EXIT
@@ -61,7 +61,7 @@ ok "user + password"          "${D[@]}" "${S[@]}" --platform powernv --user test
 ok "deferred account"         "${D[@]}" "${S[@]}" --platform powernv
 ok "explicit repo-server"     "${D[@]}" "${S[@]}" --platform powernv --repo-server http://host/repo
 ok "two repo-servers"         "${D[@]}" "${S[@]}" --platform powernv \
-                                 --repo-server file:///run/archiso/bootmnt/p9repo/omarchy-ppc64le \
+                                 --repo-server file:///run/archiso/bootmnt/omp-repo/omarchy-ppc64le \
                                  --repo-server http://host/repo
 ok "repo-server none"         "${D[@]}" "${S[@]}" --platform powernv --repo-server none
 ok "custom cmdline"           "${D[@]}" "${S[@]}" --platform powernv --cmdline quiet
@@ -83,7 +83,7 @@ echo "guards:"
 rejects "no --repo-siglevel"  "${D[@]}" --platform powernv
 rejects "no --disk"           "${S[@]}" --platform powernv
 rejects "bad platform"        "${D[@]}" "${S[@]}" --platform bogus
-rejects "repo under \$P9_MNT" "${D[@]}" "${S[@]}" --platform powernv --repo-server file:///mnt/x
+rejects "repo under \$OMP_MNT" "${D[@]}" "${S[@]}" --platform powernv --repo-server file:///mnt/x
 
 # --serial is the guard that stops the installer eating the wrong disk, so the
 # meaningful assertion is that a serial which does NOT match is refused. An

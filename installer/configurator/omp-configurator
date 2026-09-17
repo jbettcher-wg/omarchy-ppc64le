@@ -9,8 +9,8 @@ OMARCHY_SETTINGS_PACKAGE="${OMARCHY_SETTINGS_PACKAGE:-omarchy-settings}"
 
 # The greeter draws this and measures the whole layout against its widest
 # line, so it must be plain text at a fixed width. Omarchy's own logo, as
-# upstream's ISO draws it; P9_LOGO overrides for testing.
-LOGO_PATH="${P9_LOGO:-$OMARCHY_PATH/logo.txt}"
+# upstream's ISO draws it; OMP_LOGO overrides for testing.
+LOGO_PATH="${OMP_LOGO:-$OMARCHY_PATH/logo.txt}"
 
 # The setup form — keyboard, account, hostname, and timezone questions, plus the
 # rules their answers are checked against — shared verbatim with the first-boot
@@ -38,7 +38,7 @@ source "$SETUP_FORM"
 # zone1970.tab is tzdata's canonical list, one zone in field 3. It deliberately
 # omits UTC, which is exactly the answer someone installing a server is most
 # likely to want, so add it back.
-p9_list_timezones() {
+omp_list_timezones() {
   {
     # Tab-separated; field 3 is the zone name. cut rather than awk so there is
     # no quoting to get wrong.
@@ -60,10 +60,10 @@ omarchy_prompt_timezone() {
   local guess status
   guess=$(tzupdate -p 2>/dev/null) || guess=""
   if [[ -n $guess ]]; then
-    timezone=$(p9_list_timezones | gum choose --height 10 --selected "$guess" --header "Timezone") &&
+    timezone=$(omp_list_timezones | gum choose --height 10 --selected "$guess" --header "Timezone") &&
       status=0 || status=$?
   else
-    timezone=$(p9_list_timezones | gum filter --height 10 --header "Timezone") &&
+    timezone=$(omp_list_timezones | gum filter --height 10 --header "Timezone") &&
       status=0 || status=$?
   fi
   ((status == 0)) || return $status
@@ -426,7 +426,7 @@ get_root_disk() {
 disk_abort_hook() {
   # Upstream unwound its own partitioning here -- unmount, close the LUKS
   # mapping, roll back the partitions it had created. This configurator creates
-  # nothing: p9-install owns the disk from the moment it is handed one, and it
+  # nothing: omp-install owns the disk from the moment it is handed one, and it
   # does its own cleanup. Nothing to undo, so just report and stop.
   abort "$1"
 }
@@ -480,53 +480,53 @@ defer_provisioning=false
 # config. None of that applies here:
 #
 #   * PowerNV has no EFI. petitboot is in firmware and reads a grub.cfg from an
-#     ext4 /boot; pseries wants an 8 MB PReP partition instead. p9-install
+#     ext4 /boot; pseries wants an 8 MB PReP partition instead. omp-install
 #     already knows the difference and detects which from /proc/cpuinfo.
 #   * No POWER9 machine dual-boots Windows, so the free-space negotiation, the
 #     ESP adoption rules and the BitLocker check have no subject.
-#   * archinstall is not in the picture: p9-install does the partitioning,
+#   * archinstall is not in the picture: omp-install does the partitioning,
 #     pacstrap, fstab, mkinitcpio and boot entry itself.
 #
-# So this file collects answers and calls p9-install. It never touches a disk.
+# So this file collects answers and calls omp-install. It never touches a disk.
 
-P9_INSTALL="${P9_INSTALL:-/usr/local/share/omarchy-p9/p9-install}"
+OMP_INSTALL="${OMP_INSTALL:-/usr/local/share/omp/omp-install}"
 
-# Deliberately NOT passing --repo-server. It used to forward $P9_REPO_SERVER
+# Deliberately NOT passing --repo-server. It used to forward $OMP_REPO_SERVER
 # unconditionally, which is always set because it has a built-in default -- so
-# p9-install saw an explicit server on every run and never consulted the
-# repo-servers.conf the ISO was built with. Let p9-install resolve it: command
-# line, then $P9_REPO_SERVER from the environment, then the baked-in list.
+# omp-install saw an explicit server on every run and never consulted the
+# repo-servers.conf the ISO was built with. Let omp-install resolve it: command
+# line, then $OMP_REPO_SERVER from the environment, then the baked-in list.
 # The baseline pool is the default everywhere: omarchy-ppc64le is built
 # POWER8-legal, so it runs on every ppc64le machine. An ISO built for the
 # POWER9-optimised pool (iso/build.sh --power9) bakes its own name into
 # share/repo-name.conf.
 #
-# This file passes --repo-name and --kernel to p9-install explicitly on every
+# This file passes --repo-name and --kernel to omp-install explicitly on every
 # run, so its defaults are not fallbacks at all: they override what the ISO was
-# built with. Read the same baked files p9-install reads, so an ISO built
+# built with. Read the same baked files omp-install reads, so an ISO built
 # --power9 installs from omarchy-power9 and a baseline ISO installs the POWER8
 # kernel it booted, instead of forcing omarchy-ppc64le and linux-power9.
-_p9_share="${P9_SHARE:-$(dirname "$P9_INSTALL")/share}"
-_p9_baked() { local v=""; [[ -r $_p9_share/$1 ]] && read -r v < "$_p9_share/$1"; v=${v%%#*}; printf '%s' "${v// /}"; }
-: "${P9_REPO_NAME:=$(_p9_baked repo-name.conf)}"
-P9_REPO_NAME="${P9_REPO_NAME:-omarchy-ppc64le}"
-P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/$P9_REPO_NAME}"
-: "${P9_KERNEL:=$(_p9_baked kernel-pkg.conf)}"
-if [[ -z $P9_KERNEL ]]; then
-  case "$P9_REPO_NAME" in
-    omarchy-power9) P9_KERNEL=linux-power9 ;;
-    *)              P9_KERNEL=linux-omarchy ;;
+_omp_share="${OMP_SHARE:-$(dirname "$OMP_INSTALL")/share}"
+_omp_baked() { local v=""; [[ -r $_omp_share/$1 ]] && read -r v < "$_omp_share/$1"; v=${v%%#*}; printf '%s' "${v// /}"; }
+: "${OMP_REPO_NAME:=$(_omp_baked repo-name.conf)}"
+OMP_REPO_NAME="${OMP_REPO_NAME:-omarchy-ppc64le}"
+OMP_REPO_SERVER="${OMP_REPO_SERVER:-file:///run/archiso/bootmnt/omp-repo/$OMP_REPO_NAME}"
+: "${OMP_KERNEL:=$(_omp_baked kernel-pkg.conf)}"
+if [[ -z $OMP_KERNEL ]]; then
+  case "$OMP_REPO_NAME" in
+    omarchy-power9) OMP_KERNEL=linux-power9 ;;
+    *)              OMP_KERNEL=linux-omarchy ;;
   esac
 fi
-P9_LOCALE="${P9_LOCALE:-en_US.UTF-8}"
+OMP_LOCALE="${OMP_LOCALE:-en_US.UTF-8}"
 
 # The disk the user picked, confirmed by serial. Naming a device is not enough
 # on a machine with several idle NVMe drives: /dev/nvme2n1 can move between
-# boots, and every guard p9-install has -- mounted, backing /, active swap,
+# boots, and every guard omp-install has -- mounted, backing /, active swap,
 # firmware flash -- passes happily on the wrong empty disk. Reading the serial
 # off the disk the operator actually selected and handing it back as --serial
 # turns "I typed the wrong name" from a wipe into an error.
-p9_confirm_and_install() {
+omp_confirm_and_install() {
   local serial size model
   serial=$(lsblk -dn -o SERIAL "$disk" 2>/dev/null | sed 's/[[:space:]]*$//')
   size=$(lsblk -dn -o SIZE "$disk" 2>/dev/null)
@@ -545,7 +545,7 @@ p9_confirm_and_install() {
     "Field|Value" \
     "Disk|$disk ($size${model:+, $model})" \
     "Serial|${serial:-[None reported]}" \
-    "Kernel|$P9_KERNEL" \
+    "Kernel|$OMP_KERNEL" \
     "Hostname|$hostname" \
     "User|$user_value" \
     "Timezone|$timezone" \
@@ -560,53 +560,53 @@ p9_confirm_and_install() {
 
   local args=(
     --disk "$disk"
-    --kernel "$P9_KERNEL"
-    --repo-name "$P9_REPO_NAME"
+    --kernel "$OMP_KERNEL"
+    --repo-name "$OMP_REPO_NAME"
     --repo-siglevel optional-trustall
     --hostname "$hostname"
     --timezone "$timezone"
-    --locale "$P9_LOCALE"
+    --locale "$OMP_LOCALE"
     --keymap "$keyboard"
     --yes
   )
   # "Prepare this machine for another owner" (Ctrl+C at the keyboard screen)
   # installs without an account and leaves the setup form for first boot --
-  # p9-install already stages firstboot/, and setup-form.sh is the same file
+  # omp-install already stages firstboot/, and setup-form.sh is the same file
   # this configurator used, so the questions are identical either way.
   if ! $defer_provisioning; then
     args+=(--user "$username" --password "$password")
   fi
   # Only arm the serial guard when the disk actually reports one. Passing an
-  # empty --serial would make p9-install refuse every disk, including the right
+  # empty --serial would make omp-install refuse every disk, including the right
   # one; virtio disks without a serial= are the common case in a VM.
   [[ -n $serial ]] && args+=(--serial "$serial")
 
-  # Run p9-install under Omarchy's install dashboard, the way upstream's
+  # Run omp-install under Omarchy's install dashboard, the way upstream's
   # .automated_script.sh runs omarchy-iso-install: the installer becomes a
   # non-interactive child whose output goes to a log, and the console shows the
   # centered progress screen and, at the end, the Reboot Now prompt.
   #
-  # Two logs. The dashboard's holds what p9-install prints; p9-install's own
+  # Two logs. The dashboard's holds what omp-install prints; omp-install's own
   # also holds every run() command's output, so that is the tail worth showing
   # when something fails.
   local dashboard=/usr/local/bin/omarchy-install-dashboard
   if [[ -x $dashboard ]]; then
     export OMARCHY_DASHBOARD_TTY="$(tty)"
-    export P9_STATE_FILE=/run/omarchy-install/state.json
+    export OMP_STATE_FILE=/run/omarchy-install/state.json
     export OMARCHY_EXPECTED_PACKAGES_FILE=/run/omarchy-install/expected-packages
-    export P9_LOG_FILE=/var/log/p9-install.log
-    export OMARCHY_FAILURE_TAIL_LOG="$P9_LOG_FILE"
+    export OMP_LOG_FILE=/var/log/omp-install.log
+    export OMARCHY_FAILURE_TAIL_LOG="$OMP_LOG_FILE"
     # Deferred installs have no owner at the keyboard to celebrate with: the
     # dashboard skips the finish screen and reboots straight into first-boot
     # setup, as upstream does.
     if $defer_provisioning; then export OMARCHY_UI_DEFER_PROVISIONING=yes; fi
     mkdir -p /run/omarchy-install
-    rm -f "$P9_STATE_FILE" "$OMARCHY_EXPECTED_PACKAGES_FILE"
-    exec "$dashboard" /var/log/omarchy-install.log "$P9_STATE_FILE" -- \
-      "$P9_INSTALL" "${args[@]}"
+    rm -f "$OMP_STATE_FILE" "$OMARCHY_EXPECTED_PACKAGES_FILE"
+    exec "$dashboard" /var/log/omarchy-install.log "$OMP_STATE_FILE" -- \
+      "$OMP_INSTALL" "${args[@]}"
   fi
 
-  exec "$P9_INSTALL" "${args[@]}"
+  exec "$OMP_INSTALL" "${args[@]}"
 }
 
 # ------------------------------------------------------------------ flow -----
@@ -618,5 +618,5 @@ user_step
 
 while true; do
   disk_form
-  p9_confirm_and_install && break
+  omp_confirm_and_install && break
 done

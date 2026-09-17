@@ -4,6 +4,6 @@
 # parse it.
 expect 5400 (Petitboot|petitboot|pb-discover)
 expect 5400 (Omarchy POWER9|kexec|Performing kexec)
-expect 5400 (p9test|Kernel command line|systemd|Welcome to)
+expect 5400 (omptest|Kernel command line|systemd|Welcome to)
 sleep 300
 done

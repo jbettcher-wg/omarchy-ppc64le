@@ -11,14 +11,14 @@
 
 [Unit]
 Description=Omarchy ppc64le first-boot system configuration
-ConditionPathExists=!/var/lib/omarchy-p9/firstboot-done
+ConditionPathExists=!/var/lib/omp/firstboot-done
 After=systemd-user-sessions.service local-fs.target
 Before=omarchy-provision-owner.service display-manager.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/p9-firstboot
+ExecStart=/usr/local/bin/omp-firstboot
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=600

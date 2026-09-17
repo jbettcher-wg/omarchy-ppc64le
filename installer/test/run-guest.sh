@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run-guest.sh -- QEMU test rig for p9-install.
+# run-guest.sh -- QEMU test rig for omp-install.
 #
 # Why powernv9 and not pseries: powernv is the real boot path. The machine model
 # runs OPAL (skiboot) exactly as an AC922 does, so the thing under test -- "does
@@ -21,7 +21,7 @@
 #                                 and the payload ISO carrying the installer
 #   ./run-guest.sh serve          start a local http server over the project's
 #                                 package repo (for the [power9] stanza)
-#   ./run-guest.sh install        boot the live ISO and run p9-install
+#   ./run-guest.sh install        boot the live ISO and run omp-install
 #   ./run-guest.sh boot           boot the *installed* disk through petitboot
 #   ./run-guest.sh tail [stage]   follow a stage log
 #   ./run-guest.sh status
@@ -66,7 +66,7 @@ cmd_prepare() {
   say "building the payload ISO (the installer itself)"
   rm -rf "$WORK/payload"
   mkdir -p "$WORK/payload"
-  cp -a "$INSTALLER"/{p9-install,lib,bin,share,firstboot} "$WORK/payload/"
+  cp -a "$INSTALLER"/{omp-install,lib,bin,share,firstboot} "$WORK/payload/"
   cp -a "$HERE/guest" "$WORK/payload/guest"
   rm -rf "$WORK/payload/guest/.keep"
   xorriso -as mkisofs -V P9PAYLOAD -o "$IMAGES/payload.iso" "$WORK/payload" >/dev/null 2>&1
@@ -147,7 +147,7 @@ cmd_install() {
     -drive "id=payload,file=$IMAGES/payload.iso,format=raw,if=none,readonly=on" \
     -device virtio-blk-pci,bus=pcie.1,drive=payload \
     -drive "id=target,file=$IMAGES/target.qcow2,format=qcow2,if=none" \
-    -device virtio-blk-pci,bus=pcie.2,drive=target,serial=p9target \
+    -device virtio-blk-pci,bus=pcie.2,drive=target,serial=omptarget \
     -netdev user,id=net0 -device virtio-net-pci,bus=pcie.3,netdev=net0
 }
 
@@ -159,7 +159,7 @@ cmd_boot() {
   start_guest boot "$HERE/expect-boot.txt" \
     -kernel "$SKIROOT" \
     -drive "id=target,file=$IMAGES/target.qcow2,format=qcow2,if=none" \
-    -device virtio-blk-pci,bus=pcie.0,drive=target,serial=p9target
+    -device virtio-blk-pci,bus=pcie.0,drive=target,serial=omptarget
 }
 
 # --------------------------------------------------------------- control ----

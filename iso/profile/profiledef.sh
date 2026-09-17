@@ -10,10 +10,10 @@
 # arch= is only the packages.<arch> suffix and the install path; pacman.conf is
 # what declares Architecture = powerpc64le.
 
-iso_name="omarchy-p9"
+iso_name="@OMP_ISO_NAME@"
 iso_label="ARCH_$(date +%Y%m)"
 iso_publisher="Omarchy ppc64le <https://omarchy.org>"
-iso_application="Omarchy POWER9 Live/Install"
+iso_application="@OMP_BOOT_LABEL@ Live/Install"
 iso_version="$(date +%Y.%m.%d)"
 install_dir="arch"
 buildmodes=('iso')
@@ -29,9 +29,9 @@ file_permissions=(
   ["/usr/local/bin/Installation_guide"]="0:0:755"
   ["/usr/local/bin/livecd-sound"]="0:0:755"
   ["/root/.bash_profile"]="0:0:644"
-  ["/root/p9-configurator"]="0:0:755"
+  ["/root/omp-configurator"]="0:0:755"
   ["/usr/local/bin/omarchy-install-dashboard"]="0:0:755"
-  ["/usr/local/share/omarchy-p9/p9-install"]="0:0:755"
-  ["/usr/local/share/omarchy-p9/bin/p9-petitboot-entry"]="0:0:755"
-  ["/usr/local/share/omarchy-p9/firstboot/p9-firstboot"]="0:0:755"
+  ["/usr/local/share/omp/omp-install"]="0:0:755"
+  ["/usr/local/share/omp/bin/omp-petitboot-entry"]="0:0:755"
+  ["/usr/local/share/omp/firstboot/omp-firstboot"]="0:0:755"
 )

@@ -25,7 +25,7 @@ There is no KVM here, and that is not a configuration mistake:
 
 So the guest is fully emulated and slow. An installer test is I/O and shell
 logic rather than compute, so slow is acceptable — but keep the package set
-small. `guest/p9-test.packages` is `base mkinitcpio btrfs-progs e2fsprogs`, not
+small. `guest/omp-test.packages` is `base mkinitcpio btrfs-progs e2fsprogs`, not
 the 674-package closure. The point is the mechanism, not the manifest.
 
 ## Layout
@@ -36,7 +36,7 @@ console.py            drives the guest over its serial socket (expect-style)
 expect-install.txt    stage 1 script
 expect-boot.txt       stage 2 script
 guest/run-install.sh  what runs inside the guest
-guest/p9-test.packages
+guest/omp-test.packages
 extract-skiroot.sh    pulls petitboot out of a PNOR firmware backup
 work/                 extracted ISO kernel, payload staging, skiroot   (gitignored)
 images/               target.qcow2, payload.iso                        (gitignored)
@@ -51,7 +51,7 @@ QEMU's user network.
 ## Running it
 
 ```
-./run-guest.sh install       # boot the live ISO, run p9-install on a blank disk
+./run-guest.sh install       # boot the live ISO, run omp-install on a blank disk
 ./run-guest.sh tail install  # watch
 ./run-guest.sh status
 ./run-guest.sh stop
@@ -76,7 +76,7 @@ kernel image from file:///var/petitboot/mnt/dev/vda1/vmlinuz-linux-4k
 Running boot hooks / Performing kexec load / booting...
 ...
 Arch POWER 7.1.4-1-4k (hvc0)
-p9test login:
+omptest login:
 ```
 
 The petitboot doing the parsing is 1.15 out of the AC922's own PNOR backup, not

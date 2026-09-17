@@ -6,7 +6,7 @@ fi
 ~/.automated_script.sh
 
 # Omarchy ppc64le: start the configurator on the first console. It collects the
-# answers and then execs p9-install, which does the partitioning -- nothing here
+# answers and then execs omp-install, which does the partitioning -- nothing here
 # touches a disk. Ctrl+C inside it aborts to this shell, which is why it is not
 # wrapped in a loop: an operator who wants a shell should get one.
 # tty1 is the video console; hvc0 is the OPAL serial console, which is what a
@@ -17,6 +17,6 @@ fi
 # configurator holds tty1.
 case "$(tty)" in
   /dev/tty1|/dev/hvc0)
-    [[ -x ~/p9-configurator ]] && OMARCHY_PATH=/usr/share/omarchy ~/p9-configurator
+    [[ -x ~/omp-configurator ]] && OMARCHY_PATH=/usr/share/omarchy ~/omp-configurator
     ;;
 esac

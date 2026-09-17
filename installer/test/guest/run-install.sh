@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
 # Runs INSIDE the QEMU guest, from the payload ISO. Never on the host.
 #
-# Markers (P9G_*) are what test/expect-install.txt watches for on the serial
+# Markers (OMPG_*) are what test/expect-install.txt watches for on the serial
 # console; everything else is just the installer's own output.
 
 exec 2>&1
-echo "P9G_BEGIN"
+echo "OMPG_BEGIN"
 
 set -x
 PAYLOAD=$(dirname "$(dirname "$(readlink -f "$0")")")
 
 # The target is identified by the virtio serial the harness set
-# (-device virtio-blk-pci,serial=p9target), which is also what exercises
-# p9-install's --serial guard for real.
-TARGET=$(readlink -f /dev/disk/by-id/virtio-p9target 2>/dev/null || true)
+# (-device virtio-blk-pci,serial=omptarget), which is also what exercises
+# omp-install's --serial guard for real.
+TARGET=$(readlink -f /dev/disk/by-id/virtio-omptarget 2>/dev/null || true)
 if [ -z "$TARGET" ]; then
-  TARGET=/dev/$(lsblk -dn -o NAME,SERIAL | awk '$2 == "p9target" { print $1; exit }')
+  TARGET=/dev/$(lsblk -dn -o NAME,SERIAL | awk '$2 == "omptarget" { print $1; exit }')
 fi
-echo "P9G_TARGET=$TARGET"
+echo "OMPG_TARGET=$TARGET"
 lsblk -d -o NAME,SIZE,TYPE,MODEL,SERIAL
 
-"$PAYLOAD/p9-install" \
+"$PAYLOAD/omp-install" \
   --disk "$TARGET" \
-  --serial p9target \
+  --serial omptarget \
   --yes \
   --platform powernv \
   --kernel linux-4k \
-  --manifest "$PAYLOAD/guest/p9-test.packages" \
+  --manifest "$PAYLOAD/guest/omp-test.packages" \
   --repo-name omarchy-power9 \
   --repo-server "http://10.0.2.2:8099" \
   --repo-siglevel optional-trustall \
-  --hostname p9test \
+  --hostname omptest \
   --timezone UTC \
   --locale en_US.UTF-8 \
   --keymap us \
@@ -38,10 +38,10 @@ lsblk -d -o NAME,SIZE,TYPE,MODEL,SERIAL
   --cmdline "console=hvc0 loglevel=4"
 rc=$?
 set +x
-echo "P9G_INSTALL_RC=$rc"
+echo "OMPG_INSTALL_RC=$rc"
 
 # Evidence, read back off the disk the installer just unmounted.
-echo "P9G_EVIDENCE_BEGIN"
+echo "OMPG_EVIDENCE_BEGIN"
 mkdir -p /tmp/verify
 if mount "${TARGET}1" /tmp/verify 2>/dev/null; then
   echo "--- /boot contents ---"
@@ -62,5 +62,5 @@ if mount -o subvol=@ "${TARGET}2" /tmp/verify 2>/dev/null; then
   ls -la /tmp/verify/usr/local/bin/ 2>/dev/null
   umount /tmp/verify
 fi
-echo "P9G_EVIDENCE_END"
-echo "P9G_FINISHED rc=$rc"
+echo "OMPG_EVIDENCE_END"
+echo "OMPG_FINISHED rc=$rc"

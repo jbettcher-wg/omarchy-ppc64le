@@ -29,7 +29,7 @@ LuaJIT, and `omarchy update`.
 | Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,562 pkgbases, 199 of them ours |
 | Omarchy version | 4.0.3, stable channel (`omarchy` 4.0.3-3, `omarchy-settings` 4.0.3-2) |
 | Kernel | `linux-power9` 7.2.2 (4K pages) and `linux-power9-64k` |
-| Installer | ISO + `p9-install`, PowerNV and pSeries |
+| Installer | ISO + `omp-install`, PowerNV and pSeries |
 | Release channel | not public yet; packages are unsigned |
 
 ## Package pools
@@ -111,7 +111,7 @@ that is the default the tools assume.
   dependencies and the update guard hook.
 - **Hardware support is clipped.** Intel and NVIDIA graphics, Apple T2, x86
   laptop quirks and multilib don't apply;
-  [`installer/share/p9-clipped.packages`](installer/share/p9-clipped.packages)
+  [`installer/share/omp-clipped.packages`](installer/share/omp-clipped.packages)
   lists every dropped package and why.
 - **Theme.** `omarchy-theme-power9` is the default theme.
 
@@ -185,10 +185,10 @@ machine; `--power9` builds one for the optimised pool, and `--repo-name` /
 `--pool` name the two halves by hand. The install needs a network connection:
 packages come from our pool and Arch POWER.
 
-Output goes to `iso/out/omarchy-p9-YYYY.MM.DD-ppc64le.iso`. Booting it starts
-`p9-configurator`, which asks for keyboard, user, disk and timezone, and shows a
+Output goes to `iso/out/omarchy-YYYY.MM.DD-ppc64le.iso` (`--power9`: `omarchy-power9-YYYY.MM.DD-ppc64le.iso`)`. Booting it starts
+`omp-configurator`, which asks for keyboard, user, disk and timezone, and shows a
 summary with the target disk's serial for confirmation. It then runs
-`p9-install` under Omarchy's own install dashboard, so the install looks like
+`omp-install` under Omarchy's own install dashboard, so the install looks like
 upstream's:
 - a progress bar driven by the packages actually installed;
 - a failure screen with the log tail and options to view the log, reboot or
@@ -202,12 +202,12 @@ anything else on the box, with one entry per installed kernel:
 
 ![The Omarchy installer's progress screen on POWER9](docs/images/installer.png)
 
-`p9-install` supports **PowerNV** (bare metal: AC922, Talos II, Blackbird and
+`omp-install` supports **PowerNV** (bare metal: AC922, Talos II, Blackbird and
 other skiboot/petitboot machines) and **pSeries** (KVM/PowerVM guests; it adds
 a PReP partition and GRUB). The
 layout matches upstream: GPT, ext4 `/boot`, btrfs `/` with `@ @home @log @pkg`
 subvolumes. Omarchy's configuration runs on first boot through
-`p9-firstboot`. See [`installer/README.md`](installer/README.md).
+`omp-firstboot`. See [`installer/README.md`](installer/README.md).
 
 Testing:
 - `installer/test/run-guest.sh prepare|serve|install|boot` runs a full install
@@ -262,7 +262,7 @@ build-tree paths and stray install locations. Full details are in [`docs/build-q
 | Path | Contents |
 |---|---|
 | `tools/` | `bq.py` build queue, `repo-publish.sh`, dependency closure and soname/repo gap checks, path guards, sysroot helpers |
-| `installer/` | `p9-install`, the ISO configurator, first-boot layer, QEMU test rig |
+| `installer/` | `omp-install`, the ISO configurator, first-boot layer, QEMU test rig |
 | `iso/` | archiso profile and `build.sh` |
 | `tests/` | ISO smoke test, installer dry-run tests |
 | `manifest/` | generated dependency closure and build order |

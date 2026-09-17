@@ -1,4 +1,4 @@
-# p9 replacement for upstream install/post-install/pacman.sh.
+# omp replacement for upstream install/post-install/pacman.sh.
 #
 # What upstream does and we do NOT:
 #
@@ -7,7 +7,7 @@
 #
 # That repoints the machine at pkgs.omarchy.org, which publishes x86_64 and
 # aarch64 only. On powerpc64le it would replace a working package source with
-# an empty one. p9-install already wrote the correct /etc/pacman.conf -- the
+# an empty one. omp-install already wrote the correct /etc/pacman.conf -- the
 # same file the install itself ran from -- so there is nothing to restore.
 #
 #   source "$OMARCHY_INSTALL/hardware/pacman.sh"
@@ -18,7 +18,7 @@
 # What is kept: the CUPS ownership fix, because it is about file ownership
 # racing pacman, not about repositories.
 
-echo "pacman: keeping the repositories p9-install configured"
+echo "pacman: keeping the repositories omp-install configured"
 grep -E '^\[' /etc/pacman.conf | tr -d '[]' | tr '\n' ' '
 echo
 

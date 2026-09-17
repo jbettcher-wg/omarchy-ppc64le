@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# p9-install -- install Omarchy on POWER9 (ppc64le), for machines that boot
+# omp-install -- install Omarchy on POWER9 (ppc64le), for machines that boot
 #                petitboot from firmware.
 #
 # This is a fork of Omarchy's install flow with four substitutions. Everything
@@ -8,10 +8,10 @@
 # the package manifest -- is Omarchy's, carried over. The four are:
 #
 #   1. Bootloader   limine -> a grub.cfg petitboot parses. Nothing installed
-#                   to disk.                        bin/p9-petitboot-entry
-#   2. Kernel       stock `linux` -> --kernel/$P9_KERNEL_PKG, default
+#                   to disk.                        bin/omp-petitboot-entry
+#   2. Kernel       stock `linux` -> --kernel/$OMP_KERNEL_PKG, default
 #                   linux-power9.                   see --help
-#   3. mkinitcpio   omarchy_hooks.conf -> share/omarchy-p9-hooks.conf
+#   3. mkinitcpio   omarchy_hooks.conf -> share/omp-hooks.conf
 #   4. Repo         pkgs.omarchy.org -> our own repo over Arch POWER. Default
 #                   [omarchy-ppc64le], the baseline that runs on every ppc64le
 #                   machine; [omarchy-power9] is the optimised opt-in.
@@ -22,21 +22,21 @@
 
 set -euo pipefail
 
-P9_SELF=$(readlink -f "${BASH_SOURCE[0]}")
-P9_ROOT=$(dirname "$P9_SELF")
-P9_SHARE="${P9_SHARE:-$P9_ROOT/share}"
-P9_LIBEXEC="${P9_LIBEXEC:-$P9_ROOT/bin}"
-P9_FIRSTBOOT="${P9_FIRSTBOOT:-$P9_ROOT/firstboot}"
+OMP_SELF=$(readlink -f "${BASH_SOURCE[0]}")
+OMP_ROOT=$(dirname "$OMP_SELF")
+OMP_SHARE="${OMP_SHARE:-$OMP_ROOT/share}"
+OMP_LIBEXEC="${OMP_LIBEXEC:-$OMP_ROOT/bin}"
+OMP_FIRSTBOOT="${OMP_FIRSTBOOT:-$OMP_ROOT/firstboot}"
 
 # ---------------------------------------------------------------- defaults ---
-P9_ARCH=powerpc64le
-P9_MNT=/mnt
-P9_DRY_RUN=0
-P9_ASSUME_YES=0
-P9_DISK=""
-P9_SERIAL=""
-P9_PLATFORM=""
-P9_BOOT_SIZE=2G
+OMP_ARCH=powerpc64le
+OMP_MNT=/mnt
+OMP_DRY_RUN=0
+OMP_ASSUME_YES=0
+OMP_DISK=""
+OMP_SERIAL=""
+OMP_PLATFORM=""
+OMP_BOOT_SIZE=2G
 
 # Substitution 2. linux-power9 now EXISTS: built from ~/Development/linux-7.2.2
 # with `make pacman-pkg`, which ships its own PKGBUILD under scripts/package/.
@@ -58,7 +58,7 @@ P9_BOOT_SIZE=2G
 #     on that pkgbase file -- a module directory without one is skipped, which
 #     is exactly why the hand-installed 7.2.2 never got an automatic initramfs.
 #   * it must therefore produce /boot/vmlinuz-<pkgbase> and, after mkinitcpio,
-#     /boot/initramfs-<pkgbase>.img. p9-petitboot-entry names those files.
+#     /boot/initramfs-<pkgbase>.img. omp-petitboot-entry names those files.
 #   * a <pkgbase>-headers package is desirable but not required.
 #
 # For bring-up against Arch POWER's own kernels, pass --kernel linux-4k (4K
@@ -70,7 +70,7 @@ P9_BOOT_SIZE=2G
 # baseline and linux-power9 for omarchy-power9. A fixed linux-power9 default put
 # a -mcpu=power9 kernel on POWER8 targets, and the baseline pool does not carry
 # linux-power9 at all.
-P9_KERNEL_PKG="${P9_KERNEL_PKG:-}"
+OMP_KERNEL_PKG="${OMP_KERNEL_PKG:-}"
 
 # Substitution 4. Our own repository, listed ahead of Arch POWER's [base] so
 # repo order does the overriding (nothing in [base] gets rebuilt).
@@ -87,9 +87,9 @@ P9_KERNEL_PKG="${P9_KERNEL_PKG:-}"
 #                    exists and the baseline fills in the rest.
 #
 # A build is named for what it runs on, not for what it was tuned for.
-P9_REPO_NAME_SET=0
-P9_REPO_NAME_FROM_ENV="${P9_REPO_NAME+1}"
-P9_REPO_NAME="${P9_REPO_NAME:-omarchy-ppc64le}"
+OMP_REPO_NAME_SET=0
+OMP_REPO_NAME_FROM_ENV="${OMP_REPO_NAME+1}"
+OMP_REPO_NAME="${OMP_REPO_NAME:-omarchy-ppc64le}"
 # May be given more than once. pacman tries each Server in order and falls
 # through on failure, which is what makes one config correct both on the medium
 # and after it is gone: the file:// entry serves the install at local speed, and
@@ -100,30 +100,30 @@ P9_REPO_NAME="${P9_REPO_NAME:-omarchy-ppc64le}"
 # Without this the two are indistinguishable and the baked-in list can never
 # win over a default nobody chose -- or, worse, can never lose to one somebody
 # did.
-P9_REPO_SERVER_FROM_ENV="${P9_REPO_SERVER+1}"
-P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/omarchy-ppc64le}"
-P9_REPO_SERVERS=()
-P9_REPO_SIGLEVEL=""   # deliberately empty -- see --repo-siglevel below
+OMP_REPO_SERVER_FROM_ENV="${OMP_REPO_SERVER+1}"
+OMP_REPO_SERVER="${OMP_REPO_SERVER:-file:///run/archiso/bootmnt/omp-repo/omarchy-ppc64le}"
+OMP_REPO_SERVERS=()
+OMP_REPO_SIGLEVEL=""   # deliberately empty -- see --repo-siglevel below
 
 # The second, lower-priority pool. Empty by default: one pool is the normal
 # case, and the baseline alone is a complete system. Set both of these to layer
 # an optimised pool over the baseline; the stanza order in the rendered
-# pacman.conf is P9_REPO_NAME first, then this one.
-P9_BASELINE_REPO_NAME="${P9_BASELINE_REPO_NAME:-}"
-P9_BASELINE_REPO_SERVERS=()
-P9_BASELINE_REPO_SIGLEVEL="${P9_BASELINE_REPO_SIGLEVEL:-}"
-P9_BASE_SERVER="${P9_BASE_SERVER:-https://repo.archlinuxpower.org/base/\$arch}"
-P9_BASE_ANY_SERVER="${P9_BASE_ANY_SERVER:-https://repo.archlinuxpower.org/base/any}"
-P9_BASE_SIGLEVEL="${P9_BASE_SIGLEVEL:-Required DatabaseOptional}"
+# pacman.conf is OMP_REPO_NAME first, then this one.
+OMP_BASELINE_REPO_NAME="${OMP_BASELINE_REPO_NAME:-}"
+OMP_BASELINE_REPO_SERVERS=()
+OMP_BASELINE_REPO_SIGLEVEL="${OMP_BASELINE_REPO_SIGLEVEL:-}"
+OMP_BASE_SERVER="${OMP_BASE_SERVER:-https://repo.archlinuxpower.org/base/\$arch}"
+OMP_BASE_ANY_SERVER="${OMP_BASE_ANY_SERVER:-https://repo.archlinuxpower.org/base/any}"
+OMP_BASE_SIGLEVEL="${OMP_BASE_SIGLEVEL:-Required DatabaseOptional}"
 
-P9_MANIFEST="${P9_MANIFEST:-$P9_SHARE/p9-base.packages}"
-P9_PACSTRAP_CONF=""
-P9_LOCALE="${P9_LOCALE:-en_US.UTF-8}"
-P9_KEYMAP="${P9_KEYMAP:-us}"
-P9_TIMEZONE="${P9_TIMEZONE:-UTC}"
-P9_HOSTNAME="${P9_HOSTNAME:-omarchy}"
-P9_USER=""
-P9_PASSWORD=""
+OMP_MANIFEST="${OMP_MANIFEST:-$OMP_SHARE/omp-base.packages}"
+OMP_PACSTRAP_CONF=""
+OMP_LOCALE="${OMP_LOCALE:-en_US.UTF-8}"
+OMP_KEYMAP="${OMP_KEYMAP:-us}"
+OMP_TIMEZONE="${OMP_TIMEZONE:-UTC}"
+OMP_HOSTNAME="${OMP_HOSTNAME:-omarchy}"
+OMP_USER=""
+OMP_PASSWORD=""
 # console= twice, deliberately. The last one listed becomes /dev/console, so
 # tty0 goes last and the monitor stays the primary console; hvc0 is still in
 # /sys/class/tty/console/active, so systemd-getty-generator gives it a login
@@ -136,25 +136,25 @@ P9_PASSWORD=""
 # installer to 1080p on the installed system. Hyprland sets its own mode anyway.
 #
 # quiet splash, as upstream Omarchy boots: Plymouth draws the Omarchy boot
-# theme (the plymouth hook is in share/omarchy-p9-hooks.conf). quiet also quiets
+# theme (the plymouth hook is in share/omp-hooks.conf). quiet also quiets
 # hvc0; for a verbose boot, edit the entry at the petitboot menu.
-P9_CMDLINE="${P9_CMDLINE:-console=hvc0 console=tty0 quiet splash loglevel=3}"
-P9_ENTRY_TITLE="${P9_ENTRY_TITLE:-Omarchy POWER9}"
-P9_REBOOT=0
-P9_STAGE_FIRSTBOOT=1
+OMP_CMDLINE="${OMP_CMDLINE:-console=hvc0 console=tty0 quiet splash loglevel=3}"
+OMP_ENTRY_TITLE="${OMP_ENTRY_TITLE:-Omarchy POWER9}"
+OMP_REBOOT=0
+OMP_STAGE_FIRSTBOOT=1
 
 # shellcheck source=lib/common.sh
-. "$P9_ROOT/lib/common.sh"
+. "$OMP_ROOT/lib/common.sh"
 # shellcheck source=lib/disk.sh
-. "$P9_ROOT/lib/disk.sh"
+. "$OMP_ROOT/lib/disk.sh"
 # shellcheck source=lib/target.sh
-. "$P9_ROOT/lib/target.sh"
+. "$OMP_ROOT/lib/target.sh"
 
 usage() {
   cat <<'USAGE'
-Usage: p9-install --disk /dev/DEVICE [options]
-       p9-install --list-disks
-       p9-install --disk /dev/DEVICE --dry-run
+Usage: omp-install --disk /dev/DEVICE [options]
+       omp-install --list-disks
+       omp-install --disk /dev/DEVICE --dry-run
 
 Target selection (the installer enumerates, you choose -- it never guesses):
   --list-disks             show the candidate devices and exit
@@ -171,7 +171,7 @@ Boot / kernel:
   --boot-size SIZE             /boot partition size (default 2G)
 
 Packages:
-  --manifest FILE              package list (default share/p9-base.packages)
+  --manifest FILE              package list (default share/omp-base.packages)
   --repo-server URL|none       [repo] Server=. May be repeated; pacman tries
                                them in order. 'none' installs from Arch POWER only
   --repo-name NAME             repository name (default omarchy-ppc64le, the
@@ -229,124 +229,124 @@ while (($#)); do
       list_disks
       exit 0
       ;;
-    --disk) P9_DISK="$2"; shift 2 ;;
-    --serial) P9_SERIAL="$2"; shift 2 ;;
-    --platform) P9_PLATFORM="$2"; shift 2 ;;
-    --kernel) P9_KERNEL_PKG="$2"; shift 2 ;;
-    --cmdline) P9_CMDLINE="$2"; shift 2 ;;
-    --boot-size) P9_BOOT_SIZE="$2"; shift 2 ;;
-    --manifest) P9_MANIFEST="$2"; shift 2 ;;
-    --repo-server) P9_REPO_SERVERS+=("$2"); shift 2 ;;
-    --repo-name) P9_REPO_NAME="$2"; P9_REPO_NAME_SET=1; shift 2 ;;
-    --baseline-repo-name) P9_BASELINE_REPO_NAME="$2"; shift 2 ;;
-    --baseline-repo-server) P9_BASELINE_REPO_SERVERS+=("$2"); shift 2 ;;
-    --baseline-repo-siglevel) P9_BASELINE_REPO_SIGLEVEL="$2"; shift 2 ;;
+    --disk) OMP_DISK="$2"; shift 2 ;;
+    --serial) OMP_SERIAL="$2"; shift 2 ;;
+    --platform) OMP_PLATFORM="$2"; shift 2 ;;
+    --kernel) OMP_KERNEL_PKG="$2"; shift 2 ;;
+    --cmdline) OMP_CMDLINE="$2"; shift 2 ;;
+    --boot-size) OMP_BOOT_SIZE="$2"; shift 2 ;;
+    --manifest) OMP_MANIFEST="$2"; shift 2 ;;
+    --repo-server) OMP_REPO_SERVERS+=("$2"); shift 2 ;;
+    --repo-name) OMP_REPO_NAME="$2"; OMP_REPO_NAME_SET=1; shift 2 ;;
+    --baseline-repo-name) OMP_BASELINE_REPO_NAME="$2"; shift 2 ;;
+    --baseline-repo-server) OMP_BASELINE_REPO_SERVERS+=("$2"); shift 2 ;;
+    --baseline-repo-siglevel) OMP_BASELINE_REPO_SIGLEVEL="$2"; shift 2 ;;
     --repo-siglevel)
       case "$2" in
-        required) P9_REPO_SIGLEVEL="Required DatabaseOptional" ;;
-        optional-trustall) P9_REPO_SIGLEVEL="PackageNever DatabaseOptional TrustAll" ;;
-        *) P9_REPO_SIGLEVEL="$2" ;;
+        required) OMP_REPO_SIGLEVEL="Required DatabaseOptional" ;;
+        optional-trustall) OMP_REPO_SIGLEVEL="PackageNever DatabaseOptional TrustAll" ;;
+        *) OMP_REPO_SIGLEVEL="$2" ;;
       esac
       shift 2
       ;;
-    --base-server) P9_BASE_SERVER="$2"; shift 2 ;;
-    --base-any-server) P9_BASE_ANY_SERVER="$2"; shift 2 ;;
-    --base-siglevel) P9_BASE_SIGLEVEL="$2"; shift 2 ;;
-    --pacstrap-conf) P9_PACSTRAP_CONF="$2"; shift 2 ;;
-    --hostname) P9_HOSTNAME="$2"; shift 2 ;;
-    --timezone) P9_TIMEZONE="$2"; shift 2 ;;
-    --locale) P9_LOCALE="$2"; shift 2 ;;
-    --keymap) P9_KEYMAP="$2"; shift 2 ;;
-    --user) P9_USER="$2"; shift 2 ;;
-    --password) P9_PASSWORD="$2"; shift 2 ;;
-    --no-firstboot) P9_STAGE_FIRSTBOOT=0; shift ;;
-    --reboot) P9_REBOOT=1; shift ;;
-    --dry-run) P9_DRY_RUN=1; shift ;;
-    --yes | -y) P9_ASSUME_YES=1; shift ;;
+    --base-server) OMP_BASE_SERVER="$2"; shift 2 ;;
+    --base-any-server) OMP_BASE_ANY_SERVER="$2"; shift 2 ;;
+    --base-siglevel) OMP_BASE_SIGLEVEL="$2"; shift 2 ;;
+    --pacstrap-conf) OMP_PACSTRAP_CONF="$2"; shift 2 ;;
+    --hostname) OMP_HOSTNAME="$2"; shift 2 ;;
+    --timezone) OMP_TIMEZONE="$2"; shift 2 ;;
+    --locale) OMP_LOCALE="$2"; shift 2 ;;
+    --keymap) OMP_KEYMAP="$2"; shift 2 ;;
+    --user) OMP_USER="$2"; shift 2 ;;
+    --password) OMP_PASSWORD="$2"; shift 2 ;;
+    --no-firstboot) OMP_STAGE_FIRSTBOOT=0; shift ;;
+    --reboot) OMP_REBOOT=1; shift ;;
+    --dry-run) OMP_DRY_RUN=1; shift ;;
+    --yes | -y) OMP_ASSUME_YES=1; shift ;;
     -h | --help) usage; exit 0 ;;
     *) usage >&2; die "unknown option: $1" ;;
   esac
 done
 
-P9_WORKDIR=$(mktemp -d)
-trap 'rm -rf "$P9_WORKDIR"' EXIT
-P9_LOG_FILE="${P9_LOG_FILE:-/var/log/p9-install.log}"
-mkdir -p "$(dirname "$P9_LOG_FILE")" 2>/dev/null || true
+OMP_WORKDIR=$(mktemp -d)
+trap 'rm -rf "$OMP_WORKDIR"' EXIT
+OMP_LOG_FILE="${OMP_LOG_FILE:-/var/log/omp-install.log}"
+mkdir -p "$(dirname "$OMP_LOG_FILE")" 2>/dev/null || true
 # Redirections are applied left to right, so the 2>/dev/null has to come first
 # or bash reports the failed append before stderr is silenced.
-if ! (: 2>/dev/null >>"$P9_LOG_FILE"); then
-  P9_LOG_FILE="$P9_WORKDIR/p9-install.log"
-  : >"$P9_LOG_FILE"
+if ! (: 2>/dev/null >>"$OMP_LOG_FILE"); then
+  OMP_LOG_FILE="$OMP_WORKDIR/omp-install.log"
+  : >"$OMP_LOG_FILE"
 fi
 
 # ------------------------------------------------------------- preflight -----
 phase "Starting installation"
 step "Preflight"
-((P9_DRY_RUN)) || require_root
+((OMP_DRY_RUN)) || require_root
 require_tools lsblk blkid findmnt awk sed pacman
-((P9_DRY_RUN)) || require_tools sgdisk wipefs partprobe mkfs.ext4 mkfs.btrfs \
+((OMP_DRY_RUN)) || require_tools sgdisk wipefs partprobe mkfs.ext4 mkfs.btrfs \
   pacstrap genfstab arch-chroot btrfs mountpoint
 
-[[ -n $P9_DISK ]] || { usage >&2; die "--disk is required (try --list-disks)"; }
-[[ -n $P9_REPO_SIGLEVEL ]] ||
-  die "--repo-siglevel is required. There is no default: the [$P9_REPO_NAME]
+[[ -n $OMP_DISK ]] || { usage >&2; die "--disk is required (try --list-disks)"; }
+[[ -n $OMP_REPO_SIGLEVEL ]] ||
+  die "--repo-siglevel is required. There is no default: the [$OMP_REPO_NAME]
       repository is not signed yet, so 'required' fails and 'optional-trustall'
       disables verification. Choose one and say so on the command line.
       See --help."
 
-[[ -n $P9_PLATFORM ]] || P9_PLATFORM=$(detect_platform)
-case "$P9_PLATFORM" in
+[[ -n $OMP_PLATFORM ]] || OMP_PLATFORM=$(detect_platform)
+case "$OMP_PLATFORM" in
   powernv)
     log "platform: PowerNV -- petitboot is in firmware; no bootloader is installed"
-    if ((!P9_DRY_RUN)) && [[ ! -d /sys/firmware/opal ]]; then
+    if ((!OMP_DRY_RUN)) && [[ ! -d /sys/firmware/opal ]]; then
       warn "platform says PowerNV but /sys/firmware/opal is missing (emulated OPAL?)"
     fi
     ;;
   pseries)
     log "platform: pSeries -- GRUB will be installed to a PReP partition"
     ;;
-  *) die "unknown platform '$P9_PLATFORM'" ;;
+  *) die "unknown platform '$OMP_PLATFORM'" ;;
 esac
 
 # Which pool this ISO was built for. Same precedence as the server list below:
 # command line, then the environment, then what iso/build.sh baked in. Without
 # this an ISO built for the optimised pool would install under the baseline's
 # name and pacman would ask a POWER9 server for omarchy-ppc64le.db.
-if ((!P9_REPO_NAME_SET)) && [[ -z $P9_REPO_NAME_FROM_ENV && -r $P9_SHARE/repo-name.conf ]]; then
-  read -r _n < "$P9_SHARE/repo-name.conf" || true
+if ((!OMP_REPO_NAME_SET)) && [[ -z $OMP_REPO_NAME_FROM_ENV && -r $OMP_SHARE/repo-name.conf ]]; then
+  read -r _n < "$OMP_SHARE/repo-name.conf" || true
   _n=${_n%%#*}; _n=${_n// /}
-  [[ -n $_n ]] && P9_REPO_NAME=$_n
+  [[ -n $_n ]] && OMP_REPO_NAME=$_n
 fi
 # The kernel follows the pool, now that the pool is known. --kernel and
-# $P9_KERNEL_PKG already set it; otherwise take what iso/build.sh baked in (the
+# $OMP_KERNEL_PKG already set it; otherwise take what iso/build.sh baked in (the
 # kernel the medium booted), and failing that derive it from the repo name.
-if [[ -z $P9_KERNEL_PKG && -r $P9_SHARE/kernel-pkg.conf ]]; then
-  read -r _k < "$P9_SHARE/kernel-pkg.conf" || true
+if [[ -z $OMP_KERNEL_PKG && -r $OMP_SHARE/kernel-pkg.conf ]]; then
+  read -r _k < "$OMP_SHARE/kernel-pkg.conf" || true
   _k=${_k%%#*}; _k=${_k// /}
-  [[ -n $_k ]] && P9_KERNEL_PKG=$_k
+  [[ -n $_k ]] && OMP_KERNEL_PKG=$_k
 fi
-if [[ -z $P9_KERNEL_PKG ]]; then
-  case "$P9_REPO_NAME" in
-    omarchy-power9) P9_KERNEL_PKG=linux-power9 ;;
-    *)              P9_KERNEL_PKG=linux-omarchy ;;
+if [[ -z $OMP_KERNEL_PKG ]]; then
+  case "$OMP_REPO_NAME" in
+    omarchy-power9) OMP_KERNEL_PKG=linux-power9 ;;
+    *)              OMP_KERNEL_PKG=linux-omarchy ;;
   esac
 fi
-log "kernel package: $P9_KERNEL_PKG"
+log "kernel package: $OMP_KERNEL_PKG"
 # One SigLevel decision covers both pools unless the operator splits them.
-P9_BASELINE_REPO_SIGLEVEL="${P9_BASELINE_REPO_SIGLEVEL:-$P9_REPO_SIGLEVEL}"
+OMP_BASELINE_REPO_SIGLEVEL="${OMP_BASELINE_REPO_SIGLEVEL:-$OMP_REPO_SIGLEVEL}"
 # With nothing on the command line, take the list the ISO was built with.
 # iso/build.sh writes it: an ISO carrying the repo gets the file:// entry, one
 # built --no-repo gets only the network entries, and neither case needs the
 # operator to remember a URL. The single-value form is the last fallback.
-if ((!${#P9_REPO_SERVERS[@]})) && [[ -n $P9_REPO_SERVER_FROM_ENV ]]; then
-  P9_REPO_SERVERS=("$P9_REPO_SERVER")
-elif ((!${#P9_REPO_SERVERS[@]})) && [[ -r $P9_SHARE/repo-servers.conf ]]; then
+if ((!${#OMP_REPO_SERVERS[@]})) && [[ -n $OMP_REPO_SERVER_FROM_ENV ]]; then
+  OMP_REPO_SERVERS=("$OMP_REPO_SERVER")
+elif ((!${#OMP_REPO_SERVERS[@]})) && [[ -r $OMP_SHARE/repo-servers.conf ]]; then
   while read -r _l; do
     _l=${_l%%#*}; _l=${_l// /}
-    [[ -n $_l ]] && P9_REPO_SERVERS+=("$_l")
-  done < "$P9_SHARE/repo-servers.conf"
+    [[ -n $_l ]] && OMP_REPO_SERVERS+=("$_l")
+  done < "$OMP_SHARE/repo-servers.conf"
 fi
-((${#P9_REPO_SERVERS[@]})) || P9_REPO_SERVERS=("$P9_REPO_SERVER")
+((${#OMP_REPO_SERVERS[@]})) || OMP_REPO_SERVERS=("$OMP_REPO_SERVER")
 
 # Applied to each pool's server list in turn, so the second pool gets the same
 # medium-moved handling and the same target-mount guard as the first.
@@ -360,14 +360,14 @@ resolve_repo_servers() {
     # A file:// repo under the install target is either about to be shadowed by
     # the target mount or is inside the filesystem being installed to; both read
     # as "works until it doesn't".
-    if [[ $_p == "$P9_MNT" || $_p == "$P9_MNT"/* ]]; then
-      die "--repo-server $_s is under the install target $P9_MNT; mount the medium somewhere else"
+    if [[ $_p == "$OMP_MNT" || $_p == "$OMP_MNT"/* ]]; then
+      die "--repo-server $_s is under the install target $OMP_MNT; mount the medium somewhere else"
     fi
     [[ -d $_p ]] && continue
     # Missing, and shaped like our bundled layout: the medium was unmounted by
     # copytoram. Go find it rather than falling straight through to the network.
-    if [[ $_p == */p9repo/* ]]; then
-      _sub="p9repo/${_p#*/p9repo/}"
+    if [[ $_p == */omp-repo/* ]]; then
+      _sub="omp-repo/${_p#*/omp-repo/}"
       if _m=$(find_boot_medium "$_sub"); then
         _list[$_i]="file://$_m/$_sub"
         log "boot medium moved: bundled repo found at $_m/$_sub"
@@ -379,113 +379,113 @@ resolve_repo_servers() {
     fi
   done
 }
-resolve_repo_servers P9_REPO_SERVERS
-((${#P9_BASELINE_REPO_SERVERS[@]})) && resolve_repo_servers P9_BASELINE_REPO_SERVERS
+resolve_repo_servers OMP_REPO_SERVERS
+((${#OMP_BASELINE_REPO_SERVERS[@]})) && resolve_repo_servers OMP_BASELINE_REPO_SERVERS
 
-log "repository: [$P9_REPO_NAME]  SigLevel = $P9_REPO_SIGLEVEL"
-for _s in "${P9_REPO_SERVERS[@]}"; do log "  Server = $_s"; done
-if [[ $P9_REPO_SIGLEVEL == *TrustAll* ]]; then
-  warn "SigLevel '$P9_REPO_SIGLEVEL' for [$P9_REPO_NAME]: package signatures are NOT verified."
+log "repository: [$OMP_REPO_NAME]  SigLevel = $OMP_REPO_SIGLEVEL"
+for _s in "${OMP_REPO_SERVERS[@]}"; do log "  Server = $_s"; done
+if [[ $OMP_REPO_SIGLEVEL == *TrustAll* ]]; then
+  warn "SigLevel '$OMP_REPO_SIGLEVEL' for [$OMP_REPO_NAME]: package signatures are NOT verified."
 fi
-if [[ -n $P9_BASELINE_REPO_NAME ]]; then
-  if ((${#P9_BASELINE_REPO_SERVERS[@]})); then
-    log "baseline repository: [$P9_BASELINE_REPO_NAME]  SigLevel = $P9_BASELINE_REPO_SIGLEVEL"
-    log "  listed after [$P9_REPO_NAME], so the optimised build wins where one exists"
-    for _s in "${P9_BASELINE_REPO_SERVERS[@]}"; do log "  Server = $_s"; done
+if [[ -n $OMP_BASELINE_REPO_NAME ]]; then
+  if ((${#OMP_BASELINE_REPO_SERVERS[@]})); then
+    log "baseline repository: [$OMP_BASELINE_REPO_NAME]  SigLevel = $OMP_BASELINE_REPO_SIGLEVEL"
+    log "  listed after [$OMP_REPO_NAME], so the optimised build wins where one exists"
+    for _s in "${OMP_BASELINE_REPO_SERVERS[@]}"; do log "  Server = $_s"; done
   else
-    warn "--baseline-repo-name $P9_BASELINE_REPO_NAME with no --baseline-repo-server; no baseline stanza will be written"
+    warn "--baseline-repo-name $OMP_BASELINE_REPO_NAME with no --baseline-repo-server; no baseline stanza will be written"
   fi
 fi
 
 # ------------------------------------------------- pacman.conf + manifest ----
 phase "Preparing live environment"
 step "Resolving the package set"
-render_pacman_conf "$P9_WORKDIR/pacman.conf" 1
+render_pacman_conf "$OMP_WORKDIR/pacman.conf" 1
 # --pacstrap-conf lets the ISO install from its own offline mirror; the file
 # rendered above is what the *target* keeps either way.
-P9_PACSTRAP_CONF="${P9_PACSTRAP_CONF:-$P9_WORKDIR/pacman.conf}"
-mapfile -t P9_PACKAGES < <(read_manifest "$P9_MANIFEST")
-log "manifest: ${#P9_PACKAGES[@]} names from $P9_MANIFEST, plus kernel $P9_KERNEL_PKG"
-P9_PACKAGES+=("$P9_KERNEL_PKG")
+OMP_PACSTRAP_CONF="${OMP_PACSTRAP_CONF:-$OMP_WORKDIR/pacman.conf}"
+mapfile -t OMP_PACKAGES < <(read_manifest "$OMP_MANIFEST")
+log "manifest: ${#OMP_PACKAGES[@]} names from $OMP_MANIFEST, plus kernel $OMP_KERNEL_PKG"
+OMP_PACKAGES+=("$OMP_KERNEL_PKG")
 # pSeries boots SLOF -> GRUB in the PReP partition, so the target needs grub
 # itself: grub-install, and the powerpc-ieee1275 modules it copies into
 # /boot/grub. PowerNV's petitboot only reads grub.cfg and needs none of it,
 # which is why the manifest does not list it -- and why, without this, a pSeries
 # install finished with no bootloader and a disk SLOF could not boot.
-[[ $P9_PLATFORM == pseries ]] && P9_PACKAGES+=(grub)
-resolve_packages "$P9_PACSTRAP_CONF" "${P9_PACKAGES[@]}"
+[[ $OMP_PLATFORM == pseries ]] && OMP_PACKAGES+=(grub)
+resolve_packages "$OMP_PACSTRAP_CONF" "${OMP_PACKAGES[@]}"
 # The dashboard's package bar needs the number pacstrap will actually install,
 # dependencies included. resolved.txt is exactly that list, so hand it over
 # rather than keeping a second count in the ISO that drifts from the repo.
-if [[ -n ${OMARCHY_EXPECTED_PACKAGES_FILE:-} && -r $P9_WORKDIR/resolved.txt ]]; then
-  wc -l <"$P9_WORKDIR/resolved.txt" >"$OMARCHY_EXPECTED_PACKAGES_FILE" 2>/dev/null || true
+if [[ -n ${OMARCHY_EXPECTED_PACKAGES_FILE:-} && -r $OMP_WORKDIR/resolved.txt ]]; then
+  wc -l <"$OMP_WORKDIR/resolved.txt" >"$OMARCHY_EXPECTED_PACKAGES_FILE" 2>/dev/null || true
 fi
 
 # -------------------------------------------------------------- the disk -----
 phase "Preparing install target"
-step "Target: $P9_DISK"
+step "Target: $OMP_DISK"
 # The guard reads and never writes, so it runs under --dry-run too -- checking
 # "would this device be refused?" is most of what a dry run is for. The cost is
 # that --dry-run needs a device that actually exists.
-assert_disk_is_safe "$P9_DISK" "$P9_SERIAL"
-list_disks | grep -F "$P9_DISK" || true
-if ((!P9_DRY_RUN)); then
-  confirm "ERASE $P9_DISK completely and install Omarchy on it?" ||
+assert_disk_is_safe "$OMP_DISK" "$OMP_SERIAL"
+list_disks | grep -F "$OMP_DISK" || true
+if ((!OMP_DRY_RUN)); then
+  confirm "ERASE $OMP_DISK completely and install Omarchy on it?" ||
     die "aborted by operator; nothing was written"
 fi
 
-partition_disk "$P9_DISK" "$P9_PLATFORM" "$P9_BOOT_SIZE"
+partition_disk "$OMP_DISK" "$OMP_PLATFORM" "$OMP_BOOT_SIZE"
 make_filesystems
 read_back_uuids
-mount_target "$P9_MNT"
+mount_target "$OMP_MNT"
 
 # --------------------------------------------------------------- pacstrap ----
 phase "Installing Arch + Omarchy"
 step "pacstrap"
-run_loud pacstrap -C "$P9_PACSTRAP_CONF" -K "$P9_MNT" "${P9_PACKAGES[@]}" ||
-  die "pacstrap failed -- see $P9_LOG_FILE"
+run_loud pacstrap -C "$OMP_PACSTRAP_CONF" -K "$OMP_MNT" "${OMP_PACKAGES[@]}" ||
+  die "pacstrap failed -- see $OMP_LOG_FILE"
 
-if ((!P9_DRY_RUN)); then
-  installed=$(pacman -r "$P9_MNT" -Q 2>/dev/null | wc -l)
+if ((!OMP_DRY_RUN)); then
+  installed=$(pacman -r "$OMP_MNT" -Q 2>/dev/null | wc -l)
   log "target holds $installed packages"
   ((installed > 0)) || die "pacstrap reported success but the target has no packages"
 fi
 
 # keep the configuration the install actually used
 phase "Configuring system"
-render_pacman_conf "$P9_MNT/etc/pacman.conf" 0 1
+render_pacman_conf "$OMP_MNT/etc/pacman.conf" 0 1
 
-write_fstab "$P9_MNT"
-configure_system "$P9_MNT"
-configure_initramfs "$P9_MNT"
-configure_boot "$P9_MNT"
+write_fstab "$OMP_MNT"
+configure_system "$OMP_MNT"
+configure_initramfs "$OMP_MNT"
+configure_boot "$OMP_MNT"
 phase "Finalizing user"
-configure_users "$P9_MNT"
-if ((P9_STAGE_FIRSTBOOT)); then stage_firstboot "$P9_MNT"; fi
+configure_users "$OMP_MNT"
+if ((OMP_STAGE_FIRSTBOOT)); then stage_firstboot "$OMP_MNT"; fi
 
 # ------------------------------------------------------------------ done -----
 step "Done"
-if ((!P9_DRY_RUN)); then
-  cat <<EOF | tee -a "$P9_LOG_FILE"
+if ((!OMP_DRY_RUN)); then
+  cat <<EOF | tee -a "$OMP_LOG_FILE"
 
-Installed to $P9_DISK.
-  /boot   $P9_PART_BOOT  ext4   UUID=$P9_UUID_BOOT
-  /       $P9_PART_ROOT  btrfs  UUID=$P9_UUID_ROOT  subvol=@
-  kernel  $P9_KERNEL_PKG
+Installed to $OMP_DISK.
+  /boot   $OMP_PART_BOOT  ext4   UUID=$OMP_UUID_BOOT
+  /       $OMP_PART_ROOT  btrfs  UUID=$OMP_UUID_ROOT  subvol=@
+  kernel  $OMP_KERNEL_PKG
 
 Nothing was written to a bootloader: on PowerNV, petitboot is in firmware and
 reads /boot/grub/grub.cfg off the ext4 partition above. If the machine does not
 offer the entry, check at the petitboot shell that it mounted that partition.
 
 First boot runs, in order:
-  p9-firstboot.service            the root-side configuration layer
+  omp-firstboot.service            the root-side configuration layer
   omarchy-provision-owner.service Omarchy's own account wizard on tty1
 EOF
-  umount_target "$P9_MNT"
+  umount_target "$OMP_MNT"
   # finished_at is what tells the dashboard to fill the bar, show the install
   # time and ask "Reboot Now"; it owns the reboot from here.
   phase "Installation complete" "$(date +%s)"
-  if ((P9_REBOOT)); then
+  if ((OMP_REBOOT)); then
     log "rebooting"
     systemctl reboot
   fi

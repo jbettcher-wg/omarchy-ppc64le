@@ -1,4 +1,4 @@
-# p9 replacement for upstream install/config/snapper.sh.
+# omp replacement for upstream install/config/snapper.sh.
 #
 # Upstream's version is not really about snapshots, it is about boot entries:
 # it creates the snapper root config, then
@@ -12,7 +12,7 @@
 #
 # Consequence, stated plainly: this spin has NO bootable snapshots. Rolling
 # back means booting the installed system (or a live medium), restoring the
-# subvolume, and re-running p9-petitboot-entry. Nothing in the boot menu offers
+# subvolume, and re-running omp-petitboot-entry. Nothing in the boot menu offers
 # to do it for you. Reproducing limine's snapshot-boot on petitboot would mean
 # emitting one menuentry per snapshot with rootflags=subvol=<snapshot> -- which
 # the grammar allows and nobody here has tested; it is not in this installer.

@@ -1,11 +1,11 @@
-# p9-base.packages -- what p9-install pacstraps.
+# omp-base.packages -- what omp-install pacstraps.
 #
 # Derived from upstream Omarchy's install/omarchy-base.packages and the
 # applicable rows of install/omarchy-other.packages. The upstream files stay
 # the source of truth; this is the ppc64le projection of them. Lines starting
-# with '#' are comments; the clip list with reasons is in p9-clipped.packages.
+# with '#' are comments; the clip list with reasons is in omp-clipped.packages.
 #
-# Nothing here is a guess about whether a package exists: p9-install resolves
+# Nothing here is a guess about whether a package exists: omp-install resolves
 # the whole list against the configured repositories with `pacman -Sp` before
 # it touches the disk, and refuses to partition if a name does not resolve.
 
@@ -41,7 +41,7 @@ jq
 unzip
 zram-generator
 
-# The kernel is NOT listed here. p9-install adds it from --kernel/P9_KERNEL_PKG
+# The kernel is NOT listed here. omp-install adds it from --kernel/OMP_KERNEL_PKG
 # (default linux-power9) so the one package that differs per build stays a
 # single variable rather than a line buried in a manifest.
 

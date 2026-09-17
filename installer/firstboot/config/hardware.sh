@@ -1,4 +1,4 @@
-# p9 replacement for upstream install/hardware/all.sh.
+# omp replacement for upstream install/hardware/all.sh.
 #
 # Upstream's file is 38 run_logged lines. 30 of them are x86 laptop vendor
 # quirks -- ASUS ROG / Z13 / PTL, Framework 16 and its QMK HID, Dell XPS
@@ -49,7 +49,7 @@ fi
 # --- vulkan.sh, resolved at build time rather than by lspci ---
 # Upstream detects the GPU and calls omarchy-pkg-add. On a fresh target that
 # means a package install on first boot, which fails on an offline machine.
-# vulkan-radeon is in p9-base.packages instead: AMD is the only discrete GPU
+# vulkan-radeon is in omp-base.packages instead: AMD is the only discrete GPU
 # with a working driver stack on POWER9. Report what is actually present.
 if command -v lspci >/dev/null 2>&1; then
   lspci | grep -iE '(VGA|Display)' || true

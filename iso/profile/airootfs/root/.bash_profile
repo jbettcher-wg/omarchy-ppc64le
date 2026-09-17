@@ -10,6 +10,6 @@
 # while the configurator holds tty1.
 case "$(tty)" in
   /dev/tty1|/dev/hvc0)
-    [[ -x ~/p9-configurator ]] && OMARCHY_PATH=/usr/share/omarchy ~/p9-configurator
+    [[ -x ~/omp-configurator ]] && OMARCHY_PATH=/usr/share/omarchy ~/omp-configurator
     ;;
 esac

@@ -4,7 +4,7 @@
 # hostname, the initramfs, the user, and handing the desktop's own provisioning
 # off to first boot. Only two lines in here are ppc64le-specific -- the
 # mkinitcpio drop-in that gets installed, and the absence of any bootloader
-# step (that lives in bin/p9-petitboot-entry).
+# step (that lives in bin/omp-petitboot-entry).
 
 # --- pacman configuration for the target -------------------------------------
 #
@@ -47,7 +47,7 @@ _repo_stanza() {
   if ((for_target)); then
     for _srv in "${servers[@]}"; do
       case "$_srv" in
-        file:///run/archiso/*|file:///run/p9-medium/*) dropped+=("$_srv") ;;
+        file:///run/archiso/*|file:///run/omp-medium/*) dropped+=("$_srv") ;;
         *) kept+=("$_srv") ;;
       esac
     done
@@ -75,38 +75,38 @@ _repo_stanza() {
 render_pacman_conf() {
   local out="$1" force="${2:-0}" for_target="${3:-0}" stanza="" note="" _s=""
 
-  _s=$(_repo_stanza "$P9_REPO_NAME" "$P9_REPO_SIGLEVEL" "$for_target" P9_REPO_SERVERS)
+  _s=$(_repo_stanza "$OMP_REPO_NAME" "$OMP_REPO_SIGLEVEL" "$for_target" OMP_REPO_SERVERS)
   [[ -n $_s ]] && stanza+="$_s"$'\n'
-  if [[ -n ${P9_BASELINE_REPO_NAME:-} ]]; then
-    _s=$(_repo_stanza "$P9_BASELINE_REPO_NAME" \
-         "${P9_BASELINE_REPO_SIGLEVEL:-$P9_REPO_SIGLEVEL}" "$for_target" \
-         P9_BASELINE_REPO_SERVERS)
+  if [[ -n ${OMP_BASELINE_REPO_NAME:-} ]]; then
+    _s=$(_repo_stanza "$OMP_BASELINE_REPO_NAME" \
+         "${OMP_BASELINE_REPO_SIGLEVEL:-$OMP_REPO_SIGLEVEL}" "$for_target" \
+         OMP_BASELINE_REPO_SERVERS)
     [[ -n $_s ]] && stanza+="$_s"$'\n'
   fi
 
   if [[ -n $stanza ]]; then
-    note="[$P9_REPO_NAME] SigLevel is '$P9_REPO_SIGLEVEL', chosen with --repo-siglevel."
-    [[ -n ${P9_BASELINE_REPO_NAME:-} ]] &&
-      note+=" [$P9_BASELINE_REPO_NAME] is the baseline pool, listed after it so the optimised build wins where one exists and the baseline fills in the rest."
+    note="[$OMP_REPO_NAME] SigLevel is '$OMP_REPO_SIGLEVEL', chosen with --repo-siglevel."
+    [[ -n ${OMP_BASELINE_REPO_NAME:-} ]] &&
+      note+=" [$OMP_BASELINE_REPO_NAME] is the baseline pool, listed after it so the optimised build wins where one exists and the baseline fills in the rest."
   else
-    note="No [$P9_REPO_NAME] stanza: --repo-server was 'none'. Arch POWER only."
+    note="No [$OMP_REPO_NAME] stanza: --repo-server was 'none'. Arch POWER only."
   fi
 
-  if ((P9_DRY_RUN && !force)); then
+  if ((OMP_DRY_RUN && !force)); then
     printf '  would write %s\n' "$out" >&2
     return 0
   fi
 
   mkdir -p "$(dirname "$out")"
   awk -v stanza="$stanza" -v note="$note" \
-    -v basesig="$P9_BASE_SIGLEVEL" -v baseany="$P9_BASE_ANY_SERVER" -v base="$P9_BASE_SERVER" '
-    { gsub(/@P9_REPO_STANZA@/, stanza)
-      gsub(/@P9_SIGLEVEL_NOTE@/, note)
-      gsub(/@P9_BASE_SIGLEVEL@/, basesig)
-      gsub(/@P9_BASE_ANY_SERVER@/, baseany)
-      gsub(/@P9_BASE_SERVER@/, base)
+    -v basesig="$OMP_BASE_SIGLEVEL" -v baseany="$OMP_BASE_ANY_SERVER" -v base="$OMP_BASE_SERVER" '
+    { gsub(/@OMP_REPO_STANZA@/, stanza)
+      gsub(/@OMP_SIGLEVEL_NOTE@/, note)
+      gsub(/@OMP_BASE_SIGLEVEL@/, basesig)
+      gsub(/@OMP_BASE_ANY_SERVER@/, baseany)
+      gsub(/@OMP_BASE_SERVER@/, base)
       print }
-  ' "$P9_SHARE/pacman.conf.in" >"$out"
+  ' "$OMP_SHARE/pacman.conf.in" >"$out"
 }
 
 # --- package resolution -------------------------------------------------------
@@ -139,12 +139,12 @@ resolve_packages() {
   # Permission denied" even though the repository is perfectly reachable.
   chmod 0755 "$root"
   mkdir -p "$root/var/lib/pacman" "$root/var/cache/pacman/pkg"
-  if ! pacman -r "$root" --config "$conf" --arch "$P9_ARCH" -Sy >>"$P9_LOG_FILE" 2>&1; then
+  if ! pacman -r "$root" --config "$conf" --arch "$OMP_ARCH" -Sy >>"$OMP_LOG_FILE" 2>&1; then
     rm -rf "$root"
     die "could not sync the package databases -- check the repositories in $conf"
   fi
   local out rc=0
-  out=$(pacman -r "$root" --config "$conf" --arch "$P9_ARCH" \
+  out=$(pacman -r "$root" --config "$conf" --arch "$OMP_ARCH" \
     -Sp --print-format '%r %n %v' "$@" 2>&1) || rc=$?
   rm -rf "$root"
   if ((rc != 0)); then
@@ -153,21 +153,21 @@ resolve_packages() {
       is a package that still has to be built for ppc64le. Nothing was written
       to the disk."
   fi
-  printf '%s\n' "$out" >"$P9_WORKDIR/resolved.txt"
-  log "resolved $(wc -l <"$P9_WORKDIR/resolved.txt") packages"
+  printf '%s\n' "$out" >"$OMP_WORKDIR/resolved.txt"
+  log "resolved $(wc -l <"$OMP_WORKDIR/resolved.txt") packages"
 }
 
 # --- fstab --------------------------------------------------------------------
 write_fstab() {
   local mnt="$1"
   step "Writing fstab"
-  if ((P9_DRY_RUN)); then
+  if ((OMP_DRY_RUN)); then
     printf '  would run: genfstab -U %s >> %s/etc/fstab\n' "$mnt" "$mnt" >&2
     return 0
   fi
   genfstab -U "$mnt" >>"$mnt/etc/fstab"
   # The check that is not "exit 0": /boot must be there, by UUID, as ext4.
-  grep -qE "UUID=$P9_UUID_BOOT[[:space:]]+/boot[[:space:]]+ext4" "$mnt/etc/fstab" ||
+  grep -qE "UUID=$OMP_UUID_BOOT[[:space:]]+/boot[[:space:]]+ext4" "$mnt/etc/fstab" ||
     die "fstab does not carry /boot as ext4 by UUID -- petitboot would boot a kernel nobody updates"
   log "fstab ok"
 }
@@ -177,24 +177,24 @@ configure_system() {
   local mnt="$1"
   step "Configuring locale, timezone, hostname and console"
 
-  if ((P9_DRY_RUN)); then
+  if ((OMP_DRY_RUN)); then
     printf '  would set locale=%s tz=%s host=%s keymap=%s\n' \
-      "$P9_LOCALE" "$P9_TIMEZONE" "$P9_HOSTNAME" "$P9_KEYMAP" >&2
+      "$OMP_LOCALE" "$OMP_TIMEZONE" "$OMP_HOSTNAME" "$OMP_KEYMAP" >&2
     return 0
   fi
 
-  printf '%s UTF-8\n' "$P9_LOCALE" >>"$mnt/etc/locale.gen"
-  printf 'LANG=%s\n' "$P9_LOCALE" >"$mnt/etc/locale.conf"
-  printf 'KEYMAP=%s\n' "$P9_KEYMAP" >"$mnt/etc/vconsole.conf"
-  printf '%s\n' "$P9_HOSTNAME" >"$mnt/etc/hostname"
+  printf '%s UTF-8\n' "$OMP_LOCALE" >>"$mnt/etc/locale.gen"
+  printf 'LANG=%s\n' "$OMP_LOCALE" >"$mnt/etc/locale.conf"
+  printf 'KEYMAP=%s\n' "$OMP_KEYMAP" >"$mnt/etc/vconsole.conf"
+  printf '%s\n' "$OMP_HOSTNAME" >"$mnt/etc/hostname"
   cat >"$mnt/etc/hosts" <<EOF
 127.0.0.1	localhost
 ::1		localhost
-127.0.1.1	$P9_HOSTNAME.localdomain	$P9_HOSTNAME
+127.0.1.1	$OMP_HOSTNAME.localdomain	$OMP_HOSTNAME
 EOF
-  ln -sf "/usr/share/zoneinfo/$P9_TIMEZONE" "$mnt/etc/localtime"
-  arch-chroot "$mnt" locale-gen >>"$P9_LOG_FILE" 2>&1
-  arch-chroot "$mnt" hwclock --systohc >>"$P9_LOG_FILE" 2>&1 || true
+  ln -sf "/usr/share/zoneinfo/$OMP_TIMEZONE" "$mnt/etc/localtime"
+  arch-chroot "$mnt" locale-gen >>"$OMP_LOG_FILE" 2>&1
+  arch-chroot "$mnt" hwclock --systohc >>"$OMP_LOG_FILE" 2>&1 || true
 }
 
 # --- initramfs ----------------------------------------------------------------
@@ -208,15 +208,15 @@ configure_initramfs() {
   local mnt="$1"
   step "Installing the mkinitcpio drop-in and building the initramfs"
 
-  if ((P9_DRY_RUN)); then
+  if ((OMP_DRY_RUN)); then
     printf '  would install %s -> %s\n' \
-      "$P9_SHARE/omarchy-p9-hooks.conf" "$mnt/etc/mkinitcpio.conf.d/omarchy-p9-hooks.conf" >&2
+      "$OMP_SHARE/omp-hooks.conf" "$mnt/etc/mkinitcpio.conf.d/omp-hooks.conf" >&2
     printf '  would run: arch-chroot %s mkinitcpio -P\n' "$mnt" >&2
     return 0
   fi
 
-  install -Dm644 "$P9_SHARE/omarchy-p9-hooks.conf" \
-    "$mnt/etc/mkinitcpio.conf.d/omarchy-p9-hooks.conf"
+  install -Dm644 "$OMP_SHARE/omp-hooks.conf" \
+    "$mnt/etc/mkinitcpio.conf.d/omp-hooks.conf"
 
   # If the target still carries Omarchy's own drop-in (it should not -- the
   # ppc64le omarchy-settings package removes it -- but a future upstream
@@ -241,10 +241,10 @@ configure_initramfs() {
   fi
 
   run_loud arch-chroot "$mnt" mkinitcpio -P ||
-    die "mkinitcpio failed in the target -- see $P9_LOG_FILE. Nothing will boot until this is fixed."
+    die "mkinitcpio failed in the target -- see $OMP_LOG_FILE. Nothing will boot until this is fixed."
 
-  local kernel_img="$mnt/boot/vmlinuz-$P9_KERNEL_PKG"
-  local initrd_img="$mnt/boot/initramfs-$P9_KERNEL_PKG.img"
+  local kernel_img="$mnt/boot/vmlinuz-$OMP_KERNEL_PKG"
+  local initrd_img="$mnt/boot/initramfs-$OMP_KERNEL_PKG.img"
   [[ -f $kernel_img ]] || die "no $kernel_img -- the kernel package did not install one"
   [[ -f $initrd_img ]] || die "no $initrd_img -- mkinitcpio produced nothing"
   log "kernel $(stat -c%s "$kernel_img") bytes, initramfs $(stat -c%s "$initrd_img") bytes"
@@ -255,12 +255,12 @@ configure_boot() {
   local mnt="$1"
   step "Writing the petitboot boot entry"
 
-  if ((P9_DRY_RUN)); then
-    printf '  would run p9-petitboot-entry in %s\n' "$mnt" >&2
+  if ((OMP_DRY_RUN)); then
+    printf '  would run omp-petitboot-entry in %s\n' "$mnt" >&2
     return 0
   fi
 
-  install -Dm755 "$P9_LIBEXEC/p9-petitboot-entry" "$mnt/usr/local/bin/p9-petitboot-entry"
+  install -Dm755 "$OMP_LIBEXEC/omp-petitboot-entry" "$mnt/usr/local/bin/omp-petitboot-entry"
 
   # Keep the entries current across kernel upgrades. Named exactly as the
   # linux-power9 package's future hook so that, when that package lands, its
@@ -279,33 +279,33 @@ Target = boot/initramfs-*.img
 [Action]
 Description = Updating the petitboot boot entries in /boot/grub/grub.cfg...
 When = PostTransaction
-Exec = /usr/local/bin/p9-petitboot-entry
+Exec = /usr/local/bin/omp-petitboot-entry
 NeedsTargets
 HOOK
 
   install -Dm644 /dev/stdin "$mnt/etc/default/petitboot-entry" <<EOF
 # Extra kernel command line for the generated petitboot entries.
-# p9-petitboot-entry sources this file.
-P9_CMDLINE="$P9_CMDLINE"
-P9_ENTRY_TITLE="$P9_ENTRY_TITLE"
+# omp-petitboot-entry sources this file.
+OMP_CMDLINE="$OMP_CMDLINE"
+OMP_ENTRY_TITLE="$OMP_ENTRY_TITLE"
 EOF
 
-  P9_ROOT_UUID="$P9_UUID_ROOT" \
-    P9_BOOT_UUID="$P9_UUID_BOOT" \
-    P9_ROOTFLAGS="subvol=@" \
-    P9_CMDLINE="$P9_CMDLINE" \
-    P9_ENTRY_TITLE="$P9_ENTRY_TITLE" \
-    arch-chroot "$mnt" /usr/local/bin/p9-petitboot-entry ||
+  OMP_ROOT_UUID="$OMP_UUID_ROOT" \
+    OMP_BOOT_UUID="$OMP_UUID_BOOT" \
+    OMP_ROOTFLAGS="subvol=@" \
+    OMP_CMDLINE="$OMP_CMDLINE" \
+    OMP_ENTRY_TITLE="$OMP_ENTRY_TITLE" \
+    arch-chroot "$mnt" /usr/local/bin/omp-petitboot-entry ||
     die "could not write the petitboot boot entry"
 
   # The discriminator. The root UUID cannot appear in this file by accident:
   # if it is there, the entry was built from the filesystem we actually made.
   local n
-  n=$(grep -c "root=UUID=$P9_UUID_ROOT" "$mnt/boot/grub/grub.cfg" || true)
-  ((n > 0)) || die "grub.cfg does not name root=UUID=$P9_UUID_ROOT"
-  log "grub.cfg carries $n entry/entries for root=UUID=$P9_UUID_ROOT"
+  n=$(grep -c "root=UUID=$OMP_UUID_ROOT" "$mnt/boot/grub/grub.cfg" || true)
+  ((n > 0)) || die "grub.cfg does not name root=UUID=$OMP_UUID_ROOT"
+  log "grub.cfg carries $n entry/entries for root=UUID=$OMP_UUID_ROOT"
   sed -n '/BEGIN petitboot-entry/,/END petitboot-entry/p' "$mnt/boot/grub/grub.cfg" |
-    tee -a "$P9_LOG_FILE"
+    tee -a "$OMP_LOG_FILE"
 
   # pSeries is the only platform that installs a bootloader, because SLOF has
   # no petitboot. grub reads the same grub.cfg petitboot does: every entry
@@ -317,14 +317,14 @@ EOF
   # that alone fails (some hypervisors refuse it), retry with --no-nvram --
   # SLOF still scans the disks and boots the PReP ELF, the firmware boot order
   # just is not pinned to this disk.
-  if [[ $P9_PLATFORM == pseries ]]; then
-    [[ -n ${P9_PART_PREP:-} ]] || die "pSeries install with no PReP partition"
-    step "pSeries: installing GRUB to the PReP partition $P9_PART_PREP"
+  if [[ $OMP_PLATFORM == pseries ]]; then
+    [[ -n ${OMP_PART_PREP:-} ]] || die "pSeries install with no PReP partition"
+    step "pSeries: installing GRUB to the PReP partition $OMP_PART_PREP"
     local grub_args=(--target=powerpc-ieee1275 --boot-directory=/boot
       --modules="part_gpt ext2")
-    if ! run_loud arch-chroot "$mnt" grub-install "${grub_args[@]}" "$P9_PART_PREP"; then
+    if ! run_loud arch-chroot "$mnt" grub-install "${grub_args[@]}" "$OMP_PART_PREP"; then
       warn "grub-install failed; retrying without the NVRAM boot-device update"
-      run_loud arch-chroot "$mnt" grub-install --no-nvram "${grub_args[@]}" "$P9_PART_PREP" ||
+      run_loud arch-chroot "$mnt" grub-install --no-nvram "${grub_args[@]}" "$OMP_PART_PREP" ||
         die "grub-install failed -- a pSeries target without GRUB does not boot"
       warn "GRUB installed, but boot-device was not set in NVRAM; SLOF will find it by scanning"
     fi
@@ -378,7 +378,7 @@ apply_theme_branding() {
   fi
 
   step "Seeding POWER9 branding into /etc/skel"
-  if ((P9_DRY_RUN)); then
+  if ((OMP_DRY_RUN)); then
     printf '  would copy %s/about.txt -> %s/\n' "$src" "$dst" >&2
     return 0
   fi
@@ -410,7 +410,7 @@ configure_users() {
   # installs the same file again, which changes nothing.
   local bashrc_override="$mnt/usr/share/omarchy/etc-overrides/dot.bashrc"
   if [[ -f $bashrc_override ]]; then
-    if ((P9_DRY_RUN)); then
+    if ((OMP_DRY_RUN)); then
       printf '  would install %s -> %s/etc/skel/.bashrc\n' "$bashrc_override" "$mnt" >&2
     else
       install -Dm644 "$bashrc_override" "$mnt/etc/skel/.bashrc"
@@ -420,9 +420,9 @@ configure_users() {
     warn "no $bashrc_override; new accounts get bash's stock .bashrc"
   fi
 
-  if [[ -z $P9_USER ]]; then
+  if [[ -z $OMP_USER ]]; then
     step "Deferring account creation to the target's first boot"
-    if ((P9_DRY_RUN)); then
+    if ((OMP_DRY_RUN)); then
       printf '  would arm /var/lib/omarchy/provisioning/pending\n' >&2
       return 0
     fi
@@ -443,12 +443,12 @@ configure_users() {
     return 0
   fi
 
-  step "Creating $P9_USER"
-  if ((P9_DRY_RUN)); then
-    printf '  would useradd -m -G wheel %s\n' "$P9_USER" >&2
+  step "Creating $OMP_USER"
+  if ((OMP_DRY_RUN)); then
+    printf '  would useradd -m -G wheel %s\n' "$OMP_USER" >&2
     return 0
   fi
-  arch-chroot "$mnt" useradd -m -G wheel -s /bin/bash "$P9_USER" >>"$P9_LOG_FILE" 2>&1
+  arch-chroot "$mnt" useradd -m -G wheel -s /bin/bash "$OMP_USER" >>"$OMP_LOG_FILE" 2>&1
   # install -D, not a bare redirect: /etc/sudoers.d only exists once sudo is
   # installed, and a target that has not got there yet is exactly the case a
   # bare `>` fails on ("No such file or directory") after the disk is already
@@ -457,9 +457,9 @@ configure_users() {
     install -Dm0440 /dev/stdin "$mnt/etc/sudoers.d/00-omarchy-wheel"
   arch-chroot "$mnt" test -x /usr/bin/sudo ||
     warn "sudo is not installed in the target; the wheel grant is inert until it is"
-  if [[ -n $P9_PASSWORD ]]; then
-    printf '%s:%s\n' "$P9_USER" "$P9_PASSWORD" | arch-chroot "$mnt" chpasswd
-    printf 'root:%s\n' "$P9_PASSWORD" | arch-chroot "$mnt" chpasswd
+  if [[ -n $OMP_PASSWORD ]]; then
+    printf '%s:%s\n' "$OMP_USER" "$OMP_PASSWORD" | arch-chroot "$mnt" chpasswd
+    printf 'root:%s\n' "$OMP_PASSWORD" | arch-chroot "$mnt" chpasswd
   else
     warn "no --password given: set one with 'passwd' before rebooting, or arm deferred provisioning"
   fi
@@ -485,7 +485,7 @@ configure_users() {
   # in the configurator. Upstream drops it after the first boot on unencrypted
   # installs -- that cleanup is NOT reproduced here, so it persists. Remove
   # /etc/sddm.conf.d/autologin.conf on the target to require a password.
-  if [[ -n $P9_USER ]] && arch-chroot "$mnt" test -x /usr/bin/sddm 2>/dev/null; then
+  if [[ -n $OMP_USER ]] && arch-chroot "$mnt" test -x /usr/bin/sddm 2>/dev/null; then
     local _sess=omarchy.desktop
     if ! arch-chroot "$mnt" test -e "/usr/local/share/wayland-sessions/$_sess" &&
        ! arch-chroot "$mnt" test -e "/usr/share/wayland-sessions/$_sess"; then
@@ -493,14 +493,14 @@ configure_users() {
     fi
 
     install -d -m 0750 "$mnt/var/lib/sddm"
-    printf '[Last]\nSession=%s\nUser=%s\n' "$_sess" "$P9_USER" \
+    printf '[Last]\nSession=%s\nUser=%s\n' "$_sess" "$OMP_USER" \
       >"$mnt/var/lib/sddm/state.conf"
-    arch-chroot "$mnt" chown -R sddm:sddm /var/lib/sddm >>"$P9_LOG_FILE" 2>&1 || true
+    arch-chroot "$mnt" chown -R sddm:sddm /var/lib/sddm >>"$OMP_LOG_FILE" 2>&1 || true
 
     install -d -m 0755 "$mnt/etc/sddm.conf.d"
-    printf '[Autologin]\nUser=%s\nSession=%s\n' "$P9_USER" "$_sess" \
+    printf '[Autologin]\nUser=%s\nSession=%s\n' "$OMP_USER" "$_sess" \
       >"$mnt/etc/sddm.conf.d/autologin.conf"
-    log "sddm: seeded last-user and autologin for $P9_USER (session $_sess)"
+    log "sddm: seeded last-user and autologin for $OMP_USER (session $_sess)"
   fi
 
 }
@@ -516,25 +516,25 @@ stage_firstboot() {
   local mnt="$1"
   step "Staging the first-boot configuration layer"
 
-  if ((P9_DRY_RUN)); then
-    printf '  would install %s -> %s/usr/local/lib/omarchy-p9/\n' "$P9_FIRSTBOOT" "$mnt" >&2
+  if ((OMP_DRY_RUN)); then
+    printf '  would install %s -> %s/usr/local/lib/omp/\n' "$OMP_FIRSTBOOT" "$mnt" >&2
     return 0
   fi
 
-  install -d -m 0755 "$mnt/usr/local/lib/omarchy-p9"
-  cp -a "$P9_FIRSTBOOT/config" "$mnt/usr/local/lib/omarchy-p9/"
-  install -Dm755 "$P9_FIRSTBOOT/p9-firstboot" "$mnt/usr/local/bin/p9-firstboot"
-  install -Dm644 "$P9_FIRSTBOOT/p9-firstboot.service" \
-    "$mnt/etc/systemd/system/p9-firstboot.service"
+  install -d -m 0755 "$mnt/usr/local/lib/omp"
+  cp -a "$OMP_FIRSTBOOT/config" "$mnt/usr/local/lib/omp/"
+  install -Dm755 "$OMP_FIRSTBOOT/omp-firstboot" "$mnt/usr/local/bin/omp-firstboot"
+  install -Dm644 "$OMP_FIRSTBOOT/omp-firstboot.service" \
+    "$mnt/etc/systemd/system/omp-firstboot.service"
   install -d -m 0755 "$mnt/etc/systemd/system/multi-user.target.wants"
-  ln -sf ../p9-firstboot.service \
-    "$mnt/etc/systemd/system/multi-user.target.wants/p9-firstboot.service"
+  ln -sf ../omp-firstboot.service \
+    "$mnt/etc/systemd/system/multi-user.target.wants/omp-firstboot.service"
 
-  install -Dm644 /dev/stdin "$mnt/etc/omarchy-p9.conf" <<EOF
-# Read by p9-firstboot on the target's first boot. Written by p9-install.
-P9_PLATFORM="$P9_PLATFORM"
-P9_KERNEL_PKG="$P9_KERNEL_PKG"
-P9_REPO_NAME="$P9_REPO_NAME"
+  install -Dm644 /dev/stdin "$mnt/etc/omp.conf" <<EOF
+# Read by omp-firstboot on the target's first boot. Written by omp-install.
+OMP_PLATFORM="$OMP_PLATFORM"
+OMP_KERNEL_PKG="$OMP_KERNEL_PKG"
+OMP_REPO_NAME="$OMP_REPO_NAME"
 # Which of Omarchy's /etc overrides to apply once, on first boot only.
 # Upstream applies these from a pacman scriptlet on every install and upgrade;
 # that scriptlet is removed from the ppc64le omarchy-settings package because it
@@ -545,7 +545,7 @@ P9_REPO_NAME="$P9_REPO_NAME"
 # os-release is held back by default: this spin is Arch POWER with Omarchy on
 # top, and /etc/os-release is what pacman tooling, bug reports and half the
 # desktop read to identify the distribution. Add it if you disagree.
-P9_ETC_OVERRIDES="nsswitch.conf security-faillock.conf plymouth-plymouthd.conf dot.bashrc cups-cups-browsed.conf cups-cups-files.conf"
+OMP_ETC_OVERRIDES="nsswitch.conf security-faillock.conf plymouth-plymouthd.conf dot.bashrc cups-cups-browsed.conf cups-cups-files.conf"
 EOF
   log "first-boot layer staged; it runs before omarchy-provision-owner"
 }

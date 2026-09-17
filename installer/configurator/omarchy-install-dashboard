@@ -183,7 +183,7 @@ FINISH_TOP_ROW=2
 EXPECTED_PACKAGES_FILE="${OMARCHY_EXPECTED_PACKAGES_FILE:-/usr/share/omarchy-iso/expected-packages}"
 PKG_TOTAL=0
 # ppc64le: a function, re-read at each phase change while still unknown.
-# p9-install writes the file after resolving the package set, which is after
+# omp-install writes the file after resolving the package set, which is after
 # this process has started.
 load_pkg_total() {
   PKG_TOTAL=0

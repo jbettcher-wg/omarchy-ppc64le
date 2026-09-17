@@ -1,4 +1,4 @@
-# p9 replacement for upstream install/config/enable-services.sh.
+# omp replacement for upstream install/config/enable-services.sh.
 #
 # Same list, two changes. Each unit is enabled independently: upstream's version
 # is a straight run of `systemctl enable` lines under `set -e`, and one absent
@@ -28,7 +28,7 @@
 # useless in practice. Enable and start, so the first boot behaves like every
 # boot after it.
 #
-# sddm is the exception: p9-firstboot is ordered Before=display-manager.service,
+# sddm is the exception: omp-firstboot is ordered Before=display-manager.service,
 # so systemd starts it in this same transaction once we exit. Starting it here
 # would race that.
 #
@@ -37,7 +37,7 @@
 # waits for a job that cannot run until this unit finishes. It did exactly that
 # on the first install -- ten minutes in the services step, then
 #
-#   p9-firstboot.service: start operation timed out. Terminating.
+#   omp-firstboot.service: start operation timed out. Terminating.
 #
 # and because the whole layer died there, the /etc overrides after it never ran:
 # no dot.bashrc (so no starship prompt), no nsswitch, no faillock, and no

@@ -235,9 +235,9 @@ where a default exists:
   `tools/soname-gaps.py`.
 * `iso/build.sh` takes `--repo-name` / `--pool`, with `--power9` as the
   shorthand for the optimised pool, and **defaults to the baseline**;
-  `iso/profile/pacman.conf` carries `@P9_REPO_NAME@`. The name the ISO was
-  built for is written to `share/repo-name.conf` and read by `p9-install`.
-* `installer/p9-install` defaults to `omarchy-ppc64le` and takes
+  `iso/profile/pacman.conf` carries `@OMP_REPO_NAME@`. The name the ISO was
+  built for is written to `share/repo-name.conf` and read by `omp-install`.
+* `installer/omp-install` defaults to `omarchy-ppc64le` and takes
   `--baseline-repo-name` / `--baseline-repo-server` to layer the optimised
   pool ahead of the baseline in one `/etc/pacman.conf`.
 
@@ -373,8 +373,8 @@ its blind-spot list.
 `iso/build.sh` builds an archiso profile (`iso/profile/packages.ppc64le`, 136
 packages) with the kth5/archiso fork for `openpower.grub`, and with
 `--bundle-repo` injects the selected pool onto the medium at
-`p9repo/<repo name>/`, which `p9-install` reads with
-`P9_REPO_SERVER=file:///run/archiso/bootmnt/p9repo/<repo name>`. The pool is
+`omp-repo/<repo name>/`, which `omp-install` reads with
+`OMP_REPO_SERVER=file:///run/archiso/bootmnt/omp-repo/<repo name>`. The pool is
 selected with `--repo-name` / `--pool` (`--power9` for the optimised one) and
 **defaults to the baseline `omarchy-ppc64le`**.
 
@@ -386,10 +386,10 @@ A baseline ISO needs three things beyond a POWER8-legal package pool:
    `CONFIG_TARGET_CPU="power8"`), built into the baseline pool. The kernel now
    follows the pool rather than being fixed: `iso/build.sh` renders it into
    `packages.ppc64le`, `grub/grub.cfg` and the mkinitcpio preset from
-   `@P9_KERNEL_PKG@` (baseline `linux-omarchy`, `--power9` `linux-power9`,
+   `@OMP_KERNEL_PKG@` (baseline `linux-omarchy`, `--power9` `linux-power9`,
    `--kernel` overrides), refuses to build if that kernel is not in the pool's
-   database, and bakes it into `share/kernel-pkg.conf` so `p9-install` and
-   `p9-configurator` install the kernel the medium booted. What follows is the
+   database, and bakes it into `share/kernel-pkg.conf` so `omp-install` and
+   `omp-configurator` install the kernel the medium booted. What follows is the
    original finding, kept because it is why this was needed.
 
    `packaging/ours/linux-power9` sets, in
@@ -428,7 +428,7 @@ A baseline ISO needs three things beyond a POWER8-legal package pool:
    identical, and every other package on the medium comes from Arch POWER,
    which is already POWER8 (§1). (Correction: this undercounted. The kernel was
    hardcoded as `linux-power9` in the medium's package list, grub.cfg and preset,
-   and in both `p9-install` and `p9-configurator`, so item 1 was not only a
+   and in both `omp-install` and `omp-configurator`, so item 1 was not only a
    package to build but a selection to wire through; see item 1.)
 
 ---

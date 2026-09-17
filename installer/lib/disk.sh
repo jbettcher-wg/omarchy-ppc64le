@@ -16,12 +16,12 @@
 # skiboot, petitboot itself, and the BMC image. `lsblk -d` lists five of them on
 # the AC922, right alongside the NVMe drives, and sgdisk would happily write a
 # GPT over one.
-P9_FORBIDDEN_DEVICE_GLOBS=(mtdblock* mtd* loop* ram* zram* sr* dm-* md*)
+OMP_FORBIDDEN_DEVICE_GLOBS=(mtdblock* mtd* loop* ram* zram* sr* dm-* md*)
 
 device_is_forbidden() {
   local name glob
   name=$(basename "$1")
-  for glob in "${P9_FORBIDDEN_DEVICE_GLOBS[@]}"; do
+  for glob in "${OMP_FORBIDDEN_DEVICE_GLOBS[@]}"; do
     # shellcheck disable=SC2053
     [[ $name == $glob ]] && return 0
   done
@@ -65,7 +65,7 @@ assert_disk_is_safe() {
   # exercised on the target machine. Every other guard below still runs; this
   # is the one that cannot.
   if [[ ! -b $disk ]]; then
-    ((P9_DRY_RUN)) || die "$disk is not a block device"
+    ((OMP_DRY_RUN)) || die "$disk is not a block device"
     warn "$disk is not a block device; continuing because this is a dry run"
     return 0
   fi
@@ -113,13 +113,13 @@ partition_disk() {
 
   if [[ $platform == pseries ]]; then
     run sgdisk -n 1:0:+8M   -t 1:4100 -c 1:"PReP"  "$disk"
-    run sgdisk -n 2:0:+"$boot_size" -t 2:8300 -c 2:"p9boot" "$disk"
-    run sgdisk -n 3:0:0     -t 3:8300 -c 3:"p9root" "$disk"
-    _p9_prep_n=1 _p9_boot_n=2 _p9_root_n=3
+    run sgdisk -n 2:0:+"$boot_size" -t 2:8300 -c 2:"ompboot" "$disk"
+    run sgdisk -n 3:0:0     -t 3:8300 -c 3:"omproot" "$disk"
+    _omp_prep_n=1 _omp_boot_n=2 _omp_root_n=3
   else
-    run sgdisk -n 1:0:+"$boot_size" -t 1:8300 -c 1:"p9boot" "$disk"
-    run sgdisk -n 2:0:0     -t 2:8300 -c 2:"p9root" "$disk"
-    _p9_prep_n="" _p9_boot_n=1 _p9_root_n=2
+    run sgdisk -n 1:0:+"$boot_size" -t 1:8300 -c 1:"ompboot" "$disk"
+    run sgdisk -n 2:0:0     -t 2:8300 -c 2:"omproot" "$disk"
+    _omp_prep_n="" _omp_boot_n=1 _omp_root_n=2
   fi
 
   # Settle BEFORE naming the partitions, so part_path can ask the kernel what
@@ -127,9 +127,9 @@ partition_disk() {
   run partprobe "$disk" || true
   run udevadm settle || true
 
-  [[ -n $_p9_prep_n ]] && P9_PART_PREP=$(part_path "$disk" "$_p9_prep_n") || P9_PART_PREP=""
-  P9_PART_BOOT=$(part_path "$disk" "$_p9_boot_n")
-  P9_PART_ROOT=$(part_path "$disk" "$_p9_root_n")
+  [[ -n $_omp_prep_n ]] && OMP_PART_PREP=$(part_path "$disk" "$_omp_prep_n") || OMP_PART_PREP=""
+  OMP_PART_BOOT=$(part_path "$disk" "$_omp_boot_n")
+  OMP_PART_ROOT=$(part_path "$disk" "$_omp_root_n")
 
   # Zero the PReP partition. wipefs and --zap-all clear signatures and the
   # partition table, not the bytes underneath, and /boot and / get mkfs but the
@@ -138,8 +138,8 @@ partition_disk() {
   # PReP partition is not empty ... run dd to clear it"), on both attempts, and
   # the install dies. Found on a secondhand 2 TB NVMe that carried xfs; a fresh
   # VM image is all zeroes, which is why QEMU testing never hit it.
-  if [[ -n $P9_PART_PREP ]]; then
-    run dd if=/dev/zero of="$P9_PART_PREP" bs=1M count=8 conv=fsync status=none
+  if [[ -n $OMP_PART_PREP ]]; then
+    run dd if=/dev/zero of="$OMP_PART_PREP" bs=1M count=8 conv=fsync status=none
   fi
 }
 
@@ -147,7 +147,7 @@ partition_disk() {
 # than guess. The old version guessed from the trailing character of the disk
 # name and got by-id paths wrong in both directions:
 #
-#   /dev/disk/by-id/virtio-p9target   ends in a letter -> "...target1"
+#   /dev/disk/by-id/virtio-omptarget   ends in a letter -> "...target1"
 #   /dev/disk/by-id/nvme-Samsung_..._S6B0NL0T123456  ends in a digit -> "...456p1"
 #
 # and the right answer is "-part1" for both. by-id is exactly how a disk should
@@ -177,8 +177,8 @@ make_filesystems() {
   step "Creating filesystems"
   # ext4 on /boot because petitboot must mount and read it. Do not "improve"
   # this to btrfs or f2fs without re-testing petitboot on the target machine.
-  run mkfs.ext4 -F -L p9boot "$P9_PART_BOOT"
-  run mkfs.btrfs -f -L p9root "$P9_PART_ROOT"
+  run mkfs.ext4 -F -L ompboot "$OMP_PART_BOOT"
+  run mkfs.btrfs -f -L omproot "$OMP_PART_ROOT"
 }
 
 # Subvolume layout from the design (@ @home @log @pkg): keeps snapshots of the
@@ -188,19 +188,19 @@ mount_target() {
   local opts="rw,noatime,compress=zstd,discard=async,space_cache=v2"
 
   step "Mounting target at $mnt"
-  run mount -o "$opts" "$P9_PART_ROOT" "$mnt"
+  run mount -o "$opts" "$OMP_PART_ROOT" "$mnt"
   run btrfs subvolume create "$mnt/@"
   run btrfs subvolume create "$mnt/@home"
   run btrfs subvolume create "$mnt/@log"
   run btrfs subvolume create "$mnt/@pkg"
   run umount "$mnt"
 
-  run mount -o "$opts,subvol=@" "$P9_PART_ROOT" "$mnt"
+  run mount -o "$opts,subvol=@" "$OMP_PART_ROOT" "$mnt"
   run mkdir -p "$mnt/boot" "$mnt/home" "$mnt/var/log" "$mnt/var/cache/pacman/pkg"
-  run mount -o "$opts,subvol=@home" "$P9_PART_ROOT" "$mnt/home"
-  run mount -o "$opts,subvol=@log"  "$P9_PART_ROOT" "$mnt/var/log"
-  run mount -o "$opts,subvol=@pkg"  "$P9_PART_ROOT" "$mnt/var/cache/pacman/pkg"
-  run mount "$P9_PART_BOOT" "$mnt/boot"
+  run mount -o "$opts,subvol=@home" "$OMP_PART_ROOT" "$mnt/home"
+  run mount -o "$opts,subvol=@log"  "$OMP_PART_ROOT" "$mnt/var/log"
+  run mount -o "$opts,subvol=@pkg"  "$OMP_PART_ROOT" "$mnt/var/cache/pacman/pkg"
+  run mount "$OMP_PART_BOOT" "$mnt/boot"
 }
 
 umount_target() {
@@ -212,18 +212,18 @@ umount_target() {
 # what we think we wrote. Every later step (fstab, grub.cfg, the kernel
 # cmdline) keys on these, and a wrong UUID is a silent unbootable install.
 read_back_uuids() {
-  if ((P9_DRY_RUN)); then
-    P9_UUID_BOOT="<boot-uuid>"
-    P9_UUID_ROOT="<root-uuid>"
+  if ((OMP_DRY_RUN)); then
+    OMP_UUID_BOOT="<boot-uuid>"
+    OMP_UUID_ROOT="<root-uuid>"
     return 0
   fi
-  P9_UUID_BOOT=$(blkid -s UUID -o value "$P9_PART_BOOT")
-  P9_UUID_ROOT=$(blkid -s UUID -o value "$P9_PART_ROOT")
-  [[ -n $P9_UUID_BOOT && -n $P9_UUID_ROOT ]] ||
-    die "could not read filesystem UUIDs back from $P9_PART_BOOT / $P9_PART_ROOT"
-  [[ $(blkid -s TYPE -o value "$P9_PART_BOOT") == ext4 ]] ||
-    die "$P9_PART_BOOT is not ext4 after mkfs -- petitboot would not read it"
-  [[ $(blkid -s TYPE -o value "$P9_PART_ROOT") == btrfs ]] ||
-    die "$P9_PART_ROOT is not btrfs after mkfs"
-  log "boot UUID $P9_UUID_BOOT (ext4), root UUID $P9_UUID_ROOT (btrfs)"
+  OMP_UUID_BOOT=$(blkid -s UUID -o value "$OMP_PART_BOOT")
+  OMP_UUID_ROOT=$(blkid -s UUID -o value "$OMP_PART_ROOT")
+  [[ -n $OMP_UUID_BOOT && -n $OMP_UUID_ROOT ]] ||
+    die "could not read filesystem UUIDs back from $OMP_PART_BOOT / $OMP_PART_ROOT"
+  [[ $(blkid -s TYPE -o value "$OMP_PART_BOOT") == ext4 ]] ||
+    die "$OMP_PART_BOOT is not ext4 after mkfs -- petitboot would not read it"
+  [[ $(blkid -s TYPE -o value "$OMP_PART_ROOT") == btrfs ]] ||
+    die "$OMP_PART_ROOT is not btrfs after mkfs"
+  log "boot UUID $OMP_UUID_BOOT (ext4), root UUID $OMP_UUID_ROOT (btrfs)"
 }
