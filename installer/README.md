@@ -95,7 +95,9 @@ Promontory xHCI quirks, one powerpc `exit_result` fix), `CONFIG_POWER9_CPU=y`,
 **That package does not exist yet.** The kernel is currently hand-installed
 (`cp vmlinux /boot/vmlinuz-power9`, `make modules_install`, a manual
 `mkinitcpio -k`). So the kernel package name is a **variable**, `--kernel` /
-`$P9_KERNEL_PKG`, defaulting to `linux-power9`.
+`$P9_KERNEL_PKG`. It now follows the pool: `share/kernel-pkg.conf` baked by
+`iso/build.sh` (the kernel the medium booted), else `linux-omarchy` for the
+baseline `omarchy-ppc64le` and `linux-power9` for `omarchy-power9`.
 
 What the installer expects of whatever you name:
 

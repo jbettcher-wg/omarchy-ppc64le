@@ -49,7 +49,9 @@ libusb-compat
 # PHB#30 fences while pacstrap is writing, 7.1 deadlocks eehd on
 # pci_rescan_remove_lock and the install hangs with no recovery. 0006 fixes
 # that and is only in our tree. Same 4K pages, same amdgpu=m.
-linux-power9
+# Rendered by iso/build.sh from the pool: linux-omarchy (POWER8-configured, same
+# patch set) for the baseline, linux-power9 for --power9.
+@P9_KERNEL_PKG@
 linux-atm
 linux-firmware-amdgpu
 linux-firmware-radeon
@@ -126,9 +128,13 @@ zsh
 #          questions -- and logo.txt, which the greeter measures and draws.
 gum
 omarchy
-# omarchy-theme-power9  the POWER9 wordmark the greeter draws, plus the
-#                       colours and wallpapers for the installed system.
-omarchy-theme-power9
+# omarchy-theme-powerpc  powerpc-classic and powerpc-after-dark, the generic
+#                        PowerPC themes the stock ISO ships. The greeter does
+#                        not use a theme: it draws $OMARCHY_PATH/logo.txt from
+#                        the omarchy package. omarchy-theme-power9 (OpenPOWER /
+#                        POWER9 branding) is deliberately not on the stock
+#                        medium; it stays installable from the pool.
+omarchy-theme-powerpc
 # jq, ttfx  omarchy-install-dashboard, which p9-configurator runs
 #           p9-install under: jq reads the install state file, ttfx
 #           animates the logo on the finish screen.

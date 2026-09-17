@@ -63,7 +63,14 @@ P9_BOOT_SIZE=2G
 #
 # For bring-up against Arch POWER's own kernels, pass --kernel linux-4k (4K
 # pages, matching the AC922 config) or --kernel linux (64K).
-P9_KERNEL_PKG="${P9_KERNEL_PKG:-linux-power9}"
+#
+# No fixed default here. The kernel follows the pool, resolved once the repo
+# name is known (below the platform check): command line, then the environment,
+# then share/kernel-pkg.conf baked by iso/build.sh, then linux-omarchy for the
+# baseline and linux-power9 for omarchy-power9. A fixed linux-power9 default put
+# a -mcpu=power9 kernel on POWER8 targets, and the baseline pool does not carry
+# linux-power9 at all.
+P9_KERNEL_PKG="${P9_KERNEL_PKG:-}"
 
 # Substitution 4. Our own repository, listed ahead of Arch POWER's [base] so
 # repo order does the overriding (nothing in [base] gets rebuilt).
@@ -157,7 +164,9 @@ Target selection (the installer enumerates, you choose -- it never guesses):
 
 Boot / kernel:
   --platform powernv|pseries   default: detected from /proc/cpuinfo
-  --kernel PKG                 kernel package to install (default: linux-power9)
+  --kernel PKG                 kernel package to install (default: follows the
+                               pool -- linux-omarchy for omarchy-ppc64le,
+                               linux-power9 for omarchy-power9)
   --cmdline "..."              extra kernel arguments for the boot entry
   --boot-size SIZE             /boot partition size (default 2G)
 
@@ -299,7 +308,6 @@ case "$P9_PLATFORM" in
   *) die "unknown platform '$P9_PLATFORM'" ;;
 esac
 
-log "kernel package: $P9_KERNEL_PKG"
 # Which pool this ISO was built for. Same precedence as the server list below:
 # command line, then the environment, then what iso/build.sh baked in. Without
 # this an ISO built for the optimised pool would install under the baseline's
@@ -309,6 +317,21 @@ if ((!P9_REPO_NAME_SET)) && [[ -z $P9_REPO_NAME_FROM_ENV && -r $P9_SHARE/repo-na
   _n=${_n%%#*}; _n=${_n// /}
   [[ -n $_n ]] && P9_REPO_NAME=$_n
 fi
+# The kernel follows the pool, now that the pool is known. --kernel and
+# $P9_KERNEL_PKG already set it; otherwise take what iso/build.sh baked in (the
+# kernel the medium booted), and failing that derive it from the repo name.
+if [[ -z $P9_KERNEL_PKG && -r $P9_SHARE/kernel-pkg.conf ]]; then
+  read -r _k < "$P9_SHARE/kernel-pkg.conf" || true
+  _k=${_k%%#*}; _k=${_k// /}
+  [[ -n $_k ]] && P9_KERNEL_PKG=$_k
+fi
+if [[ -z $P9_KERNEL_PKG ]]; then
+  case "$P9_REPO_NAME" in
+    omarchy-power9) P9_KERNEL_PKG=linux-power9 ;;
+    *)              P9_KERNEL_PKG=linux-omarchy ;;
+  esac
+fi
+log "kernel package: $P9_KERNEL_PKG"
 # One SigLevel decision covers both pools unless the operator splits them.
 P9_BASELINE_REPO_SIGLEVEL="${P9_BASELINE_REPO_SIGLEVEL:-$P9_REPO_SIGLEVEL}"
 # With nothing on the command line, take the list the ISO was built with.

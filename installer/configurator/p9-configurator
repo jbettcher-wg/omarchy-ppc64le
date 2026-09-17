@@ -499,11 +499,25 @@ P9_INSTALL="${P9_INSTALL:-/usr/local/share/omarchy-p9/p9-install}"
 # The baseline pool is the default everywhere: omarchy-ppc64le is built
 # POWER8-legal, so it runs on every ppc64le machine. An ISO built for the
 # POWER9-optimised pool (iso/build.sh --power9) bakes its own name into
-# share/repo-name.conf, which p9-install reads -- so this default is only the
-# last fallback, not an override of what the ISO was built with.
+# share/repo-name.conf.
+#
+# This file passes --repo-name and --kernel to p9-install explicitly on every
+# run, so its defaults are not fallbacks at all: they override what the ISO was
+# built with. Read the same baked files p9-install reads, so an ISO built
+# --power9 installs from omarchy-power9 and a baseline ISO installs the POWER8
+# kernel it booted, instead of forcing omarchy-ppc64le and linux-power9.
+_p9_share="${P9_SHARE:-$(dirname "$P9_INSTALL")/share}"
+_p9_baked() { local v=""; [[ -r $_p9_share/$1 ]] && read -r v < "$_p9_share/$1"; v=${v%%#*}; printf '%s' "${v// /}"; }
+: "${P9_REPO_NAME:=$(_p9_baked repo-name.conf)}"
 P9_REPO_NAME="${P9_REPO_NAME:-omarchy-ppc64le}"
-P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/omarchy-ppc64le}"
-P9_KERNEL="${P9_KERNEL:-linux-power9}"
+P9_REPO_SERVER="${P9_REPO_SERVER:-file:///run/archiso/bootmnt/p9repo/$P9_REPO_NAME}"
+: "${P9_KERNEL:=$(_p9_baked kernel-pkg.conf)}"
+if [[ -z $P9_KERNEL ]]; then
+  case "$P9_REPO_NAME" in
+    omarchy-power9) P9_KERNEL=linux-power9 ;;
+    *)              P9_KERNEL=linux-omarchy ;;
+  esac
+fi
 P9_LOCALE="${P9_LOCALE:-en_US.UTF-8}"
 
 # The disk the user picked, confirmed by serial. Naming a device is not enough

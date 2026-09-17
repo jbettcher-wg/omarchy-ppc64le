@@ -65,6 +65,7 @@ REPO_BASE_URL="${REPO_BASE_URL:-https://omappc64le.download}"
 BUNDLE_REPO=0
 PRINT_CONFIG=0
 REPO_SERVERS=()
+KERNEL_PKG=""                   # derived from REPO_NAME below unless --kernel says
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --repo-name) REPO_NAME="$2"; shift 2 ;;
     --pool) REPO_POOL="$2"; shift 2 ;;
     --power9) REPO_NAME="omarchy-power9"; shift ;;
+    --kernel) KERNEL_PKG="$2"; shift 2 ;;
     --print-config) PRINT_CONFIG=1; shift ;;
     *)  echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -93,6 +95,34 @@ fi
 REPO_DB="$REPO_POOL/$REPO_NAME.db"
 MEDIUM_DIR="p9repo/$REPO_NAME"
 DEFAULT_REPO_SERVER="$REPO_BASE_URL/$REPO_NAME"
+
+# The kernel follows the pool the same way the directory does, and for the same
+# reason: the live medium has to BOOT on the machine it is handed to before the
+# installer ever runs. linux-power9 is built -mcpu=power9, so a baseline ISO
+# carrying it takes an illegal instruction on a POWER8 long before there is a
+# console to say so -- and the baseline pool does not even contain it. The
+# baseline ships linux-omarchy, the same patch set configured POWER8. The name is
+# also baked into share/kernel-pkg.conf below, so p9-install installs the kernel
+# the medium booted rather than restating a default of its own.
+if [[ -z $KERNEL_PKG ]]; then
+  case "$REPO_NAME" in
+    omarchy-power9) KERNEL_PKG="linux-power9" ;;
+    *)              KERNEL_PKG="linux-omarchy" ;;
+  esac
+fi
+case "$REPO_NAME" in
+  omarchy-power9) BOOT_LABEL="Omarchy POWER9" ;;
+  *)              BOOT_LABEL="Omarchy ppc64le" ;;
+esac
+
+# Is $KERNEL_PKG in the pool's database? Matched on the db entry name
+# (<pkgname>-<pkgver>-<pkgrel>/), not a file glob: linux-omarchy-[0-9]* would
+# also match linux-omarchy-64k-..., and a 64K kernel standing in for the 4K one
+# is exactly the silent substitution this check exists to prevent.
+kernel_in_pool() {
+  [[ -f $REPO_DB ]] || return 1
+  bsdtar -tf "$REPO_DB" 2>/dev/null | grep -qE "^${KERNEL_PKG//./\\.}-[^-/]+-[^-/]+/\$"
+}
 
 # What p9-install will use when the operator names no --repo-server. A bundled
 # repo goes first so the install reads it at local speed; the network servers
@@ -112,6 +142,9 @@ if ((PRINT_CONFIG)); then
   printf 'pool directory: %s\n' "$REPO_POOL"
   printf 'repo database : %s%s\n' "$REPO_DB" \
     "$([[ -f $REPO_DB ]] && echo '  (present)' || echo '  (MISSING -- run repo-add first)')"
+  printf 'kernel        : %s%s\n' "$KERNEL_PKG" \
+    "$(kernel_in_pool && echo '  (in pool)' || echo '  (NOT IN POOL -- build it or pass --kernel)')"
+  printf 'boot label    : %s\n' "$BOOT_LABEL"
   printf 'default server: %s\n' "$DEFAULT_REPO_SERVER"
   printf 'medium path   : %s  (--bundle-repo: %s)\n' "$MEDIUM_DIR" \
     "$((BUNDLE_REPO))"
@@ -124,6 +157,7 @@ MKARCHISO="$ARCHISO/archiso/mkarchiso"
 [[ -x $MKARCHISO ]] || { echo "no mkarchiso at $MKARCHISO -- clone https://github.com/kth5/archiso" >&2; exit 1; }
 grep -q openpower "$MKARCHISO" || { echo "$MKARCHISO has no openpower bootmode; wrong archiso" >&2; exit 1; }
 [[ -f $REPO_DB ]] || { echo "no repo db at $REPO_DB -- run repo-add first" >&2; exit 1; }
+kernel_in_pool || { echo "kernel $KERNEL_PKG is not in [$REPO_NAME] ($REPO_DB) -- build it into the pool or pass --kernel" >&2; exit 1; }
 
 mkdir -p "$OUTDIR"
 # mkarchiso builds the airootfs as root, so everything it leaves behind is
@@ -140,6 +174,17 @@ mkdir -p "$WORKDIR"
 cp -a "$PROFILE" "$rendered"
 sed -i -e "s|@P9_REPO_DIR@|$REPO_POOL|" -e "s|@P9_REPO_NAME@|$REPO_NAME|" \
   "$rendered/pacman.conf"
+
+# The live kernel is rendered the same way: packages.ppc64le, grub.cfg and the
+# mkinitcpio preset all carry @P9_KERNEL_PKG@, and the preset's own filename has
+# to match the pkgbase or mkinitcpio builds no initramfs for the medium.
+_preset_dir="$rendered/airootfs/etc/mkinitcpio.d"
+mv "$_preset_dir/@P9_KERNEL_PKG@.preset" "$_preset_dir/$KERNEL_PKG.preset"
+sed -i -e "s|@P9_KERNEL_PKG@|$KERNEL_PKG|g" -e "s|@P9_BOOT_LABEL@|$BOOT_LABEL|g" \
+  "$rendered/packages.ppc64le" "$rendered/grub/grub.cfg" "$_preset_dir/$KERNEL_PKG.preset"
+if _left=$(grep -rlE "@P9_(KERNEL_PKG|BOOT_LABEL)@" "$rendered" 2>/dev/null) && [[ -n $_left ]]; then
+  echo "build.sh: unrendered kernel placeholder in:" >&2; printf '  %s\n' $_left >&2; exit 1
+fi
 
 # Sync the installer in from installer/ rather than keeping a second copy under
 # iso/profile/airootfs. The first real ISO shipped a p9-install from before the
@@ -166,6 +211,10 @@ printf '%s\n' "${_servers[@]}" | grep . > "$inst/share/repo-servers.conf"
 # own default repo name, and pacman would look for omarchy-ppc64le.db on a
 # server that only has the other one.
 printf '%s\n' "$REPO_NAME" > "$inst/share/repo-name.conf"
+# And the kernel with it: the installed system should run the kernel the medium
+# booted. p9-install derives the same default from the repo name, but a
+# `--kernel` given here (say linux-omarchy-64k) has to reach the install too.
+printf '%s\n' "$KERNEL_PKG" > "$inst/share/kernel-pkg.conf"
 
 # The live system's /etc/pacman.conf comes from the pacman package, so without
 # this the live environment knows nothing about [$REPO_NAME] -- pacman -Sy
@@ -215,6 +264,11 @@ _wantn=$(grep -oE '\$P9_SHARE/[A-Za-z0-9._-]+' "$inst/p9-install" | grep repo-na
 _wantn=${_wantn/\$P9_SHARE/$inst/share}
 [[ -r $_wantn ]] || { echo "build.sh: wrote the repo name, but p9-install reads $_wantn and it is not there" >&2; exit 1; }
 echo "==> verified p9-install will read ${_wantn#"$inst/"} ($REPO_NAME)"
+_wantk=$(grep -oE '\$P9_SHARE/[A-Za-z0-9._-]+' "$inst/p9-install" | grep kernel-pkg | head -1)
+[[ -n $_wantk ]] || { echo "build.sh: p9-install no longer reads a kernel-pkg file; update this guard" >&2; exit 1; }
+_wantk=${_wantk/\$P9_SHARE/$inst/share}
+[[ -r $_wantk ]] || { echo "build.sh: wrote the kernel name, but p9-install reads $_wantk and it is not there" >&2; exit 1; }
+echo "==> verified p9-install will read ${_wantk#"$inst/"} ($KERNEL_PKG)"
 if grep -q "@P9_REPO_DIR@" "$rendered/pacman.conf"; then
   echo "build.sh: @P9_REPO_DIR@ substitution failed" >&2; exit 1
 fi

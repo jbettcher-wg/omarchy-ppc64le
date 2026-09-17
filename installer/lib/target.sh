@@ -370,8 +370,10 @@ apply_theme_branding() {
   local src="$mnt/usr/share/omarchy/themes/power9/branding"
   local dst="$mnt/etc/skel/.config/omarchy/branding"
 
+  # The stock install ships omarchy-theme-powerpc, not omarchy-theme-power9, so
+  # the cube being absent is the normal case now, not a fault: log, don't warn.
   if [[ ! -d $src ]]; then
-    warn "omarchy-theme-power9 is not installed in the target; new accounts keep Omarchy's own logo"
+    log "branding: omarchy-theme-power9 not installed; new accounts keep Omarchy's own logo"
     return 0
   fi
 

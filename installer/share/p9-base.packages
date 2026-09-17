@@ -51,10 +51,11 @@ omarchy-settings
 omarchy-nvim
 # The theme is listed in iso/profile/packages.ppc64le too, but that is the LIVE
 # medium. Listing it there does nothing for the installed system, and no
-# package depends on it (the omarchy package ships upstream's 20 themes; power9
-# is only ours). Without this line a fresh install boots into stock Omarchy
-# theming instead of the POWER9 theme.
-omarchy-theme-power9
+# package depends on it (the omarchy package ships upstream's themes; ours are
+# separate). omarchy-theme-powerpc carries the two generic PowerPC themes the
+# stock install ships. omarchy-theme-power9 (OpenPOWER / POWER9 branding) is
+# deliberately not installed by default; `pacman -S omarchy-theme-power9` adds it.
+omarchy-theme-powerpc
 # The screensaver's animation engine. omarchy-launch-screensaver opens with
 # `omarchy-cmd-missing ttfx && exit 1`, so without it the idle screensaver at
 # 150s silently does nothing -- no error, no notification, nothing to debug.

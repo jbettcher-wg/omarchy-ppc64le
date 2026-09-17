@@ -1,4 +1,4 @@
-# mkinitcpio preset for the 'linux-power9' package on archiso.
+# mkinitcpio preset for the '@P9_KERNEL_PKG@' package on archiso.
 #
 # archiso's stock profile ships linux.preset, hardcoded to /boot/vmlinuz-linux.
 # The live medium runs our own kernel instead -- Arch POWER's 7.1 series lacks
@@ -8,10 +8,14 @@
 #
 # The image name follows the pkgbase written to /usr/lib/modules/<ver>/pkgbase,
 # which is what mkinitcpio's own pacman hook keys on.
+#
+# This file is a template. iso/build.sh renames it to <kernel>.preset and fills
+# @P9_KERNEL_PKG@ from the pool: linux-omarchy for the baseline, linux-power9
+# for --power9. The filename matters -- mkinitcpio keys the preset on it.
 
 PRESETS=('archiso')
 
-ALL_kver='/boot/vmlinuz-linux-power9'
+ALL_kver='/boot/vmlinuz-@P9_KERNEL_PKG@'
 ALL_config='/etc/mkinitcpio.conf.d/archiso.conf'
 
-archiso_image="/boot/initramfs-linux-power9.img"
+archiso_image="/boot/initramfs-@P9_KERNEL_PKG@.img"

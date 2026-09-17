@@ -370,7 +370,19 @@ selected with `--repo-name` / `--pool` (`--power9` for the optimised one) and
 
 A baseline ISO needs three things beyond a POWER8-legal package pool:
 
-1. **A POWER8 kernel. This is the blocker.** `packaging/ours/linux-power9` sets, in
+1. **A POWER8 kernel. Resolved: `linux-omarchy` / `linux-omarchy-64k`.** Those
+   are the linux-power9 recipe with the patch set unchanged and the config
+   differing in exactly the CPU selection (`CONFIG_POWER8_CPU=y`,
+   `CONFIG_TARGET_CPU="power8"`), built into the baseline pool. The kernel now
+   follows the pool rather than being fixed: `iso/build.sh` renders it into
+   `packages.ppc64le`, `grub/grub.cfg` and the mkinitcpio preset from
+   `@P9_KERNEL_PKG@` (baseline `linux-omarchy`, `--power9` `linux-power9`,
+   `--kernel` overrides), refuses to build if that kernel is not in the pool's
+   database, and bakes it into `share/kernel-pkg.conf` so `p9-install` and
+   `p9-configurator` install the kernel the medium booted. What follows is the
+   original finding, kept because it is why this was needed.
+
+   `packaging/ours/linux-power9` sets, in
    *both* `config.4k` and `config.64k`:
 
    ```
@@ -404,7 +416,10 @@ A baseline ISO needs three things beyond a POWER8-legal package pool:
 
 3. **Nothing else.** The bootloader path (`openpower.grub`, petitboot) is
    identical, and every other package on the medium comes from Arch POWER,
-   which is already POWER8 (§1).
+   which is already POWER8 (§1). (Correction: this undercounted. The kernel was
+   hardcoded as `linux-power9` in the medium's package list, grub.cfg and preset,
+   and in both `p9-install` and `p9-configurator`, so item 1 was not only a
+   package to build but a selection to wire through; see item 1.)
 
 ---
 
