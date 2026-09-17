@@ -227,19 +227,32 @@ class DirSource(Source):
         self.root = root
         self._index = None
         self._ambiguous = None
+        self._index_lock = threading.Lock()
 
     def _build_index(self):
+        # Built into locals and published last, under a lock. This used to
+        # assign `self._index = {}` BEFORE walking the tree, so with -j N every
+        # slot but the first saw a non-None index, returned at once, and looked
+        # its pkgbase up in a dict that was still empty: `no-recipe` in 0s for
+        # all of them while the one slot doing the walk (or the last one
+        # scheduled) succeeded. `plan` is single-threaded and -j 1 is serial,
+        # so neither ever hit it.
         if self._index is not None:
             return
-        self._index, self._ambiguous = {}, {}
-        for base, dirs in discover_recipes(self.root).items():
-            if len(dirs) == 1:
-                self._index[base] = dirs[0]
-            else:
-                # Two directories claim one pkgbase.  Never pick one: picking
-                # silently is the entire failure mode this indexing exists to
-                # remove, so record it and let the caller refuse.
-                self._ambiguous[base] = sorted(dirs)
+        with self._index_lock:
+            if self._index is not None:
+                return
+            index, ambiguous = {}, {}
+            for base, dirs in discover_recipes(self.root).items():
+                if len(dirs) == 1:
+                    index[base] = dirs[0]
+                else:
+                    # Two directories claim one pkgbase.  Never pick one: picking
+                    # silently is the entire failure mode this indexing exists to
+                    # remove, so record it and let the caller refuse.
+                    ambiguous[base] = sorted(dirs)
+            self._ambiguous = ambiguous
+            self._index = index
 
     def index(self):
         self._build_index()
