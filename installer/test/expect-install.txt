@@ -8,7 +8,7 @@
 expect 3600 archiso login:
 send root
 expect 900 root@archiso
-send mkdir -p /run/payload; mount -o ro /dev/disk/by-label/P9PAYLOAD /run/payload; echo "mounted=$?"
+send mkdir -p /run/payload; mount -o ro /dev/disk/by-label/OMPPAYLOAD /run/payload; echo "mounted=$?"
 expect 600 mounted=0
 send bash /run/payload/guest/run-install.sh
 expect 900 OMPG_BEGIN

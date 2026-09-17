@@ -185,7 +185,20 @@ machine; `--power9` builds one for the optimised pool, and `--repo-name` /
 `--pool` name the two halves by hand. The install needs a network connection:
 packages come from our pool and Arch POWER.
 
-Output goes to `iso/out/omarchy-YYYY.MM.DD-ppc64le.iso` (`--power9`: `omarchy-power9-YYYY.MM.DD-ppc64le.iso`)`. Booting it starts
+Output goes to `iso/out/omarchy-YYYY.MM.DD-ppc64le.iso`, or
+`omarchy-power9-YYYY.MM.DD-ppc64le.iso` for `--power9`. The name follows the
+pool the image installs, so a baseline ISO that runs on any ppc64le machine
+never carries a POWER9 name.
+
+**About the `omp` names.** The installer's programs, variables and paths use
+the prefix `omp`, short for *Omarchy for POWER*: `omp-install`,
+`omp-configurator`, `omp-firstboot`, `OMP_*` settings, `/usr/local/share/omp`,
+`/etc/omp.conf`. They were `p9-*` / `P9_*` / `omarchy-p9` while the port was
+POWER9-only. The rename came with the POWER8 baseline pool, because the same
+installer now serves both. Systems installed before the rename keep their old
+`p9-*` files; nothing migrates them.
+
+Booting it starts
 `omp-configurator`, which asks for keyboard, user, disk and timezone, and shows a
 summary with the target disk's serial for confirmation. It then runs
 `omp-install` under Omarchy's own install dashboard, so the install looks like

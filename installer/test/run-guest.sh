@@ -38,15 +38,15 @@ IMAGES="$HERE/images"
 LOGS="$HERE/logs"
 RUN="$HERE/run"
 
-ISO="${P9T_ISO:-$HOME/Downloads/archpower-current-powerpc64le.iso}"
-ISO_LABEL="${P9T_ISO_LABEL:-ARCH_202602}"
-SKIBOOT="${P9T_SKIBOOT:-/usr/share/qemu/skiboot.lid}"
-SKIROOT="${P9T_SKIROOT:-$WORK/skiroot/BOOTKERNEL}"
+ISO="${OMPT_ISO:-$HOME/Downloads/archpower-current-powerpc64le.iso}"
+ISO_LABEL="${OMPT_ISO_LABEL:-ARCH_202602}"
+SKIBOOT="${OMPT_SKIBOOT:-/usr/share/qemu/skiboot.lid}"
+SKIROOT="${OMPT_SKIROOT:-$WORK/skiroot/BOOTKERNEL}"
 
-SMP="${P9T_SMP:-2}"
-MEM="${P9T_MEM:-6G}"
-DISK_SIZE="${P9T_DISK_SIZE:-20G}"
-REPO_PORT="${P9T_REPO_PORT:-8099}"
+SMP="${OMPT_SMP:-2}"
+MEM="${OMPT_MEM:-6G}"
+DISK_SIZE="${OMPT_DISK_SIZE:-20G}"
+REPO_PORT="${OMPT_REPO_PORT:-8099}"
 
 mkdir -p "$WORK" "$IMAGES" "$LOGS" "$RUN"
 
@@ -69,7 +69,7 @@ cmd_prepare() {
   cp -a "$INSTALLER"/{omp-install,lib,bin,share,firstboot} "$WORK/payload/"
   cp -a "$HERE/guest" "$WORK/payload/guest"
   rm -rf "$WORK/payload/guest/.keep"
-  xorriso -as mkisofs -V P9PAYLOAD -o "$IMAGES/payload.iso" "$WORK/payload" >/dev/null 2>&1
+  xorriso -as mkisofs -V OMPPAYLOAD -o "$IMAGES/payload.iso" "$WORK/payload" >/dev/null 2>&1
   ls -la "$IMAGES/payload.iso"
 
   if [[ ! -f $IMAGES/target.qcow2 ]]; then
