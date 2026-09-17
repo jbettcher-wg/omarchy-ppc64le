@@ -12,7 +12,7 @@
 #
 #   omarchy-power9.db.tar.gz     the deployed database. This is what
 #                                /etc/pacman.conf's [omarchy-power9] serves,
-#                                what installer/p9-install writes into the
+#                                what installer/omp-install writes into the
 #                                target, and what iso/build.sh requires. It is
 #                                NOT updated by bq.
 #

@@ -66,7 +66,7 @@ for db, mine in sources:
 
 manifest = set()
 try:
-    for ln in open("installer/share/p9-base.packages"):
+    for ln in open("installer/share/omp-base.packages"):
         ln = ln.split("#")[0].strip()
         if ln:
             manifest.add(ln)
