@@ -185,6 +185,8 @@ if ((BUNDLE_REPO)); then
     "$REPO_NAME" > "$_res/pacman.conf"
   mapfile -t _want < <(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$PROJECT/installer/share/omp-base.packages" | awk 'NF')
   _want+=("$KERNEL_PKG" grub)
+  # omp-install adds the 64K-page twin of our kernels; bundle it too.
+  case "$KERNEL_PKG" in linux-omarchy | linux-power9) _want+=("$KERNEL_PKG-64k") ;; esac
   if ! _closure=$(pacman --config "$_res/pacman.conf" --dbpath "$_res/db" --arch powerpc64le \
         -Sp --print-format '%r %f' "${_want[@]}" 2>"$_res/err"); then
     echo "the install manifest does not resolve against [$REPO_NAME] + [base]:" >&2

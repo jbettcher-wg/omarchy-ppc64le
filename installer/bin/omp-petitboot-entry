@@ -56,6 +56,8 @@ Environment overrides (the installer sets these; standalone runs detect them):
   OMP_ROOTFLAGS    e.g. subvol=@   (empty for a whole-device root)
   OMP_CMDLINE      extra kernel arguments
   OMP_ENTRY_TITLE  menu title prefix, default "Omarchy POWER9"
+  OMP_DEFAULT_KERNEL  pkgbase listed first, i.e. the default entry; the
+                   rest follow in /usr/lib/modules order
 USAGE
 }
 
@@ -129,7 +131,19 @@ emit_entry() {
 # regeneration carries them. OMP_GRUB_TIMEOUT overrides (seconds).
 block="set timeout=${OMP_GRUB_TIMEOUT:-5}"$'\n'"set default=0"$'\n'
 found=0
+# The default kernel goes first: GRUB's default=0 and petitboot both take the
+# first entry. Glob order alone put 4K first only because "7.2.6" sorts before
+# "7.2.6-64k", which a version like 7.2.10 next to 7.2.9-64k would flip.
+_pkgbases=()
 for pkgbase_file in /usr/lib/modules/*/pkgbase; do
+  [[ -r $pkgbase_file ]] || continue
+  if [[ -n ${OMP_DEFAULT_KERNEL:-} && $(<"$pkgbase_file") == "$OMP_DEFAULT_KERNEL" ]]; then
+    _pkgbases=("$pkgbase_file" "${_pkgbases[@]}")
+  else
+    _pkgbases+=("$pkgbase_file")
+  fi
+done
+for pkgbase_file in "${_pkgbases[@]}"; do
   [[ -r $pkgbase_file ]] || continue
   pkgbase=$(<"$pkgbase_file")
   [[ -n $pkgbase ]] || continue

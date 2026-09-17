@@ -243,11 +243,14 @@ configure_initramfs() {
   run_loud arch-chroot "$mnt" mkinitcpio -P ||
     die "mkinitcpio failed in the target -- see $OMP_LOG_FILE. Nothing will boot until this is fixed."
 
-  local kernel_img="$mnt/boot/vmlinuz-$OMP_KERNEL_PKG"
-  local initrd_img="$mnt/boot/initramfs-$OMP_KERNEL_PKG.img"
-  [[ -f $kernel_img ]] || die "no $kernel_img -- the kernel package did not install one"
-  [[ -f $initrd_img ]] || die "no $initrd_img -- mkinitcpio produced nothing"
-  log "kernel $(stat -c%s "$kernel_img") bytes, initramfs $(stat -c%s "$initrd_img") bytes"
+  local k kernel_img initrd_img
+  for k in "$OMP_KERNEL_PKG" ${OMP_KERNEL_64K:+"$OMP_KERNEL_64K"}; do
+    kernel_img="$mnt/boot/vmlinuz-$k"
+    initrd_img="$mnt/boot/initramfs-$k.img"
+    [[ -f $kernel_img ]] || die "no $kernel_img -- the kernel package did not install one"
+    [[ -f $initrd_img ]] || die "no $initrd_img -- mkinitcpio produced nothing"
+    log "$k: kernel $(stat -c%s "$kernel_img") bytes, initramfs $(stat -c%s "$initrd_img") bytes"
+  done
 }
 
 # --- boot entry ---------------------------------------------------------------
@@ -288,6 +291,8 @@ HOOK
 # omp-petitboot-entry sources this file.
 OMP_CMDLINE="$OMP_CMDLINE"
 OMP_ENTRY_TITLE="$OMP_ENTRY_TITLE"
+# Listed first, so it is entry 0 and the default. Other kernels follow.
+OMP_DEFAULT_KERNEL="$OMP_KERNEL_PKG"
 EOF
 
   OMP_ROOT_UUID="$OMP_UUID_ROOT" \
@@ -295,6 +300,7 @@ EOF
     OMP_ROOTFLAGS="subvol=@" \
     OMP_CMDLINE="$OMP_CMDLINE" \
     OMP_ENTRY_TITLE="$OMP_ENTRY_TITLE" \
+    OMP_DEFAULT_KERNEL="$OMP_KERNEL_PKG" \
     arch-chroot "$mnt" /usr/local/bin/omp-petitboot-entry ||
     die "could not write the petitboot boot entry"
 

@@ -139,7 +139,7 @@ OMP_PASSWORD=""
 # theme (the plymouth hook is in share/omp-hooks.conf). quiet also quiets
 # hvc0; for a verbose boot, edit the entry at the petitboot menu.
 OMP_CMDLINE="${OMP_CMDLINE:-console=hvc0 console=tty0 quiet splash loglevel=3}"
-OMP_ENTRY_TITLE="${OMP_ENTRY_TITLE:-Omarchy POWER9}"
+OMP_ENTRY_TITLE="${OMP_ENTRY_TITLE:-}"             # follows the pool, set below
 OMP_REBOOT=0
 OMP_STAGE_FIRSTBOOT=1
 
@@ -167,6 +167,9 @@ Boot / kernel:
   --kernel PKG                 kernel package to install (default: follows the
                                pool -- linux-omarchy for omarchy-ppc64le,
                                linux-power9 for omarchy-power9)
+  --no-64k                     skip the 64K-page twin (<kernel>-64k) that is
+                               otherwise installed alongside; the 4K kernel
+                               stays the default boot entry either way
   --cmdline "..."              extra kernel arguments for the boot entry
   --boot-size SIZE             /boot partition size (default 2G)
 
@@ -233,6 +236,7 @@ while (($#)); do
     --serial) OMP_SERIAL="$2"; shift 2 ;;
     --platform) OMP_PLATFORM="$2"; shift 2 ;;
     --kernel) OMP_KERNEL_PKG="$2"; shift 2 ;;
+    --no-64k) OMP_KERNEL_64K=""; shift ;;
     --cmdline) OMP_CMDLINE="$2"; shift 2 ;;
     --boot-size) OMP_BOOT_SIZE="$2"; shift 2 ;;
     --manifest) OMP_MANIFEST="$2"; shift 2 ;;
@@ -332,6 +336,23 @@ if [[ -z $OMP_KERNEL_PKG ]]; then
   esac
 fi
 log "kernel package: $OMP_KERNEL_PKG"
+# Our kernels come in pairs, 4K and 64K pages, and both are installed by
+# default: the named kernel is the default boot entry, its -64k twin is the
+# next one. Only linux-omarchy and linux-power9 have a twin, so --kernel naming
+# anything else installs just that kernel, as does --no-64k.
+if [[ -z ${OMP_KERNEL_64K+x} ]]; then
+  case "$OMP_KERNEL_PKG" in
+    linux-omarchy | linux-power9) OMP_KERNEL_64K="$OMP_KERNEL_PKG-64k" ;;
+    *)                            OMP_KERNEL_64K="" ;;
+  esac
+fi
+[[ -n $OMP_KERNEL_64K ]] && log "64K kernel package: $OMP_KERNEL_64K"
+if [[ -z $OMP_ENTRY_TITLE ]]; then
+  case "$OMP_REPO_NAME" in
+    omarchy-power9) OMP_ENTRY_TITLE="Omarchy POWER9" ;;
+    *)              OMP_ENTRY_TITLE="Omarchy ppc64le" ;;
+  esac
+fi
 # One SigLevel decision covers both pools unless the operator splits them.
 OMP_BASELINE_REPO_SIGLEVEL="${OMP_BASELINE_REPO_SIGLEVEL:-$OMP_REPO_SIGLEVEL}"
 # With nothing on the command line, take the list the ISO was built with.
@@ -407,6 +428,7 @@ OMP_PACSTRAP_CONF="${OMP_PACSTRAP_CONF:-$OMP_WORKDIR/pacman.conf}"
 mapfile -t OMP_PACKAGES < <(read_manifest "$OMP_MANIFEST")
 log "manifest: ${#OMP_PACKAGES[@]} names from $OMP_MANIFEST, plus kernel $OMP_KERNEL_PKG"
 OMP_PACKAGES+=("$OMP_KERNEL_PKG")
+[[ -n $OMP_KERNEL_64K ]] && OMP_PACKAGES+=("$OMP_KERNEL_64K")
 # pSeries boots SLOF -> GRUB in the PReP partition, so the target needs grub
 # itself: grub-install, and the powerpc-ieee1275 modules it copies into
 # /boot/grub. PowerNV's petitboot only reads grub.cfg and needs none of it,
@@ -471,7 +493,7 @@ if ((!OMP_DRY_RUN)); then
 Installed to $OMP_DISK.
   /boot   $OMP_PART_BOOT  ext4   UUID=$OMP_UUID_BOOT
   /       $OMP_PART_ROOT  btrfs  UUID=$OMP_UUID_ROOT  subvol=@
-  kernel  $OMP_KERNEL_PKG
+  kernel  $OMP_KERNEL_PKG (default entry)${OMP_KERNEL_64K:+, $OMP_KERNEL_64K}
 
 Nothing was written to a bootloader: on PowerNV, petitboot is in firmware and
 reads /boot/grub/grub.cfg off the ext4 partition above. If the machine does not
