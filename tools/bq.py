@@ -1253,6 +1253,14 @@ def bwrap_prefix(sysroot):
 def build_env(sysroot, bwrapped):
     e = dict(os.environ)
     e["LANG"] = e["LC_ALL"] = "C.UTF-8"
+    # perl's scripts (pod2man, pod2text, ...) live in /usr/bin/{site,vendor,
+    # core}_perl, which only /etc/profile.d/perlbin.sh adds to PATH. A queue
+    # started from a non-login shell (ssh host 'cmd', setsid, systemd) never
+    # sources it, and ffmpeg's doc build died on "pod2man: command not found"
+    # on the POWER8 builder while the login shell on the POWER9 host was fine.
+    _path = e.get("PATH", "/usr/local/bin:/usr/bin").split(":")
+    e["PATH"] = ":".join(_path + [d for d in ("/usr/bin/site_perl", "/usr/bin/vendor_perl",
+                                              "/usr/bin/core_perl") if d not in _path])
     layers = [sysroot] if isinstance(sysroot, str) else list(sysroot)
     sus = [os.path.join(l, "usr") for l in layers]   # bottom layer first
     su = sus[-1]                                     # topmost
