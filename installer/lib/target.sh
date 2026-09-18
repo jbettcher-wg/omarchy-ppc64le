@@ -240,6 +240,32 @@ configure_initramfs() {
     warn "no $plymouth_override; the initramfs gets plymouth's default theme"
   fi
 
+  # /boot/vmlinuz-<pkgbase> is not shipped by the kernel package. mkinitcpio's
+  # pacman hook copies it out of /usr/lib/modules/<kver>/vmlinuz per kernel,
+  # and then -- when the transaction also touched a non-kernel trigger --
+  # rebuilds *every* preset with `mkinitcpio -P`. Installing two kernels, the
+  # 64K one was copied and built while the 4K one got a preset naming a kernel
+  # that was never copied:
+  #
+  #   ==> ERROR: Invalid option -k -- '/boot/vmlinuz-linux-omarchy' must be readable
+  #
+  # The boot entry needs that file regardless of who put it there, so put it
+  # there ourselves for every packaged kernel and let the hook be a bonus.
+  local _pb _kver _pbname _src _dst
+  for _pb in "$mnt"/usr/lib/modules/*/pkgbase; do
+    [[ -r $_pb ]] || continue
+    read -r _kver < <(printf '%s\n' "${_pb%/pkgbase}") || true
+    _kver=${_kver##*/}
+    read -r _pbname < "$_pb" || continue
+    _src="$mnt/usr/lib/modules/$_kver/vmlinuz"
+    _dst="$mnt/boot/vmlinuz-$_pbname"
+    [[ -f $_src ]] || { warn "$_pbname: no $_src in the target"; continue; }
+    if [[ ! -f $_dst ]]; then
+      install -Dm644 "$_src" "$_dst"
+      log "copied vmlinuz for $_pbname (mkinitcpio's hook had not)"
+    fi
+  done
+
   run_loud arch-chroot "$mnt" mkinitcpio -P ||
     die "mkinitcpio failed in the target -- see $OMP_LOG_FILE. Nothing will boot until this is fixed."
 
