@@ -47,7 +47,18 @@ QUEUE=$BQ_BUILDROOT/queue.json
 bq() { python3 "$PROJECT/tools/bq.py" --buildroot "$BQ_BUILDROOT" "$@"; }
 
 do_build() {
-  bq build -q "$QUEUE" --pkgdest "$BQ_REPO" --repo-db "" --timeout 21600 "$@"
+  # One package at a time is bq's default, and a serial run keeps
+  # /etc/makepkg.conf's MAKEFLAGS -- which is commented out on the POWER8
+  # builder, so every single-package run compiled with make -j1: ffmpeg took
+  # 568s and nautilus 517s on a 96-thread box. Give a serial run the machine
+  # unless the caller says otherwise; -j/--make-jobs/--job-budget still win.
+  local jobs=()
+  case " $* " in
+    *" -j"* | *" --jobs"* | *" --make-jobs"* | *" --job-budget"*) ;;
+    *) jobs=(--make-jobs "$(( $(nproc) - 8 > 1 ? $(nproc) - 8 : 1 ))") ;;
+  esac
+  bq build -q "$QUEUE" --pkgdest "$BQ_REPO" --repo-db "" --timeout 21600 \
+     "${jobs[@]}" "$@"
 }
 
 case "${1:-}" in
