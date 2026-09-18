@@ -150,6 +150,7 @@ if ((PRINT_CONFIG)); then
     "$(kernel_in_pool && echo '  (in pool)' || echo '  (NOT IN POOL -- build it or pass --kernel)')"
   printf 'boot label    : %s\n' "$BOOT_LABEL"
   printf 'iso name      : %s-<date>-ppc64le.iso\n' "$ISO_NAME"
+  printf 'package cache : %s\n' "${ISO_CACHE:-/var/cache/omarchy-iso/pkg}"
   printf 'default server: %s\n' "$DEFAULT_REPO_SERVER"
   printf 'medium path   : %s  (--bundle-repo: %s)\n' "$MEDIUM_DIR" \
     "$((BUNDLE_REPO))"
@@ -227,6 +228,25 @@ mkdir -p "$WORKDIR"
 cp -a "$PROFILE" "$rendered"
 sed -i -e "s|@OMP_REPO_DIR@|$REPO_POOL|" -e "s|@OMP_REPO_NAME@|$REPO_NAME|" \
   "$rendered/pacman.conf"
+
+# Give the image build its own package cache. mkarchiso pacstraps with this
+# pacman.conf, and with no CacheDir it uses the HOST's /var/cache/pacman/pkg --
+# where a package of the same version but different content (a same-version
+# rebuild of ours, or the POWER9 pool's build of a package the baseline also
+# has) fails the checksum and aborts the whole build:
+#
+#   File /var/cache/pacman/pkg/coreutils-9.11-2-powerpc64le.pkg.tar.zst is
+#   corrupted (invalid or corrupted package (checksum)).
+#
+# It bit three separate builds. A cache of its own also means an ISO build
+# never adds to, or invalidates, what the host has installed. Not under
+# $WORKDIR: that is wiped every run, and re-downloading [base] each time is
+# minutes of network for nothing.
+ISO_CACHE="${ISO_CACHE:-/var/cache/omarchy-iso/pkg}"
+mkdir -p "$ISO_CACHE"
+sed -i -e "s|^#CacheDir .*|CacheDir    = $ISO_CACHE/|" "$rendered/pacman.conf"
+grep -q "^CacheDir" "$rendered/pacman.conf" ||
+  { echo "build.sh: could not set CacheDir in the rendered pacman.conf" >&2; exit 1; }
 
 # The live kernel is rendered the same way: packages.ppc64le, grub.cfg and the
 # mkinitcpio preset all carry @OMP_KERNEL_PKG@, and the preset's own filename has
