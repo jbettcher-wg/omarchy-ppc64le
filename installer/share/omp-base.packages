@@ -86,6 +86,11 @@ egl-wayland
 gnome-keyring
 gum
 plymouth
+
+# POWER9 NX gzip accelerator: the udev rule and group that make
+# /dev/crypto/nx-gzip usable without sudo. Inert on a 4K kernel, which has no
+# CONFIG_PPC_VAS and therefore no device.
+omarchy-nx-gzip
 aether
 alsa-utils
 asdcontrol

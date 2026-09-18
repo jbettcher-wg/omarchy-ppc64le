@@ -450,11 +450,21 @@ configure_users() {
   fi
 
   step "Creating $OMP_USER"
+  # nxgzip, when omarchy-nx-gzip created it: the udev rule's TAG+="uaccess"
+  # already covers a seat login, but not this account over ssh, which is how a
+  # headless POWER box is used. Checked rather than assumed -- useradd fails
+  # outright on a group that does not exist, and that would leave a
+  # partitioned, pacstrapped target with no account at all.
+  local _groups=wheel
+  if arch-chroot "$mnt" getent group nxgzip >/dev/null 2>&1; then
+    _groups=wheel,nxgzip
+  fi
   if ((OMP_DRY_RUN)); then
-    printf '  would useradd -m -G wheel %s\n' "$OMP_USER" >&2
+    printf '  would useradd -m -G %s %s\n' "$_groups" "$OMP_USER" >&2
     return 0
   fi
-  arch-chroot "$mnt" useradd -m -G wheel -s /bin/bash "$OMP_USER" >>"$OMP_LOG_FILE" 2>&1
+  log "groups: $_groups"
+  arch-chroot "$mnt" useradd -m -G "$_groups" -s /bin/bash "$OMP_USER" >>"$OMP_LOG_FILE" 2>&1
   # install -D, not a bare redirect: /etc/sudoers.d only exists once sudo is
   # installed, and a target that has not got there yet is exactly the case a
   # bare `>` fails on ("No such file or directory") after the disk is already
