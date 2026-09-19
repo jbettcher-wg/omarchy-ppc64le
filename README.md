@@ -93,7 +93,12 @@ that is the default the tools assume.
 
 ### POWERarm: aarch64 software on POWER9
 
-<a href="https://github.com/jbettcher-wg/POWERarm"><img src="docs/images/powerarm-logo.png" alt="POWERarm" width="170" align="right"></a>
+<a href="https://github.com/jbettcher-wg/POWERarm">
+  <picture align="right">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/powerarm-logo-dark.png">
+    <img src="docs/images/powerarm-logo-light.png" alt="POWERarm — aarch64 on POWER" width="170" align="right">
+  </picture>
+</a>
 
 [POWERarm](https://github.com/jbettcher-wg/POWERarm) runs aarch64 binaries on
 ppc64le, so software that was never built for POWER still runs on it. Below is
