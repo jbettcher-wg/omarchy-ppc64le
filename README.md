@@ -91,6 +91,19 @@ that is the default the tools assume.
 
 ![Obsidian on Electron 43, cliamp playing Omarchy Radio, and Pinta 3.1.2 on .NET 10](docs/images/apps.png)
 
+### POWERarm: aarch64 software on POWER9
+
+<a href="https://github.com/jbettcher-wg/POWERarm"><img src="docs/images/powerarm-logo.png" alt="POWERarm" width="170" align="right"></a>
+
+[POWERarm](https://github.com/jbettcher-wg/POWERarm) runs aarch64 binaries on
+ppc64le, so software that was never built for POWER still runs on it. Below is
+Visual Studio Code -- the **arm64** build, reporting `OS: Linux arm64`, on
+Electron 42 / Chromium 148 / Node 24 -- running on Omarchy on an AC922, on our
+own 7.2.6 64K-page kernel. The file open in it is `PPC64Assembler.h` from the
+ppc64le JavaScriptCore port: an aarch64 editor being used to write POWER code.
+
+![Visual Studio Code, the arm64 build, running under POWERarm on Omarchy ppc64le](docs/images/powerarm-vscode.png)
+
 ### Not available yet
 
 | Package | Why |
