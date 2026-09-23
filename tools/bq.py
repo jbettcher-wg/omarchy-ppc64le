@@ -73,6 +73,7 @@ import time
 import fcntl
 import shutil
 import tarfile
+import tempfile
 import argparse
 import functools
 import threading
@@ -599,25 +600,84 @@ def _literal_versions(pkgbuild):
     return out
 
 
+_SRCINFO_VER_CACHE = {}
+
+
+def _srcinfo_versions(recipedir):
+    """pkgver/pkgrel/epoch from a .SRCINFO, as a complete set or not at all."""
+    si = os.path.join(recipedir, ".SRCINFO")
+    if not os.path.isfile(si):
+        return {}
+    out = {}
+    for ln in open(si, encoding="utf-8", errors="replace"):
+        k, _, val = ln.partition("=")
+        k, val = k.strip(), val.strip()
+        if k in ("pkgver", "pkgrel", "epoch") and val and k not in out:
+            out[k] = val
+    return out
+
+
+def _printsrcinfo_versions(recipedir):
+    """Ask makepkg what the recipe actually computes, in a throwaway copy.
+
+    A recipe whose pkgver is computed (qt6's pkgver=${_pkgver/-/}) has no
+    literal to read, and its .SRCINFO is only as fresh as the last person to
+    regenerate one.  Sourcing is the only way to get the real answer, so do it
+    on a copy: nothing is written back beside the recipe, the same rule
+    recipe-sync.py follows."""
+    if recipedir in _SRCINFO_VER_CACHE:
+        return _SRCINFO_VER_CACHE[recipedir]
+    out = {}
+    tmp = None
+    try:
+        tmp = tempfile.mkdtemp(prefix="bq-srcinfo.", dir=BUILDROOT
+                               if os.path.isdir(BUILDROOT) else None)
+        dest = os.path.join(tmp, os.path.basename(recipedir))
+        shutil.copytree(recipedir, dest, symlinks=True)
+        # A stale .SRCINFO in the copy is what we are trying to get away from.
+        try:
+            os.unlink(os.path.join(dest, ".SRCINFO"))
+        except OSError:
+            pass
+        r = subprocess.run(["makepkg", "--config", SYSTEM_MAKEPKG_CONF,
+                            "--printsrcinfo"], cwd=dest, capture_output=True,
+                           text=True, timeout=120)
+        if r.returncode == 0:
+            for ln in (r.stdout or "").splitlines():
+                k, _, val = ln.partition("=")
+                k, val = k.strip(), val.strip()
+                if k in ("pkgver", "pkgrel", "epoch") and val and k not in out:
+                    out[k] = val
+    except Exception:
+        out = {}
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+    _SRCINFO_VER_CACHE[recipedir] = out
+    return out
+
+
 def recipe_version(recipedir):
     """epoch:pkgver-pkgrel for a recipe directory, or None if it cannot be
-    read without sourcing the recipe.
+    determined.
 
-    The PKGBUILD is authoritative and .SRCINFO is only a fallback, the same
-    way round as read_recipe: Arch POWER edits a PKGBUILD and leaves Arch's
-    .SRCINFO beside it un-regenerated, so the .SRCINFO can name a version that
-    nothing will ever build."""
+    The PKGBUILD is authoritative.  Where it does not spell the version out --
+    a computed pkgver -- ask makepkg rather than reading the .SRCINFO beside
+    it, because Arch POWER edits a PKGBUILD and leaves Arch's .SRCINFO
+    un-regenerated, so the .SRCINFO can name a version nothing will build.
+
+    The three sources are never mixed.  They used to be: the fallback filled
+    only the keys the PKGBUILD had not supplied, so qt6-declarative -- literal
+    pkgrel=2, computed pkgver, .SRCINFO left at 6.11.1-3 -- resolved to
+    6.11.1-2, a version in neither file.  Being below the 6.11.2-2 in the pool,
+    it tripped the never-downgrade guard and the package silently left the
+    queue as missing_recipe.  Thirty-three recipes in the 2026-09-23 baseline
+    rebuild were in that state, most of qt6 among them."""
     if not recipedir:
         return None
     v = _literal_versions(os.path.join(recipedir, "PKGBUILD"))
     if "pkgver" not in v or "pkgrel" not in v:
-        si = os.path.join(recipedir, ".SRCINFO")
-        if os.path.isfile(si):
-            for ln in open(si, encoding="utf-8", errors="replace"):
-                k, _, val = ln.partition("=")
-                k, val = k.strip(), val.strip()
-                if k in ("pkgver", "pkgrel", "epoch") and val and k not in v:
-                    v[k] = val
+        v = _printsrcinfo_versions(recipedir) or _srcinfo_versions(recipedir)
     if "pkgver" not in v:
         return None
     ver = "%s-%s" % (v["pkgver"], v.get("pkgrel", "1"))
