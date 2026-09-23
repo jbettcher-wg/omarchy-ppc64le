@@ -57,3 +57,4 @@ isa30-classified.txt
 
 # Generated rebuild lists (see CLAUDE.local.md).
 rebuild-list-*.txt
+rebuild-missing-recipe-*.txt
