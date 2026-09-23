@@ -43,3 +43,8 @@ __pycache__/
 
 # Built ISO images (multi-GB). Reproducible from iso/build.sh + the repo.
 iso/out/
+
+# Local agent notes: machine-specific operational detail (paths, current build
+# state, what is broken today). The tracked docs/ carry the design; this file
+# is deliberately untracked so it can be edited freely as the machine changes.
+CLAUDE.local.md
