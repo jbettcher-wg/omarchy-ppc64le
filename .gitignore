@@ -54,3 +54,6 @@ CLAUDE.local.md
 # conclusions live in CLAUDE.local.md.
 isa30-*.tsv
 isa30-classified.txt
+
+# Generated rebuild lists (see CLAUDE.local.md).
+rebuild-list-*.txt
