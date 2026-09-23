@@ -18,6 +18,9 @@
 # behind a runtime AT_HWCAP2 check (see section 5 of the doc).
 set -uo pipefail
 
+OBJDUMP=$(command -v powerpc64le-unknown-linux-gnu-objdump 2>/dev/null || command -v powerpc64le-linux-gnu-objdump 2>/dev/null || command -v objdump)
+export OBJDUMP
+
 scan_one() {
   local pkg=$1 d total=0 f n8 n9
   d=$(mktemp -d "${TMPDIR:-/var/tmp}/isa30.XXXXXX")
@@ -26,8 +29,8 @@ scan_one() {
     # ELF, 64-bit PowerPC only; skips scripts, data and foreign binaries.
     [[ $(od -An -tx1 -N4 "$f" 2>/dev/null) == " 7f 45 4c 46" ]] || continue
     file -b "$f" | grep -q '64-bit LSB .*PowerPC' || continue
-    n8=$(objdump -d --no-show-raw-insn -M power8 "$f" 2>/dev/null | grep -cP '^\s+[0-9a-f]+:\s+\.long\b')
-    n9=$(objdump -d --no-show-raw-insn -M power9 "$f" 2>/dev/null | grep -cP '^\s+[0-9a-f]+:\s+\.long\b')
+    n8=$("$OBJDUMP" -d --no-show-raw-insn -M power8 "$f" 2>/dev/null | grep -cP '^\s+[0-9a-f]+:\s+\.long\b')
+    n9=$("$OBJDUMP" -d --no-show-raw-insn -M power9 "$f" 2>/dev/null | grep -cP '^\s+[0-9a-f]+:\s+\.long\b')
     total=$((total + n8 - n9))
   done < <(find "$d" -type f -size +1k -print0)
   # Packages extract some directories read-only (etc/bluetooth); rm needs write.

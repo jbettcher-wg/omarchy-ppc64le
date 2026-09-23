@@ -33,6 +33,7 @@ export BQ_BUILDROOT=${BQ_BUILDROOT:-/var/tmp/omarchy-bq-ppc64le}
 export BQ_STATE=${BQ_STATE:-$BQ_BUILDROOT/state.json}
 export BQ_REPO=${BQ_REPO:-$PROJECT/repo-ppc64le}
 export TMPDIR=$BQ_BUILDROOT/tmp
+export _power8_compat=1 _power8=1 GOPPC64=power8
 
 # Refuse to build without the drop-in: without it this is a POWER9 build that
 # lands in the baseline pool, which is worse than no build -- the baseline is
@@ -55,7 +56,7 @@ do_build() {
   local jobs=()
   case " $* " in
     *" -j"* | *" --jobs"* | *" --make-jobs"* | *" --job-budget"*) ;;
-    *) jobs=(--make-jobs "$(( $(nproc) - 8 > 1 ? $(nproc) - 8 : 1 ))") ;;
+    *) jobs=(--make-jobs 96) ;;
   esac
   bq build -q "$QUEUE" --pkgdest "$BQ_REPO" --repo-db "" --timeout 21600 \
      "${jobs[@]}" "$@"

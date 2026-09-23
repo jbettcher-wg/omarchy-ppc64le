@@ -99,11 +99,9 @@ TOOLS = os.path.join(OMARCHY, "tools")
 # sysroot-add.sh and stage-deps.sh read the same variable.
 REPO = os.environ.get("BQ_REPO", os.path.join(OMARCHY, "repo"))
 
-# Build under /tmp by default.  /tmp here is a 221 GiB tmpfs on a 440 GiB
-# machine, which is ideal for the ~850 small-to-medium packages and wrong for
-# chromium/llvm/gcc -- pass --buildroot to put those on the NVMe instead.
-# Never $HOME: an earlier run left 25 GiB there.
-BUILDROOT = os.environ.get("BQ_BUILDROOT", "/tmp/omarchy-bq")
+# Build under /var/tmp by default (NVMe disk). Building under /tmp uses tmpfs
+# RAM and exhausts memory/inodes on large package closures.
+BUILDROOT = os.environ.get("BQ_BUILDROOT", "/var/tmp/omarchy-bq")
 # Concurrent bq runs (a side build alongside a long queue) otherwise share one
 # state file AND one temp path; the second os.replace() then fails with
 # FileNotFoundError because the first already renamed the temp away, killing

@@ -36,7 +36,7 @@
 #   REPO=<dir> REPO_NAME=<name> ...   # another pool, e.g. repo-ppc64le / omarchy-ppc64le
 set -uo pipefail
 
-REPO=${REPO:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/repo}
+REPO=$(readlink -f "${REPO:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/repo}")
 # The database name follows the repo, so the baseline pool publishes as
 # REPO=.../repo-ppc64le REPO_NAME=omarchy-ppc64le tools/repo-publish.sh --commit
 REPO_NAME=${REPO_NAME:-omarchy-power9}
