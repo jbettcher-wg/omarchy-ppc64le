@@ -21,6 +21,12 @@
 # Environment (defaults shown):
 #   BQ_BUILDROOT=/var/tmp/omarchy-bq-ppc64le  build tree, sysroot, state, tmp
 #   BQ_REPO=<project>/repo-ppc64le            package pool and output
+#   BQ_SYSTEM_MAKEPKG_CONF=/etc/makepkg.conf  the system config bq inherits,
+#     and whose .d/*.conf it sources.  Set it when / is not the ppc64le root:
+#     a queue driven from inside the POWERarm aarch64 sleeve otherwise
+#     inherits CARCH=aarch64 and -march=armv8-a.  The drop-in below asserts
+#     -mcpu=power8 survived, so a wrong config fails the build rather than
+#     filling the baseline pool with the wrong architecture.
 #
 # Before publishing anything built here, scan it for ISA 3.0 instructions; the
 # compiler flags cannot see recipes that pin POWER9 themselves.
