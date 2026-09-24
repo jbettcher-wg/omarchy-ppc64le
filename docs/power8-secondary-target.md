@@ -241,6 +241,79 @@ where a default exists:
   `--baseline-repo-name` / `--baseline-repo-server` to layer the optimised
   pool ahead of the baseline in one `/etc/pacman.conf`.
 
+### The toolchain comes from the pool, and must itself be POWER8-clean
+
+This is the failure that motivated the 2026-09 full rebuild, and it is not a
+flags problem. bq runs makepkg under bwrap with the pool's packages staged
+into a sysroot overlaid on `/usr`. **The compiler and its static libraries
+therefore come from the pool, not from the host.** Setting `-mcpu=power8` for
+a build says nothing about the ISA baked into the `libgcc.a` that build links
+against.
+
+The concrete bug: the baseline pool's gcc had been configured POWER9, so its
+`libgcc.a` carried ISA 3.0 in the float128 helper `__fixunstfdi`. That object
+was linked into ordinary baseline packages, and `flock` SIGILL'd on POWER8 —
+in libgcc, not in anything the recipe wrote.
+
+The fix is in the gcc recipe (pkgrel 2, 2026-09-17): configure `--with-cpu`
+from the build's own CFLAGS, so a pool built `-mcpu=power8` gets a gcc whose
+own default is `power8`. **A pool that ships its own toolchain must rebuild
+that toolchain first; everything compiled before it is suspect.** In the
+2026-09 sweep the packages built before the gcc fix carried a constant 627
+ISA 3.0 instructions across 16 unrelated packages and exact multiples
+elsewhere — compiler codegen behind no runtime check — while everything
+rebuilt after it came out clean.
+
+#### Verifying a toolchain, and what "clean" actually looks like
+
+A correct `libgcc.a` **is not zero**, and expecting zero is how this gets
+re-litigated. The float128 hardware variants are kept on purpose and selected
+at runtime. For gcc `16.1.1+r346+g4e03491b401d-2`, verified 2026-09-23:
+
+| object | ISA 3.0 | verdict |
+|---|---:|---|
+| `libgcc_s.so.1` (shipped runtime lib) | **0** | must be zero |
+| `_fixunstfdi.o` (the function that SIGILL'd) | **0** | must be zero |
+| `addkf3-sw.o`, `subkf3-sw.o`, `mulkf3-sw.o`, `divkf3-sw.o` | **0** | the path that links on POWER8 |
+| `_divkc3-hw.o` | 78 | expected — `-hw` variant |
+| `float128-hw.o` | 24 | expected — `-hw` variant |
+| `_mulkc3-hw.o` | 23 | expected — `-hw` variant |
+| `float128-p10.o` | 4 | expected — Power10 variant |
+| `_powikf2-hw.o` | 3 | expected — `-hw` variant |
+| **total across 268 members** | **132** | all confined to `-hw`/`-p10` |
+
+`float128-ifunc.o` is the dispatcher that chooses between them. The rule is
+positional, not numeric: **ISA 3.0 is acceptable only in a member whose name
+ends `-hw` or `-p10`.** One instruction in a `-sw` member, in
+`libgcc_s.so.1`, or in `_fixunstfdi.o` is a real defect.
+
+```sh
+# NOTE: under the POWERarm sleeve /usr/bin/objdump is aarch64-only and cannot
+# disassemble PowerPC at all -- it fails with "architecture UNKNOWN", which
+# reads like a corrupt object rather than a wrong tool. Run this over ssh to
+# localhost, or use the powerpc64le-unknown-linux-gnu- prefixed binutils.
+bsdtar -xf repo-ppc64le/gcc-*-powerpc64le.pkg.tar.zst \
+        usr/lib/gcc/powerpc64le-unknown-linux-gnu/16/libgcc.a
+mkdir x && cd x && ar x ../usr/lib/gcc/*/16/libgcc.a
+
+ISA30='mtvsrdd|mfvsrld|modsd|modud|cnttzd|cnttzw|darn|mcrxrx|setb|addpcis|xsaddqp|xssubqp|xsmulqp|xsdivqp|xscvdpqp|xscvqpdp'
+for o in *.o; do
+  n=$(objdump -d "$o" 2>/dev/null | grep -cEw "$ISA30")
+  [ "$n" -gt 0 ] && echo "$o: $n"
+done
+```
+
+Read `__fixunstfdi` directly when in doubt. On a correct build it is the
+software path — `fcmpu`, `fadd`, `fmr`, `mffs`, plus `xxlxor`, `xscvdpsxws`
+and `stxsdx`, all ISA 2.06/2.07. Any `xsaddqp`-family quad-precision
+instruction there means the hardware path was compiled in unconditionally:
+
+```sh
+objdump -d _fixunstfdi.o | sed -n '/__fixunstfdi>:/,/^$/p'
+```
+
+---
+
 ---
 
 ## 4. Which recipes need a toggle
