@@ -1,0 +1,73 @@
+From 381b2f2bc1ce47f37a3154c6850c0617c6d837f0 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 23 Sep 2026 21:24:34 -0600
+Subject: [PATCH 0/3] powerpc: exit-path return values under CONFIG_GENERIC_ENTRY
+To: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>,
+    Nicholas Piggin <npiggin@gmail.com>,
+    Christophe Leroy <chleroy@kernel.org>,
+    linuxppc-dev@lists.ozlabs.org,
+    linux-kernel@vger.kernel.org
+
+Three related fixes in the powerpc entry/exit path, all reachable since
+powerpc selected CONFIG_GENERIC_ENTRY in 7.2.
+
+Patches 1 and 3 concern the value the exit assembly in interrupt_64.S uses
+to decide between restoring the full register set from pt_regs and the fast
+path that does not. In both cases an accumulated _TIF_RESTOREALL is
+discarded before the assembly can test it -- patch 1 by returning the
+per-restart value instead of the accumulated one, patch 3 by clearing
+exit_flags after the exit work that sets it has already run rather than
+before.
+
+Patch 2 is independent and user-visible. When seccomp or ptrace skips a
+syscall, powerpc returns -ENOSYS instead of the value the tracer already
+stored in pt_regs, so every SECCOMP_RET_ERRNO(x) arrives in userspace as
+ENOSYS. It was found from a sandboxed Chromium reporting ENOSYS for
+broker-denied opens.
+
+  1/3  powerpc/64: return the accumulated exit_result from syscall_exit_restart()
+  2/3  powerpc/syscall: keep the seccomp/ptrace return value when the syscall is skipped
+  3/3  powerpc: clear exit_flags before the interrupt exit work runs
+
+Testing
+-------
+All three have been built into 7.2.6 and are running as the daily driver on
+an IBM AC922 (2x POWER9, 176 threads, 64K pages) since 2026-09-16, through
+full desktop and heavy package-build workloads.
+
+Patch 2 additionally has a standalone reproducer: a SECCOMP_RET_ERRNO
+filter checked over five errno values through both glibc's scv 0 path and
+raw sc. Every case delivers the filter's errno with the patch applied and
+ENOSYS without it. I am happy to send it as a seccomp selftest if that is
+the preferred form.
+
+Caveats
+-------
+No Fixes: tags. These were developed against a release tarball rather than
+a git tree, so I have not identified the introducing commits; I expect all
+three date from the generic-entry conversion. Happy to add the tags if
+someone can point me at the right commits, or to respin against mainline --
+the series is on 7.2.6 and applies cleanly there.
+
+I am not a powerpc maintainer and would welcome correction on patches 1 and
+3 in particular: the mechanism is clear from the code, but I have not
+constructed a targeted reproducer for either, so the evidence for them is
+"the machine runs correctly with them applied" rather than a demonstrated
+failure without.
+
+Jordan Bettcher (3):
+  powerpc/64: return the accumulated exit_result from
+    syscall_exit_restart()
+  powerpc/syscall: keep the seccomp/ptrace return value when the syscall
+    is skipped
+  powerpc: clear exit_flags before the interrupt exit work runs
+
+ arch/powerpc/include/asm/entry-common.h |  9 +++++++++
+ arch/powerpc/kernel/interrupt.c         | 18 ++++++++++++++----
+ arch/powerpc/kernel/syscall.c           | 11 +++++++++++
+ 3 files changed, 34 insertions(+), 4 deletions(-)
+
+-- 
+2.55.0
+

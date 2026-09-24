@@ -1,0 +1,79 @@
+From 381b2f2bc1ce47f37a3154c6850c0617c6d837f0 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 23 Sep 2026 21:24:24 -0600
+Subject: [PATCH 3/3] powerpc: clear exit_flags before the interrupt exit work
+ runs
+To: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>,
+    Nicholas Piggin <npiggin@gmail.com>,
+    Christophe Leroy <chleroy@kernel.org>,
+    linuxppc-dev@lists.ozlabs.org,
+    linux-kernel@vger.kernel.org
+
+interrupt_exit_user_prepare() cleared current_thread_info()->exit_flags at
+its head, with the comment "Clear exit_flags so only flags set during this
+exit are visible".
+
+For the syscall path that placement is correct: syscall_exit_prepare()
+runs before the exit work. For interrupts it is not. The work that sets
+exit_flags -- arch_do_signal_or_restart() setting _TIF_RESTOREALL -- runs
+inside irqentry_exit(), which has already completed by the time the
+assembly calls interrupt_exit_user_prepare(). Clearing there discards the
+flag the work just set, so the full-restore path is never taken and the
+non-volatile GPRs are not restored from pt_regs.
+
+Move the clear to arch_interrupt_exit_prepare(), which runs before
+irqentry_exit() and is the equivalent start-of-exit point for interrupts,
+mirroring syscall_exit_prepare(). interrupt_exit_user_prepare() only reads
+the result.
+
+Signed-off-by: Jordan Bettcher <thebettcher@gmail.com>
+---
+ arch/powerpc/include/asm/entry-common.h |  9 +++++++++
+ arch/powerpc/kernel/interrupt.c         | 10 +++++++---
+ 2 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/arch/powerpc/include/asm/entry-common.h b/arch/powerpc/include/asm/entry-common.h
+index c5adb50..55f1243 100644
+--- a/arch/powerpc/include/asm/entry-common.h
++++ b/arch/powerpc/include/asm/entry-common.h
+@@ -267,6 +267,15 @@ static inline void arch_interrupt_exit_prepare(struct pt_regs *regs)
+ 		 * AMR can only have been unlocked if we interrupted the kernel.
+ 		 */
+ 		kuap_assert_locked();
++		/*
++		 * Clear exit_flags so only flags set during this exit are
++		 * visible. For interrupts the exit work that sets them
++		 * (arch_do_signal_or_restart() -> _TIF_RESTOREALL) runs in
++		 * irqentry_exit() below, so this is the "start of exit" point,
++		 * mirroring syscall_exit_prepare(). interrupt_exit_user_prepare()
++		 * only reads the result.
++		 */
++		current_thread_info()->exit_flags = 0;
+ 	}
+ 
+ 	/* irqentry_exit expects to be called with interrupts disabled */
+diff --git a/arch/powerpc/kernel/interrupt.c b/arch/powerpc/kernel/interrupt.c
+index 967e7cd..7d880bf 100644
+--- a/arch/powerpc/kernel/interrupt.c
++++ b/arch/powerpc/kernel/interrupt.c
+@@ -198,9 +198,13 @@ notrace unsigned long interrupt_exit_user_prepare(struct pt_regs *regs)
+ 	 */
+ 	kuap_assert_locked();
+ 
+-	/* Clear exit_flags so only flags set during this exit are visible */
+-	current_thread_info()->exit_flags = 0;
+-
++	/*
++	 * exit_flags was cleared in arch_interrupt_exit_prepare(), before
++	 * irqentry_exit() ran the exit work. Do not clear it here: the work
++	 * (signal delivery, ptrace stops) has already run by the time the
++	 * asm calls us, so clearing here would always discard _TIF_RESTOREALL
++	 * and the NVGPRs would never be restored from pt_regs.
++	 */
+ 	local_irq_disable();
+ again:
+ 	check_return_regs_valid(regs);
+-- 
+2.55.0
+

@@ -1,0 +1,67 @@
+From 79a5ca6a9f87caeed20760af65528a89f6cec67a Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 23 Sep 2026 21:24:24 -0600
+Subject: [PATCH 2/3] powerpc/syscall: keep the seccomp/ptrace return value
+ when the syscall is skipped
+To: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>,
+    Nicholas Piggin <npiggin@gmail.com>,
+    Christophe Leroy <chleroy@kernel.org>,
+    linuxppc-dev@lists.ozlabs.org,
+    linux-kernel@vger.kernel.org
+
+syscall_enter_from_user_mode() returns -1 when a tracer has asked for the
+syscall to be skipped: seccomp SECCOMP_RET_ERRNO, SECCOMP_RET_TRAP and
+SECCOMP_RET_TRACE, and ptrace PTRACE_SYSEMU or a tracer that rejects the
+call. The value userspace should see has already been written to pt_regs
+by syscall_set_return_value(), which on powerpc also sets CR0.SO for sc
+callers.
+
+On powerpc that -1 then fails the r0 >= NR_syscalls test in
+system_call_exception() and falls through to return -ENOSYS. Unlike other
+architectures, the powerpc syscall exit path takes the return value from
+what this function returns rather than from pt_regs, so the value seccomp
+stored is discarded and every SECCOMP_RET_ERRNO(x) reaches userspace as
+ENOSYS.
+
+This breaks any sandbox that emulates syscalls with an errno result.
+Chromium's syscall broker is the case that found it: a broker-denied call
+reports ENOSYS rather than the intended EPERM or EACCES.
+
+Return regs->gpr[3] when the syscall was skipped. The genuine "no such
+syscall" path still returns -ENOSYS.
+
+Tested with a SECCOMP_RET_ERRNO filter over five errno values, through
+both glibc's scv 0 path and raw sc. All deliver the filter's errno with
+this applied, and ENOSYS without it.
+
+Signed-off-by: Jordan Bettcher <thebettcher@gmail.com>
+---
+ arch/powerpc/kernel/syscall.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/powerpc/kernel/syscall.c b/arch/powerpc/kernel/syscall.c
+index 9d1b29f..c3a902a 100644
+--- a/arch/powerpc/kernel/syscall.c
++++ b/arch/powerpc/kernel/syscall.c
+@@ -31,6 +31,17 @@ notrace long system_call_exception(struct pt_regs *regs, unsigned long r0)
+ 			_exception(SIGILL, regs, ILL_ILLOPC, regs->nip);
+ 			return regs->gpr[3];
+ 		}
++		/*
++		 * -1 means the syscall was skipped: by seccomp (SECCOMP_RET_ERRNO,
++		 * _TRAP, _TRACE) or by ptrace (PTRACE_SYSEMU, tracer rejection).
++		 * The return value, and CR0.SO for sc, has already been stored in
++		 * regs by syscall_set_return_value() and must be returned as-is.
++		 * Other architectures leave the value in pt_regs, but on powerpc
++		 * the exit path takes it from r3, so returning -ENOSYS here turns
++		 * every SECCOMP_RET_ERRNO into ENOSYS.
++		 */
++		if (r0 == (unsigned long)-1)
++			return regs->gpr[3];
+ 		return -ENOSYS;
+ 	}
+ 
+-- 
+2.55.0
+

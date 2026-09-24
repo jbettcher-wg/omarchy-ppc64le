@@ -1,0 +1,63 @@
+From 2243f9bbddb1c9922e31d8c5312c79fa8cc0ed59 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 23 Sep 2026 21:24:24 -0600
+Subject: [PATCH 1/3] powerpc/64: return the accumulated exit_result from
+ syscall_exit_restart()
+To: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>,
+    Nicholas Piggin <npiggin@gmail.com>,
+    Christophe Leroy <chleroy@kernel.org>,
+    linuxppc-dev@lists.ozlabs.org,
+    linux-kernel@vger.kernel.org
+
+powerpc selects CONFIG_GENERIC_ENTRY as of 7.2. The value returned by the
+*_exit_* C helpers is consumed by the assembly in
+arch/powerpc/kernel/interrupt_64.S, which uses it to choose between
+restoring the full register set from pt_regs and a fast path that does
+not.
+
+syscall_exit_restart() accumulates into regs->exit_result:
+
+	ret = current_thread_info()->exit_flags & _TIF_RESTOREALL;
+	current_thread_info()->exit_flags &= ~_TIF_RESTOREALL;
+	regs->exit_result |= ret;
+
+	return ret;
+
+but then returns only ret, what this restart contributed, rather than the
+accumulated regs->exit_result. Any _TIF_RESTOREALL recorded before the
+restart is dropped from the value the assembly tests, so the fast path is
+taken where a full restore was required.
+
+The |= on the line above is the tell: accumulation is clearly intended
+here, and returning ret silently defeats it.
+
+Return regs->exit_result instead.
+
+Signed-off-by: Jordan Bettcher <thebettcher@gmail.com>
+---
+ arch/powerpc/kernel/interrupt.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/arch/powerpc/kernel/interrupt.c b/arch/powerpc/kernel/interrupt.c
+index 5b88bf7..967e7cd 100644
+--- a/arch/powerpc/kernel/interrupt.c
++++ b/arch/powerpc/kernel/interrupt.c
+@@ -175,7 +175,13 @@ again:
+ 	current_thread_info()->exit_flags &= ~_TIF_RESTOREALL;
+ 	regs->exit_result |= ret;
+ 
+-	return ret;
++	/*
++	 * Return the accumulated result, not just what this restart added.
++	 * The asm uses this to choose between a full GPR restore and the
++	 * fast path that zeroes r4-r12, so dropping the _TIF_RESTOREALL
++	 * that start_thread() set would zero the ELFv2 entry point in r12.
++	 */
++	return regs->exit_result;
+ }
+ #endif
+ 
+-- 
+2.55.0
+
