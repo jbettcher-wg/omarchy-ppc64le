@@ -473,6 +473,21 @@ if ((!OMP_DRY_RUN)); then
   ((installed > 0)) || die "pacstrap reported success but the target has no packages"
 fi
 
+# pacstrap -K initialises an EMPTY keyring in the target: it creates the trust
+# database but imports no keys. archpower-keyring lands in $OMP_MNT with
+# everything else, yet nothing populates it there, so pacman inside the new
+# root reports every [base] package as unknown trust and the first upgrade
+# fails. The live medium does this for itself in
+# iso/profile/airootfs/root/customize_airootfs.sh; the target needs it too, or
+# --base-siglevel has to be weakened to paper over a missing step.
+# --init is idempotent: -K has already made the directory, but running it keeps
+# this correct if that flag ever changes.
+step "keyring"
+run_loud arch-chroot "$OMP_MNT" pacman-key --init ||
+  die "pacman-key --init failed in the target -- see $OMP_LOG_FILE"
+run_loud arch-chroot "$OMP_MNT" pacman-key --populate archpower ||
+  die "pacman-key --populate archpower failed -- see $OMP_LOG_FILE"
+
 # keep the configuration the install actually used
 phase "Configuring system"
 render_pacman_conf "$OMP_MNT/etc/pacman.conf" 0 1
