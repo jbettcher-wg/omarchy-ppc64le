@@ -21,10 +21,14 @@
 # Environment (defaults shown):
 #   BQ_BUILDROOT=/var/tmp/omarchy-bq-ppc64le  build tree, sysroot, state, tmp
 #   BQ_REPO=<project>/repo-ppc64le            package pool and output
-#   BQ_SYSTEM_MAKEPKG_CONF=/etc/makepkg.conf  the system config bq inherits,
-#     and whose .d/*.conf it sources.  Set it when / is not the ppc64le root:
-#     a queue driven from inside the POWERarm aarch64 sleeve otherwise
-#     inherits CARCH=aarch64 and -march=armv8-a.  The drop-in below asserts
+#   BQ_SYSTEM_MAKEPKG_CONF=<project>/tools/makepkg.conf.power8
+#     The one config bq's generated buildroot config sources.  It defaults to
+#     this repo's own POWER8 config rather than /etc/makepkg.conf so that the
+#     baseline carries its own ISA baseline and the machine's /etc stays
+#     whatever the POWER9 builder wants -- and so a queue driven from inside
+#     the POWERarm aarch64 sleeve cannot inherit CARCH=aarch64 and
+#     -march=armv8-a.  Point it at /etc/makepkg.conf to get the old
+#     inherit-and-substitute behaviour.  Either way the drop-in below asserts
 #     -mcpu=power8 survived, so a wrong config fails the build rather than
 #     filling the baseline pool with the wrong architecture.
 #
@@ -34,6 +38,12 @@ set -euo pipefail
 
 PROJECT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 DROPIN=$PROJECT/tools/makepkg.conf.d/00-power8.conf
+MPCONF=$PROJECT/tools/makepkg.conf.power8
+
+# Source our own config, not the host's. Substituting power9 -> power8 out of
+# /etc only works while /etc says power9; it is silently a no-op otherwise,
+# and /etc is not a stable input.
+export BQ_SYSTEM_MAKEPKG_CONF=${BQ_SYSTEM_MAKEPKG_CONF:-$MPCONF}
 
 export BQ_BUILDROOT=${BQ_BUILDROOT:-/var/tmp/omarchy-bq-ppc64le}
 export BQ_STATE=${BQ_STATE:-$BQ_BUILDROOT/state.json}
@@ -46,6 +56,9 @@ export _power8_compat=1 _power8=1 GOPPC64=power8
 # the one pool that promises to run on a POWER8.
 [[ -r $DROPIN ]] || { echo "build-ppc64le.sh: $DROPIN is missing" >&2; exit 1; }
 bash -n "$DROPIN"
+[[ -r $BQ_SYSTEM_MAKEPKG_CONF ]] || {
+  echo "build-ppc64le.sh: $BQ_SYSTEM_MAKEPKG_CONF is missing" >&2; exit 1; }
+bash -n "$BQ_SYSTEM_MAKEPKG_CONF"
 
 mkdir -p "$BQ_REPO" "$TMPDIR" "$BQ_BUILDROOT/makepkg.conf.d" "$BQ_BUILDROOT/srcdest"
 install -m644 "$DROPIN" "$BQ_BUILDROOT/makepkg.conf.d/00-power8.conf"
