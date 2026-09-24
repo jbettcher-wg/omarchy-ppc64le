@@ -108,8 +108,19 @@ is_system_path() {
 #   FILES "${_IMPORT_PREFIX}/include/vtk/vtkh5part/src/H5BlockErrors.h"
 #         "${_IMPORT_PREFIX}/include/vtk/vtkh5part/src/H5Block.h"
 #
-# What is left are literals that cannot occur innocently.
-FORBIDDEN='omarchy-work|\$srcdir|\$pkgdir|/\.cache/|/tmp/makepkg'
+# What is left are literals that cannot occur innocently -- with one
+# exception that has to be spelled out. A bare "$srcdir" or "$pkgdir" in a
+# shipped file is a makepkg variable that leaked unexpanded, which is a real
+# bug. But automake writes "$$srcdir" into every generated Makefile.in: the
+# doubled dollar is how a make recipe passes a literal $ to the shell, e.g.
+#
+#   sed -e "s|^$$srcdir/||"
+#
+# A plain '\$srcdir' matches the tail of that, so the guard rejected
+# xorg-server-src -- 93 "violations" across the pristine upstream autotools
+# files it ships, with no build path among them. Require that the $ not be
+# preceded by another $; ERE has no lookbehind, hence the (^|[^$]) prefix.
+FORBIDDEN='omarchy-work|(^|[^$])\$(srcdir|pkgdir)|/\.cache/|/tmp/makepkg'
 
 
 # ---------------------------------------------------------------- scripts ----
