@@ -98,6 +98,7 @@ avahi
 nss-mdns
 bash-completion
 bat
+blink-cmp-fuzzy
 bluez
 bluez-tools
 bluez-utils
