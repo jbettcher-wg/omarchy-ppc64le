@@ -53,9 +53,21 @@ libusb-compat
 # patch set) for the baseline, linux-power9 for --power9.
 @OMP_KERNEL_PKG@
 linux-atm
-linux-firmware-amdgpu
-linux-firmware-radeon
-linux-firmware-nvidia
+# The whole firmware set, not just the GPU subpackages. The live medium is
+# where this matters most: the ISO already ships iwd, wpa_supplicant,
+# wireless_tools and wireless-regdb, but nothing here pulls linux-firmware --
+# the kernel package declares no depends, and the three GPU subpackages pull
+# only linux-firmware-whence. So every wireless card loaded its driver,
+# requested firmware, failed, and there was no way to get online during an
+# install. The metapackage covers amdgpu, atheros, broadcom, cirrus, intel,
+# mediatek, nvidia, other, radeon and realtek -- including the
+# iwlwifi-ty-a0-gf-a0 ucode an AX210 needs and the ibt-* firmware for its
+# Bluetooth half. It does NOT pull linux-firmware-qcom, so ath11k/ath12k
+# cards still have a driver and no firmware; add it here if that changes.
+#
+# This is the installed system's set too (installer/share/omp-base.packages),
+# so the live medium and the target no longer disagree about firmware.
+linux-firmware
 livecd-sounds
 lsscsi
 lvm2
