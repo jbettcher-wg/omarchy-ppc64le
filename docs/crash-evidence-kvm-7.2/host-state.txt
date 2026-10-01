@@ -1,0 +1,97 @@
+host: Linux 6.11.0 aarch64, 8335-GTH
+date: 2026-09-29T21:18:40-06:00
+qemu: QEMU emulator version 11.0.2
+
+launch: -machine pseries,accel=kvm,max-cpu-compat=power8 -cpu host
+        -smp 88,sockets=1,cores=22,threads=4 -m 160G
+        numactl --cpunodebind=0 --membind=0
+
+leader 24062 state: Z
+live threads: 50
+ShdPnd (0x100 = SIGKILL pending): 0000000000000100
+
+thread states:
+     49 R
+      1 Z
+
+temps:
+  Chip 0 Core 136        68 C
+  Chip 0 Core 132        67 C
+  Chip 0 Core 128        68 C
+  Chip 0 Core 124        68 C
+  Chip 0 Core 120        69 C
+  Chip 0 Core 116        66 C
+  Chip 0 Core 112        64 C
+  Chip 0 Core 108        66 C
+  Chip 0 Core 104        61 C
+  Chip 0 Core 100        68 C
+  Chip 0 Core 172        66 C
+  Chip 0 Core 96         69 C
+  Chip 0 Core 92         68 C
+  Chip 0 Core 88         67 C
+  Chip 8 Core 84         34 C
+  Chip 8 Core 80         33 C
+  Chip 8 Core 76         33 C
+  Chip 8 Core 72         32 C
+  Chip 8 Core 68         33 C
+  Chip 8 Core 64         33 C
+  Chip 8 Core 60         35 C
+  Chip 0 Core 168        66 C
+  Chip 8 Core 56         33 C
+  Chip 8 Core 52         35 C
+  Chip 8 Core 48         33 C
+  Chip 8 Core 44         33 C
+  Chip 8 Core 40         33 C
+  Chip 8 Core 36         33 C
+  Chip 8 Core 32         33 C
+  Chip 8 Core 28         33 C
+  Chip 8 Core 24         34 C
+  Chip 8 Core 20         33 C
+  Chip 0 Core 164        66 C
+  Chip 8 Core 16         33 C
+  Chip 8 Core 12         33 C
+  Chip 8 Core 8          32 C
+  Chip 8 Core 4          32 C
+  Chip 8 Core 0          33 C
+  Chip 0 DIMM 0          0 C
+  Chip 0 DIMM 1          0 C
+  Chip 0 DIMM 2          43 C
+  Chip 0 DIMM 3          40 C
+  Chip 0 DIMM 4          42 C
+  Chip 0 Core 160        66 C
+  Chip 0 DIMM 5          38 C
+  Chip 0 DIMM 6          0 C
+  Chip 0 DIMM 7          0 C
+  Chip 0 DIMM 8          0 C
+  Chip 0 DIMM 9          0 C
+  Chip 0 DIMM 10         41 C
+  Chip 0 DIMM 11         36 C
+  Chip 0 DIMM 12         42 C
+  Chip 0 DIMM 13         40 C
+  Chip 0 DIMM 14         0 C
+  Chip 0 Core 156        68 C
+  Chip 0 DIMM 15         0 C
+  Chip 8 DIMM 0          0 C
+  Chip 8 DIMM 1          0 C
+  Chip 8 DIMM 2          32 C
+  Chip 8 DIMM 3          0 C
+  Chip 8 DIMM 4          32 C
+  Chip 8 DIMM 5          0 C
+  Chip 8 DIMM 6          0 C
+  Chip 8 DIMM 7          0 C
+  Chip 8 DIMM 8          0 C
+  Chip 0 Core 152        67 C
+  Chip 8 DIMM 9          0 C
+  Chip 8 DIMM 10         36 C
+  Chip 8 DIMM 11         33 C
+  Chip 8 DIMM 12         33 C
+  Chip 8 DIMM 13         35 C
+  Chip 8 DIMM 14         0 C
+  Chip 8 DIMM 15         0 C
+  Chip 0 Nest            61 C
+  Chip 8 Nest            33 C
+  Chip 0 VRM VDD         50 C
+  Chip 0 Core 148        63 C
+  Chip 8 VRM VDD         29 C
+  Chip 0 Core 144        67 C
+  Chip 0 Core 140        67 C

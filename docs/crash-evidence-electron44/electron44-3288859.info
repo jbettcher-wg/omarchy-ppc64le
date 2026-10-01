@@ -1,0 +1,115 @@
+           PID: 3288859 (electron)
+           TID: 3288866 (Chrome_ChildIOT)
+           UID: 1000 (jbettcher)
+           GID: 1000 (jbettcher)
+        Signal: 5 (TRAP) si_code: TRAP_BRKPT
+     Timestamp: Tue 2026-09-29 16:57:08 MDT (18min ago)
+  Command Line: $'/usr/lib/electron44/electron --type=gpu-process --ozone-platform=wayland --render-node-override=/dev/dri/renderD128 --enable-crash-reporter=dc74f004-4730-4275-8c33-2c5066a0aa86,no_channel --user-data-dir=/home/jbettcher/.config/obsidian --gpu-preferences=YAAAAAAAAAAgAQAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --use-gl=disabled --shared-files --field-trial-handle=3,i,11061247525535424293,6815948302697347224,262144 --enable-features=PdfUseShowSaveFilePicker,SharedArrayBuffer --disable-features=DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,17842248756481988035,2017174162037107471,4 --trace-process-track-uuid=3190708997556373682 --log-level=3'
+    Executable: /usr/lib/electron44/electron
+ Control Group: /user.slice/user-1000.slice/user@1000.service/app.slice/app-graphical.slice/app-Hyprland-xdg\x2dterminal\x2dexec-e1c34100.scope
+          Unit: user@1000.service
+     User Unit: app-Hyprland-xdg\x2dterminal\x2dexec-e1c34100.scope
+         Slice: user-1000.slice
+     Owner UID: 1000 (jbettcher)
+       Boot ID: dd3f51d5deda4846aed9431a07663d71
+    Machine ID: 861ea43107ba4f8497f268934e9232d1
+      Hostname: omarchy-power9
+       Storage: /var/lib/systemd/coredump/core.electron.1000.dd3f51d5deda4846aed9431a07663d71.3288859.1790722628000000.zst (present)
+  Size on Disk: 9.2M
+       Message: Process 3288859 (electron) of user 1000 dumped core.
+                
+                Stack trace of thread 3288866:
+                #0  0x00000001477511f4 n/a (electron + 0x9c411f4)
+                #1  0x00000001477511f0 n/a (electron + 0x9c411f0)
+                #2  0x0000000147d47ae4 n/a (electron + 0xa237ae4)
+                #3  0x0000000141ae03f0 n/a (electron + 0x3fd03f0)
+                #4  0x0000000141869374 _ZNK4node9inspector8protocol6Object16AppendSerializedEPNSt4__Cr6vectorIhNS3_9allocatorIhEEEE (electron + 0x3d59374)
+                #5  0x000000014778d674 n/a (electron + 0x9c7d674)
+                #6  0x000000014778cd74 n/a (electron + 0x9c7cd74)
+                #7  0x00000001476f8e44 n/a (electron + 0x9be8e44)
+                #8  0x00000001476a44dc n/a (electron + 0x9b944dc)
+                #9  0x000000014adb1944 n/a (electron + 0xd2a1944)
+                #10 0x000000014772ecc8 n/a (electron + 0x9c1ecc8)
+                #11 0x0000000147750d90 n/a (electron + 0x9c40d90)
+                #12 0x00007fff902b2144 n/a (libc.so.6 + 0xb2144)
+                
+                Stack trace of thread 3288859:
+                #0  0x00007fff902bef3c n/a (libc.so.6 + 0xbef3c)
+                #1  0x00007fff902acbdc n/a (libc.so.6 + 0xacbdc)
+                #2  0x00007fff902ad1d0 n/a (libc.so.6 + 0xad1d0)
+                #3  0x00007fff902b1694 pthread_cond_timedwait (libc.so.6 + 0xb1694)
+                #4  0x000000014775003c n/a (electron + 0x9c4003c)
+                #5  0x000000014775003c n/a (electron + 0x9c4003c)
+                #6  0x00000001477930c8 n/a (electron + 0x9c830c8)
+                #7  0x00000001476c39e4 n/a (electron + 0x9bb39e4)
+                #8  0x00000001476681fc n/a (electron + 0x9b581fc)
+                #9  0x00000001476f8e44 n/a (electron + 0x9be8e44)
+                #10 0x00000001476a44dc n/a (electron + 0x9b944dc)
+                #11 0x000000014abc34b8 n/a (electron + 0xd0b34b8)
+                #12 0x0000000141aac93c n/a (electron + 0x3f9c93c)
+                #13 0x0000000141aaed48 n/a (electron + 0x3f9ed48)
+                #14 0x0000000141aaa994 n/a (electron + 0x3f9a994)
+                
+                Stack trace of thread 3288864:
+                #0  0x00007fff902bef3c n/a (libc.so.6 + 0xbef3c)
+                #1  0x00007fff902acbdc n/a (libc.so.6 + 0xacbdc)
+                #2  0x00007fff902acc90 n/a (libc.so.6 + 0xacc90)
+                #3  0x00007fff9035032c epoll_wait (libc.so.6 + 0x15032c)
+                #4  0x000000014778d04c n/a (electron + 0x9c7d04c)
+                #5  0x000000014778d04c n/a (electron + 0x9c7d04c)
+                #6  0x000000014778cd74 n/a (electron + 0x9c7cd74)
+                #7  0x00000001476f8e44 n/a (electron + 0x9be8e44)
+                #8  0x00000001476a44dc n/a (electron + 0x9b944dc)
+                #9  0x000000014770d640 n/a (electron + 0x9bfd640)
+                #10 0x000000014772ecc8 n/a (electron + 0x9c1ecc8)
+                #11 0x0000000147750d90 n/a (electron + 0x9c40d90)
+                #12 0x00007fff902b2144 n/a (libc.so.6 + 0xb2144)
+                
+                Stack trace of thread 3288867:
+                #0  0x00007fff902bef3c n/a (libc.so.6 + 0xbef3c)
+                #1  0x00007fff902acbdc n/a (libc.so.6 + 0xacbdc)
+                #2  0x00007fff902ad1d0 n/a (libc.so.6 + 0xad1d0)
+                #3  0x00007fff902b1694 pthread_cond_timedwait (libc.so.6 + 0xb1694)
+                #4  0x000000014775003c n/a (electron + 0x9c4003c)
+                #5  0x000000014775003c n/a (electron + 0x9c4003c)
+                #6  0x00000001477930c8 n/a (electron + 0x9c830c8)
+                #7  0x00000001476c39e4 n/a (electron + 0x9bb39e4)
+                #8  0x00000001476681fc n/a (electron + 0x9b581fc)
+                #9  0x00000001476f8e44 n/a (electron + 0x9be8e44)
+                #10 0x00000001476a44dc n/a (electron + 0x9b944dc)
+                #11 0x000000014772e990 n/a (electron + 0x9c1e990)
+                #12 0x000000014772ecc8 n/a (electron + 0x9c1ecc8)
+                #13 0x0000000147750d90 n/a (electron + 0x9c40d90)
+                #14 0x00007fff902b2144 n/a (libc.so.6 + 0xb2144)
+                
+                Stack trace of thread 3288863:
+                #0  0x00007fff902bef3c n/a (libc.so.6 + 0xbef3c)
+                #1  0x00007fff902acbdc n/a (libc.so.6 + 0xacbdc)
+                #2  0x00007fff902acc90 n/a (libc.so.6 + 0xacc90)
+                #3  0x00007fff9035032c epoll_wait (libc.so.6 + 0x15032c)
+                #4  0x000000014778d04c n/a (electron + 0x9c7d04c)
+                #5  0x000000014778d04c n/a (electron + 0x9c7d04c)
+                #6  0x000000014778cd74 n/a (electron + 0x9c7cd74)
+                #7  0x00000001476f8e44 n/a (electron + 0x9be8e44)
+                #8  0x00000001476a44dc n/a (electron + 0x9b944dc)
+                #9  0x000000014772e990 n/a (electron + 0x9c1e990)
+                #10 0x000000014772ecc8 n/a (electron + 0x9c1ecc8)
+                #11 0x0000000147750d90 n/a (electron + 0x9c40d90)
+                #12 0x00007fff902b2144 n/a (libc.so.6 + 0xb2144)
+                
+                Stack trace of thread 3288865:
+                #0  0x00007fff902bef3c n/a (libc.so.6 + 0xbef3c)
+                #1  0x00007fff902acbdc n/a (libc.so.6 + 0xacbdc)
+                #2  0x00007fff902ad1d0 n/a (libc.so.6 + 0xad1d0)
+                #3  0x00007fff902b1694 pthread_cond_timedwait (libc.so.6 + 0xb1694)
+                #4  0x000000014775003c n/a (electron + 0x9c4003c)
+                #5  0x000000014775003c n/a (electron + 0x9c4003c)
+                #6  0x00000001477930c8 n/a (electron + 0x9c830c8)
+                #7  0x00000001476c39e4 n/a (electron + 0x9bb39e4)
+                #8  0x0000000147726b14 n/a (electron + 0x9c16b14)
+                #9  0x0000000147728138 n/a (electron + 0x9c18138)
+                #10 0x0000000147727ce8 n/a (electron + 0x9c17ce8)
+                #11 0x0000000147727a78 n/a (electron + 0x9c17a78)
+                #12 0x0000000147750d90 n/a (electron + 0x9c40d90)
+                #13 0x00007fff902b2144 n/a (libc.so.6 + 0xb2144)
+                ELF object binary architecture: PowerPC64

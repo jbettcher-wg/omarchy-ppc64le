@@ -58,3 +58,6 @@ isa30-classified.txt
 # Generated rebuild lists (see CLAUDE.local.md).
 rebuild-list-*.txt
 rebuild-missing-recipe-*.txt
+
+# Generated pool comparison, kept beside CLAUDE.local.md rather than tracked
+pool-differential-*.tsv
