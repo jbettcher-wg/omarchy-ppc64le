@@ -13,7 +13,7 @@
 runs on **POWER8 through POWER11**, with an optional POWER9-optimised pool on
 top.
 
-![Omarchy 4.0.4 on an IBM AC922 (POWER9): VS Code, Chromium and fastfetch](docs/images/desktop.png)
+![Omarchy 4.0.4 on an IBM AC922 (POWER9): VS Code, Chromium and fastfetch](docs/images/desktop-2026-10.png)
 
 ## Status
 
