@@ -1,22 +1,23 @@
 # Omarchy for POWER
 
 [![arch: powerpc64le](https://img.shields.io/badge/arch-powerpc64le-0f62fe)](#status)
-[![target: POWER9](https://img.shields.io/badge/target-POWER9-9fe870)](#status)
+[![target: POWER8+](https://img.shields.io/badge/target-POWER8%2B-9fe870)](#status)
 [![baseline pool: omarchy-ppc64le](https://img.shields.io/badge/baseline%20pool-omarchy--ppc64le-3f4a5a)](docs/power8-secondary-target.md)
-[![Omarchy 4.0.3](https://img.shields.io/badge/Omarchy-4.0.3-0f62fe)](https://github.com/omacom/omarchy)
+[![Omarchy 4.0.4](https://img.shields.io/badge/Omarchy-4.0.4-0f62fe)](https://github.com/omacom/omarchy)
 [![base packages: 146/147](https://img.shields.io/badge/base%20packages-146%2F147-9fe870)](#not-available-yet)
 [![last commit](https://img.shields.io/github/last-commit/jbettcher-wg/omarchy-ppc64le?color=0f62fe)](https://github.com/jbettcher-wg/omarchy-ppc64le/commits/master)
 [![license: MIT](https://img.shields.io/badge/license-MIT-9fe870)](LICENSE)
 
 [Omarchy](https://github.com/omacom/omarchy) (Arch Linux + Hyprland), ported to
 **powerpc64le**. It's built on [Arch POWER](https://archlinuxpower.org) and
-aimed first at **POWER9** machines.
+runs on **POWER8 through POWER11**, with an optional POWER9-optimised pool on
+top.
 
-![Omarchy 4.0.3 on an IBM AC922 (POWER9)](docs/images/desktop.png)
+![Omarchy 4.0.4 on an IBM AC922 (POWER9): VS Code, Chromium and fastfetch](docs/images/desktop.png)
 
 ## Status
 
-Omarchy **4.0.3** runs as a daily desktop on an IBM AC922 (8335-GTH, POWER9,
+Omarchy **4.0.4** runs as a daily desktop on an IBM AC922 (8335-GTH, POWER9,
 176 threads, Radeon RX 7900 XTX). That includes the Hyprland session, the
 Omarchy shell and plugins, Chromium, Neovim with LazyVim on a JIT-enabled
 LuaJIT, and `omarchy update`.
@@ -24,11 +25,12 @@ LuaJIT, and `omarchy update`.
 | | |
 |---|---|
 | Omarchy base packages available | **146 of 147** (only `localsend` is missing, below) |
-| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | building |
-| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | 1,350 |
-| Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,562 pkgbases, 199 of them ours |
-| Omarchy version | 4.0.3, stable channel (`omarchy` 4.0.3-3, `omarchy-settings` 4.0.3-2) |
-| Kernel | `linux-power9` 7.2.2 (4K pages) and `linux-power9-64k` |
+| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | **1,175** |
+| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | **1,392** |
+| Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,604 pkgbases |
+| Omarchy version | 4.0.4, stable channel (`omarchy` 4.0.4-5, `omarchy-settings` 4.0.4-4) |
+| Kernel | baseline `linux-omarchy` 7.2.6 (4K pages) and `linux-omarchy-64k`; POWER9 `linux-power9` 7.2.6 and `linux-power9-64k` |
+| Latest ISO | `omarchy-2026.09.24-ppc64le.iso` — baseline, installs on any ppc64le machine |
 | Installer | ISO + `omp-install`, PowerNV and pSeries |
 | Release channel | not public yet; packages are unsigned |
 
@@ -57,7 +59,7 @@ The distribution is two **git** repositories.
 | | |
 |---|---|
 | **this one** | the installer and ISO, the build tooling, the repo databases, and the docs |
-| [**omarchy-ppc64le-packaging**](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | every build script the distribution builds from — 4,562 pkgbases, 199 of them ours |
+| [**omarchy-ppc64le-packaging**](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | every build script the distribution builds from — 4,604 pkgbases |
 
 No PKGBUILD lives here. A builder needs both, and locates the packaging tree
 through `OMARCHY_PACKAGING`:
@@ -77,16 +79,30 @@ that is the default the tools assume.
   ([jbettcher-wg/luajit-ppc64le](https://github.com/jbettcher-wg/luajit-ppc64le)).
   It's the first one, as far as we know. Neovim and Omarchy's LazyVim config run
   on it.
-- **Chromium 151**, with the Debian ppc64le patch set and POWER9/POWER8 build
-  modes.
-- **Electron 43** (Chromium 150, Node 24), and **Obsidian** on it.
+- **Chromium 153** in the POWER9 pool, with Debian's ppc64le patch set and
+  POWER9/POWER8 build modes. The baseline is still on 151 with a hand-patched
+  POWER8 V8; the POWER8 build of 153 is pending.
+- **Electron 44**, with **Obsidian** on it. The baseline is still on Electron
+  43 (Chromium 150, Node 24); the POWER8 build of 44 is pending.
+- **Firefox 154**, with runlevel5's ppc64le SpiderMonkey JIT backend — and our
+  fix for an opcode-table bug in it that made every Ion-compiled `Math.min` /
+  `Math.max` on doubles execute an ISA 3.0 instruction and SIGILL on POWER8.
 - **.NET 10 built from source**, with a fix to Mono's ppc64le JIT for ELFv2
   struct returns, so GTK apps like **Pinta** run. The one-time bootstrap is
   documented in [`docs/dotnet-ppc64le-bootstrap.md`](docs/dotnet-ppc64le-bootstrap.md).
-- **Qt 6 WebEngine**, **Blender 5.1** (VSX Cycles)
+- **Blender 5.1 with Cycles on a native VSX kernel.** Arch POWER's build has
+  Cycles off entirely -- EEVEE and Workbench only -- because neither `embree`
+  nor `openimagedenoise` existed for POWER. Ours turns the Cycles CPU device on
+  with Embree 4.4.1 BVH traversal and the OpenImageDenoise 2.4.1 denoiser, and
+  replaces the SSE-through-compatibility-headers path with a native 4-wide VSX
+  integrator kernel: 2,194 vector fused multiply-adds in the kernel object
+  against 6 for the compat build. Cycles lists the device as `IBM POWER9 (VSX)`.
+- **Qt 6 WebEngine**
 - The full **Hyprland** stack, **quickshell**, and Omarchy's own apps and tools
   (omacalc, omacut, omawrite, tensaku, herdr, cliamp, aether, ttfx, tobi-try).
-- Toolchains: **Go 1.27**, **Zig 0.16** (and 0.15 for herdr), LLVM 20/21.
+- Toolchains: **Go 1.27**, **Zig 0.16** (and 0.15 for herdr), **LLVM 22**.
+- **ghostty**, **mangohud**, **tailscale** and **cloudflared** ship as a single
+  POWER8-legal build each, byte-identical in both pools.
 - **ROCm/HIP 7.2.4** and **llama.cpp** for Radeon compute.
 
 ![Obsidian on Electron 43, cliamp playing Omarchy Radio, and Pinta 3.1.2 on .NET 10](docs/images/apps.png)
@@ -131,7 +147,6 @@ ppc64le JavaScriptCore port: an aarch64 editor being used to write POWER code.
   laptop quirks and multilib don't apply;
   [`installer/share/omp-clipped.packages`](installer/share/omp-clipped.packages)
   lists every dropped package and why.
-- **Theme.** `omarchy-theme-power9` is the default theme.
 
 ## Using the repository
 
