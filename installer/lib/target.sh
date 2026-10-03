@@ -376,62 +376,32 @@ EOF
 #   --user NAME         create the account here, the ordinary archinstall shape.
 # --- theme branding -----------------------------------------------------------
 #
-# /etc/fastfetch/config.jsonc comes from omarchy-settings, shipped byte-for-byte
-# as upstream built it, and hardcodes the logo as
+# We deliberately do NOT seed a theme logo into /etc/skel. New accounts keep
+# Omarchy's own U+2588 block logo, which omarchy-settings already places at
+# /etc/skel/.config/omarchy/branding/about.txt.
+#
+# This used to copy omarchy-theme-power9's braille OpenPOWER cube over that seed
+# before any account existed, so both account paths inherited it -- the useradd
+# in configure_users below and the deferred first-boot wizard. It was dropped
+# because the default install should look like Omarchy, not like a fork.
+#
+# The cube is still shipped by omarchy-theme-power9 and is opt-in per user:
+#
+#     omarchy-theme-power9-branding
+#
+# Restoring the default afterwards is `omarchy-branding-about reset`, which
+# copies $OMARCHY_PATH/icon.txt back over about.txt.
+#
+# Context worth keeping: /etc/fastfetch/config.jsonc comes from omarchy-settings
+# byte-for-byte as upstream built it and hardcodes the logo path to
 # ~/.config/omarchy/branding/about.txt. That path is per-user, so no package can
-# set it for an account that does not exist yet; upstream seeds it from
-# /etc/skel/.config/omarchy/branding/, which omarchy-settings owns and fills
-# with Omarchy's own U+2588 block logo.
-#
-# omarchy-theme-power9 ships the braille OpenPOWER cube at
-# themes/power9/branding/about.txt but has no way to install it: writing to
-# /etc/skel from that package is a pacman file conflict with omarchy-settings,
-# which owns both paths. So the installer overwrites the seed instead, here,
-# before any account exists -- which is what makes it cover BOTH account paths:
-# the useradd in configure_users below, and the deferred first-boot wizard
-# (omarchy-provision-owner), which also runs `useradd -m` and so reads the same
-# skel. Nothing did this before, and fastfetch on a fresh install showed the
-# stock block logo despite the theme being installed.
-#
-# Caveat: omarchy-settings declares no backup= entries, so a later upgrade of it
-# restores upstream's about.txt in /etc/skel. Accounts already created keep the
-# cube -- their $HOME copy is never touched -- but accounts created after such an
-# upgrade revert. `omarchy-theme-power9-branding` re-applies it per user.
-apply_theme_branding() {
-  local mnt="$1"
-  local src="$mnt/usr/share/omarchy/themes/power9/branding"
-  local dst="$mnt/etc/skel/.config/omarchy/branding"
-
-  # The stock install ships omarchy-theme-powerpc, not omarchy-theme-power9, so
-  # the cube being absent is the normal case now, not a fault: log, don't warn.
-  if [[ ! -d $src ]]; then
-    log "branding: omarchy-theme-power9 not installed; new accounts keep Omarchy's own logo"
-    return 0
-  fi
-
-  step "Seeding POWER9 branding into /etc/skel"
-  if ((OMP_DRY_RUN)); then
-    printf '  would copy %s/about.txt -> %s/\n' "$src" "$dst" >&2
-    return 0
-  fi
-
-  # about.txt only. The screensaver keeps Omarchy's own logo, which
-  # omarchy-settings already seeds in /etc/skel.
-  local f
-  for f in about; do
-    if [[ -r $src/$f.txt ]]; then
-      install -Dm644 "$src/$f.txt" "$dst/$f.txt"
-      log "branding: $f.txt <- themes/power9"
-    else
-      warn "theme branding $f.txt is missing; leaving the seeded default in place"
-    fi
-  done
-}
+# set it for an account that does not exist yet, and omarchy-theme-power9 cannot
+# write to /etc/skel either -- that is a pacman file conflict with
+# omarchy-settings, which owns both paths. Seeding from the installer was the
+# only hook available, which is why it lived here.
 
 configure_users() {
   local mnt="$1"
-
-  apply_theme_branding "$mnt"
 
   # Omarchy's shell setup reaches new accounts through /etc/skel/.bashrc, which
   # omarchy-settings only ships as an override (etc-overrides/dot.bashrc) that
