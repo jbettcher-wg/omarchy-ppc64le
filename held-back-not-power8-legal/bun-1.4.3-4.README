@@ -1,0 +1,26 @@
+bun-1.4.3-4-powerpc64le.pkg.tar.zst -- held back 2026-10-08, NOT POWER8-legal.
+
+Measured 349,172 ISA 3.0 instructions by tools/isa30-pkgscan.sh. For contrast the
+POWER9 build (bun-1.4.3-3, repo/) scans 347,558 -- i.e. the baseline build came
+out with essentially the same ISA as the POWER9 one, so nothing POWER8 took
+effect for the bulk of the code.
+
+The instructions are real, not a jump-table artifact: stxv 114906, lxv 93936,
+stxvx 47608, lxvx 29288, vextubrx 18087, vextuhrx 7159, xxspltib 6370,
+lxsd 4835, xxperm 4593, cnttzd 4137, extswsli 3144, maddld 2576, mtvsrdd 2274,
+mfvsrld 1876, stxsd 1270. Sample encoding 0xf7ff004d is primary opcode 61,
+i.e. stxv (DQ-form, ISA 3.0), and it appears in function prologues as VSX
+callee-save -- ordinary compiler codegen, behind no runtime check.
+
+Not the LLInt. The occurrences are spread uniformly over 62 of the 60.3 MiB of
+.text; an offlineasm-generated interpreter would be one contiguous block. So
+ours/webkit's --ppc64-isa gating is not what failed here.
+
+Cause: ours/bun has no ISA pinning at all. It does not thread CFLAGS/CXXFLAGS
+into the cmake it drives via scripts/build.ts, and sets nothing for zig
+(-Dcpu=, see the zig-builds-on-this-distro note: -Dcpu=baseline is the pin) or
+for cargo. tools/makepkg.conf.d/00-power8.conf WAS installed and its own asserts
+passed, so makepkg's CFLAGS/CXXFLAGS/RUSTFLAGS were POWER8 -- bun's own build
+system simply does not read them.
+
+Do not publish. The POWER9 build in repo/ is correct for POWER9 and unaffected.

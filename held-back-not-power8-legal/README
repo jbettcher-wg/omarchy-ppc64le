@@ -1,0 +1,16 @@
+sunshine-2026.914.233613-1-powerpc64le.pkg.tar.zst
+
+Built POWER8-legal as far as our own flags go, but NOT shippable to the
+baseline pool. Sunshine's CMake fetches a prebuilt FFmpeg from
+LizardByte/build-deps (Linux-ppc64le-ffmpeg.tar.gz) and static-links it.
+That blob was built with POWER9 codegen: 171,788 ISA 3.0 instructions across
+its archives (libSvtAv1Enc 54,850, libavcodec 42,775, libavfilter 17,594,
+libdav1d 16,856, libx264 10,031, ...), and 78,395 of them land in
+/usr/bin/sunshine. Some are behind HWCAP dispatch, but maddld and extswsli
+are plain integer codegen with no dispatch path.
+
+Arguably an upstream bug: ppc64le's ELFv2 baseline is POWER8.
+
+To ship this on the baseline pool, pass -D FFMPEG_PREPARED_BINARIES=<path>
+(cmake/dependencies/ffmpeg.cmake honours it) at our own static ffmpeg built
+for power8. The POWER9 build is unaffected and is published.
