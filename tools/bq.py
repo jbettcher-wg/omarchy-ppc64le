@@ -1270,7 +1270,16 @@ def write_makepkg_conf(path, pkgdest, srcdest, logdest, make_jobs=None,
                 '# bq -j: this slot\'s share of the machine.\n'
                 'MAKEFLAGS="-j%d"\n'
                 'NINJAFLAGS="-j%d"\n'
-                'export CARGO_BUILD_JOBS=%d\n' % (make_jobs, make_jobs, make_jobs))
+                'export CARGO_BUILD_JOBS=%d\n'
+                # cmake --build ignores MAKEFLAGS and ignores NINJAFLAGS unless
+                # the recipe threads it through by hand, so a recipe that just
+                # says `cmake --build build` with -G Ninja gets ninja's own
+                # default of nproc+1 -- 177 here, whatever -j was asked for.
+                # composable-kernel does exactly that. CMAKE_BUILD_PARALLEL_LEVEL
+                # is read by cmake --build itself, so it covers every cmake
+                # recipe without each one having to cooperate.
+                'export CMAKE_BUILD_PARALLEL_LEVEL=%d\n'
+                % (make_jobs, make_jobs, make_jobs, make_jobs))
 
 
 def bwrap_prefix(sysroot):
