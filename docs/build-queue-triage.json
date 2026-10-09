@@ -1,9 +1,72 @@
 {
+  "elf-pathguard": [
+    "boost",
+    "perl",
+    "signond"
+  ],
+  "unknown": [
+    "bun",
+    "cups-filters",
+    "gnupg",
+    "gpm",
+    "graphite",
+    "groff",
+    "jasper",
+    "libasyncns",
+    "libcanberra",
+    "libebur128",
+    "liblqr",
+    "libnewt",
+    "libnsbmp",
+    "libnsgif",
+    "libpipeline",
+    "librtas",
+    "libsamplerate",
+    "libsasl",
+    "libxcrypt",
+    "pam",
+    "parted",
+    "powerpc-utils",
+    "python",
+    "python-certifi",
+    "qpdf",
+    "samba",
+    "tar",
+    "texlive-bin",
+    "thunderbird",
+    "vapoursynth",
+    "vulkan-icd-loader",
+    "xz",
+    "yt-dlp",
+    "zbar",
+    "zip"
+  ],
   "missing-dep": [
-    "grim",
-    "libdatachannel"
+    "dotnet-core",
+    "libbluray",
+    "pinentry",
+    "purpose",
+    "rubberband",
+    "runc",
+    "util-linux",
+    "xdg-desktop-portal"
+  ],
+  "checksum": [
+    "fakeroot",
+    "zlib"
+  ],
+  "x86-asm": [
+    "gstreamer",
+    "libjxl",
+    "libreoffice-fresh",
+    "libsoxr",
+    "pulseaudio",
+    "sdl2"
   ],
   "broken-system-dep": [
-    "hyprgraphics"
+    "sddm"
+  ],
+  "bq-error": [
+    "tesseract-data"
   ]
 }
