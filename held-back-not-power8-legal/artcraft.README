@@ -1,0 +1,32 @@
+artcraft 0.0.1.r20261008-1 -- withheld 2026-10-08. Builds, runs, but is broken,
+and is not the kind of package this distro wants to ship.
+
+BROKEN: built with `cargo build --release`, which omits the `custom-protocol`
+feature on the tauri crate. That feature is what makes Tauri serve its embedded
+frontend; `tauri build` adds it, a plain cargo build does not. Without it the
+webview falls back to tauri.conf.json's devUrl, http://localhost:5173, so the
+window reports it cannot connect to localhost. Confirmed by searching the
+binary for the real dist filenames (index-CTSUa2dT.js and friends): zero hits,
+so no assets are embedded. The 46.9 MB is Rust alone.
+
+The fix, if it is ever wanted, is one flag:
+  cargo build --release --locked -p artcraft --features tauri/custom-protocol
+The recipe also now installs a .desktop file and hicolor icons, which cargo
+does not produce either (pkgrel 2, uncommitted at the time of writing).
+
+WHY IT IS NOT WORTH FINISHING: it is a thin desktop client for a paid cloud
+service. crates/api_clients holds artcraft, fal_client, gmicloud_client,
+grok_api_client, grok_consumer_client, kinovi_web_client, midjourney_client,
+openai_sora_client, worldlabs_api_client, worldlabs_consumer_client -- all
+remote. There are no local inference crates in the workspace (no candle, ort,
+tract, llama_cpp, burn, tch) and no HTTP server, so nothing runs on local
+hardware and the 7900 XTX / ROCm work is irrelevant to it. It needs a
+Storyteller account; the 401 in ~/Artcraft/artcraft_debug.log is it being
+signed out, not a port bug.
+
+Residual value, if any: it is a real-world Tauri + WebKitGTK + React app, so it
+would exercise the ppc64le JavaScriptCore JIT port end to end once
+ours/webkit2gtk lands. That makes it a test vehicle, not a shipped app.
+
+The recipe stays in the packaging tree (ours/artcraft, commit 29554d8f) so the
+ppc64le BoringSSL fix and the nx/vite findings are not lost.
