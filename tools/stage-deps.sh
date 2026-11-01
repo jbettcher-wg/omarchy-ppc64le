@@ -117,6 +117,7 @@ done
 # keep resolving to the system copies; ours are the ones that can be newer than
 # what is installed.
 declare -A _staged=()
+declare -A _fetched=()
 for d in "${ours[@]}"; do _staged[$d]=1; done
 _frontier=("${ours[@]}")
 while [ ${#_frontier[@]} -gt 0 ]; do
@@ -132,9 +133,29 @@ while [ ${#_frontier[@]} -gt 0 ]; do
       # A soname or other virtual needs the map to reach our package file.
       if ! have_ours "$sub"; then
         _pv=${OURPROV[$sub]:-}
-        { [ -n "$_pv" ] && have_ours "$_pv"; } || continue
-        sub=$_pv
-        [ -n "${_staged[$sub]:-}" ] && continue
+        if [ -n "$_pv" ] && have_ours "$_pv"; then
+          sub=$_pv
+          [ -n "${_staged[$sub]:-}" ] && continue
+        else
+          # Not ours.  This used to `continue`, on the reasoning that Arch
+          # POWER's packages are consistent with the host -- which holds only
+          # when the host actually has them.  po4a is ours and depends on
+          # perl-yaml-tiny, which Arch POWER ships but nothing here installs,
+          # so po4a staged without it and util-linux died with "Can't locate
+          # YAML/Tiny.pm" from po4a's AsciiDoc module.  Fetch it instead.
+          [ -n "${_fetched[$sub]:-}" ] && continue
+          pacman -Qq "$sub" >/dev/null 2>&1 && continue
+          pacman -T "$sub" >/dev/null 2>&1 && continue
+          if ! pacman -Si "$sub" >/dev/null 2>&1; then
+            _pa=${APROV[$sub]:-}
+            [ -n "$_pa" ] || continue
+            sub=$_pa
+            [ -n "${_fetched[$sub]:-}" ] && continue
+          fi
+          _fetched[$sub]=1
+          want+=("$sub")
+          continue
+        fi
       fi
       _staged[$sub]=1
       ours+=("$sub")
@@ -161,7 +182,6 @@ done
 # Walk what we fetch, and fetch anything it needs that the host does not already
 # provide. Installed packages still short-circuit, so this pulls in the handful
 # of genuinely absent libraries and not the whole base system.
-declare -A _fetched=()
 for d in "${want[@]}"; do _fetched[$d]=1; done
 _frontier=("${want[@]:-}")
 while [ -n "${_frontier[0]:-}" ]; do
