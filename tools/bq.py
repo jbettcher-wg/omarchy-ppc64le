@@ -1953,7 +1953,12 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     # right, because ~120 packages are already in the repo and rebuilding them
     # would eat the night without adding coverage.  Mark ok, but still stage
     # the package so later queue entries can link against it.  --force wins.
-    if not args.force:
+    # ...but not if the recorded verdict was `failed`.  The files can be a
+    # rejected build left behind by an older bq, and adopting them reports
+    # "ok, reused" for a package a guard refused.  It also made
+    # --retry-failed a no-op for exactly the packages it exists to retry.
+    _prev_status = st.get("packages", {}).get(pkgbase, {}).get("status")
+    if not args.force and _prev_status != "failed":
         _pl = subprocess.run(["makepkg", "--config", conf, "--packagelist"],
                              cwd=work, capture_output=True, text=True,
                              env=env, timeout=900)
@@ -2122,8 +2127,22 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     # cache directory thinlto-cache" instead of merely stopping. Keep the tree
     # on timeout so a retry can makepkg -R (repackage) or -e (skip build).
     if not args.keep and rc != 124:
-        subprocess.run(["makepkg", "--config", conf, "-c", "--noconfirm"],
-                       cwd=work, capture_output=True, timeout=600, env=env)
+        # No `makepkg -c` here.  `-c` is "clean up *after* a build", not "clean
+        # only": makepkg runs the whole build and removes src/ and pkg/ at the
+        # end.  Normally it short-circuits on "A package has already been
+        # built" and the call is merely redundant with the rmtree below -- but
+        # when a guard has just quarantined the package files, that file is
+        # gone, so makepkg rebuilt the package and wrote the *rejected* build
+        # straight back into PKGDEST.
+        #
+        # Measured 2026-10-31 on netcdf: the real build finished at 20:30:28
+        # and was quarantined when elf-pathguard refused it at 20:35:26; a
+        # package with builddate 20:35:29 then appeared in repo/ and
+        # repo-ppc64le/.  The next run found those files and reported
+        # "ok 0s, class=existing, reused=True" without building, so a package
+        # two guards had refused was sitting in both pools marked good.
+        #
+        # The rmtree is strictly more thorough anyway, per the comment above.
         make_traversable(work)
         shutil.rmtree(work, ignore_errors=True)
 
