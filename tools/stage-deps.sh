@@ -42,6 +42,41 @@ mapfile -t deps < <("$here/extract-deps.sh" "$f" \
   | awk -F'\t' '$1=="DEP"||$1=="MAKEDEP"||$1=="CHECKDEP"{print $2}' \
   | sed -E 's/[<>=].*//' | sort -u)
 
+# What can satisfy a dependency, including by *providing* it.
+#
+# `pacman -Si NAME` and `ls $REPO/NAME-*.pkg.tar.zst` both match real package
+# names only.  A virtual dependency matches neither, so it was classified
+# "not in Arch POWER and not yet built" and failed the build as missing-dep --
+# hdf5 died on `java-environment` while Arch POWER ships five packages that
+# provide it.  There are ~6400 such names in the sync db: `sh`, `awk`, `cron`,
+# and every soname (`libaom.so`, `libacl.so`, ...) among them.
+#
+# First provider wins, deliberately: Arch's convention is that the unversioned
+# name is the default, and expac lists jdk-openjdk ahead of
+# jdk{8,11,17,21}-openjdk.  A recipe needing a specific one has to name it.
+declare -A APROV=()
+while read -r _n _rest; do
+  for _p in $_rest; do
+    _k=${_p%%[<>=]*}
+    [ -n "$_k" ] && [ -z "${APROV[$_k]:-}" ] && APROV[$_k]=$_n
+  done
+done < <(expac -S '%n %P' 2>/dev/null)
+
+# Our own pool provides things too, and as the distribution fills out it
+# becomes the only provider for more of them, so it needs the same treatment.
+declare -A OURPROV=()
+_pooldb=$(ls -t "$REPO"/*.db.tar.gz 2>/dev/null | grep -v bq-staging | head -1)
+if [ -n "$_pooldb" ]; then
+  while IFS=$'\t' read -r _n _p; do
+    _k=${_p%%[<>=]*}
+    [ -n "$_k" ] && [ -z "${OURPROV[$_k]:-}" ] && OURPROV[$_k]=$_n
+  done < <(bsdtar -xOf "$_pooldb" '*/desc' 2>/dev/null | awk '
+      /^%NAME%$/{getline n; next}
+      /^%PROVIDES%$/{while((getline l)>0 && l!=""){print n"\t"l} next}')
+fi
+
+have_ours() { ls "$REPO"/${1}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; }
+
 want=(); ours=(); absent=()
 for d in "${deps[@]}"; do
   [ -n "$d" ] || continue
@@ -51,12 +86,21 @@ for d in "${deps[@]}"; do
   # installed 6.27, and libheif would have gone on linking the system
   # libde265 1.0.18 that is missing de265_get_security_limits instead of the
   # 1.1.2 sitting in repo/.
-  if ls "$REPO"/${d}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; then
+  if have_ours "$d"; then
     ours+=("$d")                                        # we built it earlier
+  elif [ -n "${OURPROV[$d]:-}" ] && have_ours "${OURPROV[$d]}"; then
+    ours+=("${OURPROV[$d]}")                            # we built a provider
   elif pacman -Qq "$d" >/dev/null 2>&1; then
     continue                                            # already on the system
-  elif pacman -Si "$d" >/dev/null 2>&1; then want+=("$d")
-  else absent+=("$d"); fi
+  elif pacman -T "$d" >/dev/null 2>&1; then
+    continue                                            # installed set provides it
+  elif pacman -Si "$d" >/dev/null 2>&1; then
+    want+=("$d")
+  elif [ -n "${APROV[$d]:-}" ]; then
+    want+=("${APROV[$d]}")                              # Arch POWER has a provider
+  else
+    absent+=("$d")
+  fi
 done
 
 # Close over our own repo before staging.
@@ -85,7 +129,13 @@ while [ ${#_frontier[@]} -gt 0 ]; do
       [ -n "$sub" ] || continue
       [ -n "${_staged[$sub]:-}" ] && continue
       # Only follow it if we built it too; otherwise the system copy is right.
-      ls "$REPO"/${sub}-[0-9]*.pkg.tar.zst >/dev/null 2>&1 || continue
+      # A soname or other virtual needs the map to reach our package file.
+      if ! have_ours "$sub"; then
+        _pv=${OURPROV[$sub]:-}
+        { [ -n "$_pv" ] && have_ours "$_pv"; } || continue
+        sub=$_pv
+        [ -n "${_staged[$sub]:-}" ] && continue
+      fi
       _staged[$sub]=1
       ours+=("$sub")
       _next+=("$sub")
@@ -123,11 +173,21 @@ while [ -n "${_frontier[0]:-}" ]; do
       [ -n "${_fetched[$sub]:-}" ] && continue
       [ -n "${_staged[$sub]:-}" ] && continue
       # ours wins, host is fine, otherwise fetch it
-      if ls "$REPO"/${sub}-[0-9]*.pkg.tar.zst >/dev/null 2>&1; then
+      if have_ours "$sub"; then
         _staged[$sub]=1; ours+=("$sub"); continue
       fi
+      _pv=${OURPROV[$sub]:-}
+      if [ -n "$_pv" ] && have_ours "$_pv"; then
+        _staged[$_pv]=1; ours+=("$_pv"); continue
+      fi
       pacman -Qq "$sub" >/dev/null 2>&1 && continue
-      pacman -Si "$sub" >/dev/null 2>&1 || continue
+      pacman -T "$sub" >/dev/null 2>&1 && continue
+      if ! pacman -Si "$sub" >/dev/null 2>&1; then
+        _pv=${APROV[$sub]:-}
+        [ -n "$_pv" ] || continue
+        sub=$_pv
+        [ -n "${_fetched[$sub]:-}" ] && continue
+      fi
       _fetched[$sub]=1
       want+=("$sub")
       _next+=("$sub")
@@ -136,6 +196,15 @@ while [ -n "${_frontier[0]:-}" ]; do
   done
   _frontier=("${_next[@]:-}")
 done
+
+# A read-only classification pass: report what each bucket resolved to and
+# stage nothing.  This is what makes a tree-wide "can every dependency be
+# satisfied?" audit possible without building or fetching anything.
+if [ -n "${STAGE_DEPS_DRY:-}" ]; then
+  printf 'DRY\t%s\tours=%s\twant=%s\tabsent=%s\n' \
+    "$pkg" "${ours[*]:-}" "${want[*]:-}" "${absent[*]:-}"
+  exit 0
+fi
 
 # Ours last: a package we built deliberately (libde265 1.1.2) must land on top
 # of, not under, the Arch POWER copy of the same name.
