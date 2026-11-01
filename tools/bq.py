@@ -2001,7 +2001,12 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     # setup, and setting it per-makepkg would miss the guards below.
     cmd = slot.wrap(pre + ["makepkg", "--config", conf, "-d", "--noconfirm",
                            "--needed", "--nocheck", "--log", "--skippgpcheck"])
-    if args.force:
+    # -f also when we deliberately bypassed the reuse short-circuit above: the
+    # package file is still sitting in PKGDEST (an older good build, or one a
+    # guard rejected), and without -f makepkg refuses with "A package has
+    # already been built" and the retry never runs.  Skipping the reuse path
+    # without this turned 28 retries into that error in one pass.
+    if args.force or _prev_status == "failed":
         cmd.append("-f")
 
     t0 = time.time()
