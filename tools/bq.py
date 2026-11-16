@@ -1344,6 +1344,13 @@ def build_env(sysroot, bwrapped):
     _path = e.get("PATH", "/usr/local/bin:/usr/bin").split(":")
     e["PATH"] = ":".join(_path + [d for d in ("/usr/bin/site_perl", "/usr/bin/vendor_perl",
                                               "/usr/bin/core_perl") if d not in _path])
+    # g-ir-scanner caches parsed .gir includes in ~/.cache/g-ir-scanner and
+    # rmtree()s the whole directory whenever its version file looks wrong, so
+    # two builds scanning at once share, and clear, each other's cache:
+    # webkit2gtk-4.1 died 48 minutes in with FileNotFoundError on a cache entry
+    # while webkitgtk-6.0's scanner ran beside it. A build has no business in
+    # the user's cache anyway.
+    e["GI_SCANNER_DISABLE_CACHE"] = "1"
     layers = [sysroot] if isinstance(sysroot, str) else list(sysroot)
     sus = [os.path.join(l, "usr") for l in layers]   # bottom layer first
     su = sus[-1]                                     # topmost
