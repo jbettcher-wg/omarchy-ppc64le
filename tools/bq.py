@@ -2120,8 +2120,15 @@ def build_one(pkgbase, recipe_src, args, st, slot):
             # would silently lose one package's db entry.  The threading lock
             # covers this process; the flock covers a second bq process sharing
             # the same repo (which BQ_REPO exists to allow).
+            #
+            # -p as well as -R: without it repo-add accepts a downgrade (it only
+            # warns), and -R then deletes the newer package's file. Two side
+            # builds of one package at different revisions finishing out of
+            # order did exactly that: yt-dlp 2026.10.26-1 landed after -2 and
+            # -2 vanished from repo/. With -p the older build stays on disk,
+            # unregistered, and the newer one is kept.
             with _REPODB_LOCK, repo_db_lock(dest, args.repo_db):
-                subprocess.run(["repo-add", "-q", "-n", "-R",
+                subprocess.run(["repo-add", "-q", "-n", "-p", "-R",
                                 os.path.join(dest, args.repo_db)] + newfiles,
                                capture_output=True, text=True, timeout=600)
 
