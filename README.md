@@ -3,8 +3,8 @@
 [![arch: powerpc64le](https://img.shields.io/badge/arch-powerpc64le-0f62fe)](#status)
 [![target: POWER8+](https://img.shields.io/badge/target-POWER8%2B-9fe870)](#status)
 [![baseline pool: omarchy-ppc64le](https://img.shields.io/badge/baseline%20pool-omarchy--ppc64le-3f4a5a)](docs/power8-secondary-target.md)
-[![Omarchy 4.0.4](https://img.shields.io/badge/Omarchy-4.0.4-0f62fe)](https://github.com/omacom/omarchy)
-[![base packages: 146/147](https://img.shields.io/badge/base%20packages-146%2F147-9fe870)](#not-available-yet)
+[![Omarchy 4.5.0](https://img.shields.io/badge/Omarchy-4.5.0-0f62fe)](https://github.com/omacom/omarchy)
+[![base packages: 159/162](https://img.shields.io/badge/base%20packages-159%2F162-9fe870)](#not-available-yet)
 [![last commit](https://img.shields.io/github/last-commit/jbettcher-wg/omarchy-ppc64le?color=0f62fe)](https://github.com/jbettcher-wg/omarchy-ppc64le/commits/master)
 [![license: MIT](https://img.shields.io/badge/license-MIT-9fe870)](LICENSE)
 
@@ -13,23 +13,25 @@
 runs on **POWER8 through POWER11**, with an optional POWER9-optimised pool on
 top.
 
-![Omarchy 4.0.4 on an IBM AC922 (POWER9): VS Code, Chromium and fastfetch](docs/images/desktop-2026-10.png)
+![Omarchy 4.5 on an IBM AC922 (POWER9): Neovim editing the LuaJIT ppc64le JIT backend, fastfetch, and btop across 176 threads](docs/images/desktop-2026-11.png)
 
 ## Status
 
-Omarchy **4.0.4** runs as a daily desktop on an IBM AC922 (8335-GTH, POWER9,
+Omarchy **4.5.0** runs as a daily desktop on an IBM AC922 (8335-GTH, POWER9,
 176 threads, Radeon RX 7900 XTX). That includes the Hyprland session, the
 Omarchy shell and plugins, Chromium, Neovim with LazyVim on a JIT-enabled
-LuaJIT, and `omarchy update`.
+LuaJIT, and `omarchy update`. 4.5 is the first Omarchy release with a platform
+model, and POWER is in it as two platforms, `ppc64le` and `ppc64le-power9`
+([below](#how-it-differs-from-upstream-omarchy)).
 
 | | |
 |---|---|
-| Omarchy base packages available | **146 of 147** (only `localsend` is missing, below) |
-| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | **1,175** |
-| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | **1,392** |
-| Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,604 pkgbases |
-| Omarchy version | 4.0.4, stable channel (`omarchy` 4.0.4-5, `omarchy-settings` 4.0.4-4) |
-| Kernel | baseline `linux-omarchy` 7.2.6 (4K pages) and `linux-omarchy-64k`; POWER9 `linux-power9` 7.2.6 and `linux-power9-64k` |
+| Omarchy base packages available | **159 of 162** (`localsend`, `fcitx5-mozc` and `superwhisper-bin` are missing, [below](#not-available-yet)) |
+| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | **1,291** |
+| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | **1,651** |
+| Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,689 pkgbases |
+| Omarchy version | 4.5.0, stable channel (`omarchy` 4.5.0-8, `omarchy-settings` 4.5.0-5) |
+| Kernel | baseline `linux-omarchy` 7.3.5 (4K pages) and `linux-omarchy-64k`; POWER9 `linux-power9` 7.3.5 and `linux-power9-64k`, with `linux-power9-7.2` (7.2.9) kept as a fallback |
 | Latest ISO | `omarchy-2026.09.24-ppc64le.iso` — baseline, installs on any ppc64le machine |
 | Installer | ISO + `omp-install`, PowerNV and pSeries |
 | Release channel | not public yet; packages are unsigned |
@@ -79,31 +81,58 @@ that is the default the tools assume.
   ([jbettcher-wg/luajit-ppc64le](https://github.com/jbettcher-wg/luajit-ppc64le)).
   It's the first one, as far as we know. Neovim and Omarchy's LazyVim config run
   on it.
-- **Chromium 153** in the POWER9 pool, with Debian's ppc64le patch set and
-  POWER9/POWER8 build modes. The baseline is still on 151 with a hand-patched
-  POWER8 V8; the POWER8 build of 153 is pending.
-- **Electron 44**, with **Obsidian** on it. The baseline is still on Electron
-  43 (Chromium 150, Node 24); the POWER8 build of 44 is pending.
+- **Chromium 157** in both pools, with Debian's ppc64le patch set and
+  POWER9/POWER8 build modes. The baseline build carries our POWER8 V8 patches.
+- **Electron 44** in both pools, with **Obsidian** on it.
 - **Firefox 154**, with runlevel5's ppc64le SpiderMonkey JIT backend — and our
   fix for an opcode-table bug in it that made every Ion-compiled `Math.min` /
   `Math.max` on doubles execute an ISA 3.0 instruction and SIGILL on POWER8.
 - **.NET 10 built from source**, with a fix to Mono's ppc64le JIT for ELFv2
   struct returns, so GTK apps like **Pinta** run. The one-time bootstrap is
   documented in [`docs/dotnet-ppc64le-bootstrap.md`](docs/dotnet-ppc64le-bootstrap.md).
-- **Blender 5.1 with Cycles on a native VSX kernel.** Arch POWER's build has
-  Cycles off entirely -- EEVEE and Workbench only -- because neither `embree`
-  nor `openimagedenoise` existed for POWER. Ours turns the Cycles CPU device on
-  with Embree 4.4.1 BVH traversal and the OpenImageDenoise 2.4.1 denoiser, and
-  replaces the SSE-through-compatibility-headers path with a native 4-wide VSX
-  integrator kernel: 2,194 vector fused multiply-adds in the kernel object
-  against 6 for the compat build. Cycles lists the device as `IBM POWER9 (VSX)`.
+- **Blender 5.3 with Cycles on a native VSX kernel**, in both pools. Arch
+  POWER's build (5.1) has Cycles off entirely -- EEVEE and Workbench only --
+  because neither `embree` nor `openimagedenoise` existed for POWER. Ours turns
+  the Cycles CPU device on with Embree 4.4.1 BVH traversal and the
+  OpenImageDenoise 2.4.1 denoiser, and replaces the
+  SSE-through-compatibility-headers path with a native 4-wide VSX integrator
+  kernel: 2,194 vector fused multiply-adds in the kernel object against 6 for
+  the compat build. Cycles lists the device as `IBM POWER9 (VSX)`. It builds
+  against our OpenImageIO 3.2 and OSL 1.15.7.
+- **An LLD fix for PPC64 thread-local storage.** When LLD 22 relaxes a TLS
+  access sequence it rewrites the first instruction with `r3` as its target,
+  whatever register the compiler chose. If that was not `r3`, the real one is
+  left stale, and the next access reads someone else's memory. GNU ld keeps the
+  register. Blender 5.3 hit it as a segfault at GUI start. Our `lld` 22.1.8-1.1 keeps the
+  register the compiler chose, and its build links and runs a reproducer for
+  each relaxation; Blender now links with GNU ld either way.
+- **Ghidra 12.2**, in both pools, with **z3** 5.3.3. Arch POWER has no Ghidra.
+  The port adds a `linux_ppc64le` platform to Ghidra's native build and to its
+  runtime (without it Ghidra calls the machine unsupported), and builds with
+  Gradle 9. All 39 processor families compile their SLEIGH specs (137 `.sla`
+  files), and the decompiler runs natively: headless decompiles of x86-64,
+  i386, AArch64, Windows PE (x64 and ARM64) and ppc64le binaries are checked on
+  both pools, and the decompiler also passes under `qemu-ppc64le -cpu power8`.
+- **KiCad 10.0.8**, in both pools, with the full symbol, footprint and 3D-model
+  libraries. Arch POWER has no KiCad. It carries a fix for a crash upstream
+  10.0.8 still has: changing any preference while the scripting console
+  existed dereferenced a null toolbar configuration.
+- **kicad-mcp** as a KiCad 10 IPC plugin, so an agent can drive a running KiCad
+  through 28 MCP tools. Its Python stack is packaged too: `python-mcp`,
+  `pynng` built against the system nng, and `kicad-python` with its protobuf
+  bindings regenerated for protobuf 7.
+- **WebKit's JavaScriptCore with a ppc64le JIT**, one port shared by `jsc`,
+  **bun** 1.4.3, `webkit2gtk-4.1` and `webkitgtk-6.0`.
 - **Qt 6 WebEngine**
 - The full **Hyprland** stack, **quickshell**, and Omarchy's own apps and tools
   (omacalc, omacut, omawrite, tensaku, herdr, cliamp, aether, ttfx, tobi-try).
-- Toolchains: **Go 1.27**, **Zig 0.16** (and 0.15 for herdr), **LLVM 22**.
+- Toolchains: **Go 1.27**, **Zig 0.16** (and 0.15 for herdr), **LLVM 22**,
+  **Rust 1.99**.
 - **ghostty**, **mangohud**, **tailscale** and **cloudflared** ship as a single
   POWER8-legal build each, byte-identical in both pools.
-- **ROCm/HIP 7.2.4** and **llama.cpp** for Radeon compute.
+- **ROCm/HIP 7.2.4** and **llama.cpp** for Radeon compute, and **ROCm 10** for
+  RDNA3 and RDNA4 in the POWER9 pool (ROCm 10 dropped Vega's gfx900, so the two
+  generations are separate, conflicting sets).
 
 ![Obsidian on Electron 43, cliamp playing Omarchy Radio, and Pinta 3.1.2 on .NET 10](docs/images/apps.png)
 
@@ -125,12 +154,49 @@ ppc64le JavaScriptCore port: an aarch64 editor being used to write POWER code.
 
 ![Visual Studio Code, the arm64 build, running under POWERarm on Omarchy ppc64le](docs/images/powerarm-vscode.png)
 
+POWERarm 0.20.1 and **sleeve** are default packages on every POWER platform.
+POWERarm builds each user's aarch64 guest root at login, and sleeve finds the
+arm64 desktop apps it runs and writes their launchers, desktop entries and
+per-app POWERarm settings.
+
+#### Agent CLIs through mise
+
+Omarchy installs its agent CLIs through mise, and most of them publish no
+ppc64le build. On POWER they install as their **arm64** builds and run under
+POWERarm. That takes four changes:
+
+- **mise built from source.** Upstream's `mise-bin` is x86_64 and aarch64
+  only. Ours carries one patch: mise names little-endian POWER `powerpc64`, as
+  Rust does, so it asked nodejs.org for a `linux-powerpc64` tarball that does
+  not exist, and fell back to compiling node from source, hours of CPU on
+  first use. It now fetches nodejs.org's `linux-ppc64le` build.
+- **An aqua registry overlay**, `default/mise/aqua-powerpc64.yaml`. It holds
+  the recipes for claude-code, codex, copilot-cli, antigravity-cli, ori, pi,
+  hunk and opencode with `powerpc64` mapped to their linux/arm64 asset. Only
+  those recipes are replaced; every other aqua tool keeps mise's bundled one.
+  uv's entry fetches Astral's native ppc64le build instead, which the stock
+  recipe never names. [`tools/mise-aqua-overlay.py`](tools/mise-aqua-overlay.py)
+  regenerates the overlay from a pinned aqua-registry commit.
+- **`/etc/mise/conf.d/platform-ppc64le.toml`**, which `omarchy-settings` ships
+  only on POWER. It points mise at the overlay; disables mise's `gh` and
+  `crush`, so the distribution's native builds win; and sends amp, ghui,
+  kilocode and freebuff, which are npm launchers for x64/arm64-only binaries,
+  to their arm64 release channels.
+- **No migrations inside the guest.** A terminal opened in an arm64 app (VS
+  Code's, say) is an aarch64 guest with its own pacman database, so
+  `omarchy-migrate` refuses to run there and asks for a native terminal.
+
 ### Not available yet
 
 | Package | Why |
 |---|---|
-| `localsend` | Flutter app; the Dart VM has no ppc64le back end yet.... |
+| `localsend` | Flutter app; the Dart VM has no ppc64le back end yet |
+| `fcitx5-mozc` | builds with Bazel through bazelisk, which fetches a prebuilt Bazel, python-build-standalone and protoc, all x86_64 and aarch64 only. The other input-method engines build here |
+| `superwhisper-bin` | closed source, published for x86_64 and aarch64 only |
 | `limine`, `limine-snapper-sync` | not applicable; POWER boots through petitboot (below) |
+
+`omarchy-pkg-add` skips these with a notice, so a migration that installs one
+alongside others still runs.
 
 ## How it differs from upstream Omarchy
 
@@ -140,9 +206,16 @@ ppc64le JavaScriptCore port: an aarch64 editor being used to write POWER code.
 - **Packages.** They come from our own pool — `[omarchy-ppc64le]` by default,
   optionally `[omarchy-power9]` ahead of it — listed ahead of Arch POWER's
   `[base]` and `[base-any]`, instead of pkgs.omarchy.org.
+- **Platforms.** Omarchy 4.5 introduced a platform model:
+  `omarchy-hw-platform`, per-platform package lists and pacman templates. We
+  add two platforms, `ppc64le` (every POWER machine, POWER8 today) and
+  `ppc64le-power9` (which also enables the POWER9 pool), plus
+  `install/omarchy-ppc64le-unavailable.packages` for what POWER cannot
+  install, and why. They are written in upstream's layout, on a branch that
+  could be sent upstream, and carried as patches on the two packages below.
 - **`omarchy` and `omarchy-settings` are upstream's packages, repacked.** They
-  contain no machine code. The recipes drop the limine/snapper/keyring
-  dependencies and the update guard hook.
+  contain no machine code. The recipes drop the limine/snapper dependencies and
+  the update guard hook, and add the platform patches.
 - **Hardware support is clipped.** Intel and NVIDIA graphics, Apple T2, x86
   laptop quirks and multilib don't apply;
   [`installer/share/omp-clipped.packages`](installer/share/omp-clipped.packages)
@@ -189,15 +262,15 @@ The repo is served from Cloudflare R2. Packages are **not signed yet**, which is
 why `SigLevel` is `PackageNever DatabaseOptional TrustAll`: `PackageNever` also
 stops pacman from asking for `.sig` files, whose 404 page is larger than
 pacman's signature size limit and would abort downloads under plain
-`Optional`. Signing, and restoring `omarchy-keyring`, is planned.
+`Optional`. Signing them is planned.
 
 Many packages here are rebuilds of Arch POWER packages under the same name. If
 something from `[omarchy-ppc64le]` or `[omarchy-power9]` misbehaves, report it
 here first rather than to Arch POWER.
 
-Updates work through `omarchy update` or plain `pacman -Syu`. For now
-`omarchy update` prints harmless errors from its keyring step
-(`omarchy-keyring` and `archlinux-keyring` don't exist on Arch POWER). Our
+Updates work through `omarchy update` or plain `pacman -Syu`. `omarchy
+update`'s keyring step works as on x86: both pools carry `omarchy-keyring`,
+and Arch POWER's `archpower-keyring` provides `archlinux-keyring`. Our
 `omarchy` package reports a system using one of our pools as the **stable**
 channel.
 
