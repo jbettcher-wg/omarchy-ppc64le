@@ -2107,12 +2107,26 @@ def build_one(pkgbase, recipe_src, args, st, slot):
                     shutil.move(f, os.path.join(quarantine, os.path.basename(f)))
 
     built = []
+    listed = []
     if rc == 0:
         pl = subprocess.run(["makepkg", "--config", conf, "--packagelist"],
                             cwd=work, capture_output=True, text=True,
                             env=env, timeout=900)
-        built = [os.path.basename(f) for f in pl.stdout.split()
-                 if os.path.isfile(f)]
+        listed = pl.stdout.split()
+        # makepkg can exit 0 without writing the archive. The flutter port
+        # hit it: an arithmetic error inside build() that errexit did not
+        # catch, "Finished making", rc 0, no package. Without this check the
+        # build was marked ok with packages [], and sysroot_add below staged
+        # whatever older copy of those names the pool had, so the next build
+        # linked against it. Debug archives are exempt: makepkg lists one
+        # whenever debug is enabled but writes it only if there were symbols.
+        absent = [os.path.basename(f) for f in listed
+                  if "-debug-" not in os.path.basename(f) and not os.path.isfile(f)]
+        if pl.returncode != 0 or not listed or absent:
+            rc = 91
+            result["absent"] = absent
+    if rc == 0:
+        built = [os.path.basename(f) for f in listed if os.path.isfile(f)]
         result["packages"] = built
         # Stage into the sysroot so the next package in the queue can link
         # against it, and fold it into the repo db.
@@ -2213,6 +2227,15 @@ def build_one(pkgbase, recipe_src, args, st, slot):
             if _m:
                 line = _m.group(0)[:200]
                 fix = GUARD_FIXES.get(_g, lambda l: fix)(line) or fix
+        if rc == 91:
+            cls = "no-package"
+            fix = ("makepkg exited 0 but did not write every archive that "
+                   "--packagelist names. Look for an error in build() or "
+                   "package() that errexit let through (arithmetic, declare "
+                   "inside a function), or a pkgver/pkgrel that changes "
+                   "between sourcings.")
+            line = "no archive for: " + (" ".join(result.get("absent") or [])
+                                         or "(--packagelist empty or failed)")
         if rc == 124:
             cls, fix = "timeout", "Exceeded --timeout; re-run with a longer one."
         result.update(status="failed", rc=rc, **{"class": cls},
