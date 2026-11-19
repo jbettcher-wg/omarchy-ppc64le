@@ -108,8 +108,9 @@ that is the default the tools assume.
   each relaxation; Blender now links with GNU ld either way.
 - **Ghidra 12.2**, in both pools, with **z3** 5.3.3. Arch POWER has no Ghidra.
   The port adds a `linux_ppc64le` platform to Ghidra's native build and to its
-  runtime (without it Ghidra calls the machine unsupported), and builds with
-  Gradle 9. All 39 processor families compile their SLEIGH specs (137 `.sla`
+  runtime (without it Ghidra calls the machine unsupported). It builds the way
+  x86 does, on **JDK 25** and **Gradle 9.9**, both packaged here because Arch
+  POWER has neither. All 39 processor families compile their SLEIGH specs (137 `.sla`
   files), and the decompiler runs natively: headless decompiles of x86-64,
   i386, AArch64, Windows PE (x64 and ARM64) and ppc64le binaries are checked on
   both pools, and the decompiler also passes under `qemu-ppc64le -cpu power8`.
