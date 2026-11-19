@@ -22,15 +22,25 @@ OBJDUMP=$(command -v powerpc64le-unknown-linux-gnu-objdump 2>/dev/null || comman
 export OBJDUMP
 
 scan_one() {
-  local pkg=$1 d total=0 f n8 n9
+  local pkg=$1 d total=0 f n8 n9 how
   d=$(mktemp -d "${TMPDIR:-/var/tmp}/isa30.XXXXXX")
   bsdtar -xf "$pkg" -C "$d" 2>/dev/null
   while IFS= read -r -d '' f; do
     # ELF, 64-bit PowerPC only; skips scripts, data and foreign binaries.
     [[ $(od -An -tx1 -N4 "$f" 2>/dev/null) == " 7f 45 4c 46" ]] || continue
     file -b "$f" | grep -q '64-bit LSB .*PowerPC' || continue
-    n8=$("$OBJDUMP" -d --no-show-raw-insn -M power8 "$f" 2>/dev/null | grep -cP '^\s+[0-9a-f]+:\s+\.long\b')
-    n9=$("$OBJDUMP" -d --no-show-raw-insn -M power9 "$f" 2>/dev/null | grep -cP '^\s+[0-9a-f]+:\s+\.long\b')
+    # objdump -d prints any range under an OBJECT symbol as data. gen_snapshot
+    # types its two AOT code blobs that way, and they are all of .text, so in
+    # a STRIPPED Dart/Flutter ELF (a Flutter app's lib/libapp.so) -d decoded
+    # 19% of .text and missed an injected cnttzd; -D -j .text decodes it all.
+    # Only these symbols switch: other OBJECTs in code sections are real data
+    # (cargo carries ring's 148 KiB ecp_nistz256_precomputed in .text) and
+    # -D would count table words as instructions.
+    how=(-d)
+    readelf -W --dyn-syms "$f" 2>/dev/null |
+      grep -qE '\b_?kDart(Vm|Isolate)SnapshotInstructions$' && how=(-D -j .text)
+    n8=$("$OBJDUMP" "${how[@]}" --no-show-raw-insn -M power8 "$f" 2>/dev/null | grep -cP '^\s+[0-9a-f]+:\s+\.long\b')
+    n9=$("$OBJDUMP" "${how[@]}" --no-show-raw-insn -M power9 "$f" 2>/dev/null | grep -cP '^\s+[0-9a-f]+:\s+\.long\b')
     total=$((total + n8 - n9))
   done < <(find "$d" -type f -size +1k -print0)
   # Packages extract some directories read-only (etc/bluetooth); rm needs write.
