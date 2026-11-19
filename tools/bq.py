@@ -1330,6 +1330,18 @@ def bwrap_prefix(sysroot):
         for l in opt:
             cmd += ["--overlay-src", os.path.join(l, "opt")]
         cmd += ["--ro-overlay", "/opt"]
+    # Staged /etc, the other way up: the live /etc on TOP, so staged config only
+    # fills in what the host lacks and never shadows it (passwd, makepkg.conf
+    # and its drop-ins, resolv.conf all stay the host's). Arch's JDKs make
+    # $JAVA_HOME/conf a symlink to /etc/java<N>-openjdk; a JDK staged here but
+    # not installed on the host could not start ("Error loading java.security
+    # file"), and the JDK 26 builds only worked because 26 is installed live.
+    # Staged layers keep the /usr order among themselves (later = higher).
+    etc = [l for l in layers if os.path.isdir(os.path.join(l, "etc"))]
+    if etc:
+        for l in etc:
+            cmd += ["--overlay-src", os.path.join(l, "etc")]
+        cmd += ["--overlay-src", "/etc", "--ro-overlay", "/etc"]
     return cmd
 
 
