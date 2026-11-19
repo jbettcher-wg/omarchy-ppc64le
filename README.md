@@ -26,11 +26,11 @@ model, and POWER is in it as two platforms, `ppc64le` and `ppc64le-power9`
 
 | | |
 |---|---|
-| Omarchy base packages available | **159 of 162** (`localsend`, `fcitx5-mozc` and `superwhisper-bin` are missing, [below](#not-available-yet)) |
-| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | **1,291** |
-| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | **1,651** |
+| Omarchy base packages available | **161 of 162** (only `localsend` is missing, [below](#not-available-yet)) |
+| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | **1,302** |
+| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | **1,664** |
 | Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,689 pkgbases |
-| Omarchy version | 4.5.0, stable channel (`omarchy` 4.5.0-8, `omarchy-settings` 4.5.0-5) |
+| Omarchy version | 4.5.0, stable channel (`omarchy` 4.5.0-9, `omarchy-settings` 4.5.0-5) |
 | Kernel | baseline `linux-omarchy` 7.3.5 (4K pages) and `linux-omarchy-64k`; POWER9 `linux-power9` 7.3.5 and `linux-power9-64k`, with `linux-power9-7.2` (7.2.9) kept as a fallback |
 | Latest ISO | `omarchy-2026.09.24-ppc64le.iso` — baseline, installs on any ppc64le machine |
 | Installer | ISO + `omp-install`, PowerNV and pSeries |
@@ -122,6 +122,11 @@ that is the default the tools assume.
   through 28 MCP tools. Its Python stack is packaged too: `python-mcp`,
   `pynng` built against the system nng, and `kicad-python` with its protobuf
   bindings regenerated for protobuf 7.
+- **Mozc**, the Japanese input method (`fcitx5-mozc`), in both pools, with
+  **Bazel 9.0.2** built from its source release. Upstream's build fetches a
+  prebuilt Bazel through bazelisk; on ppc64le every build input comes from
+  source or a ppc64le release, protoc included, and the build checks from
+  Bazel's execution log that every compile used the pool's `-mcpu`.
 - **WebKit's JavaScriptCore with a ppc64le JIT**, one port shared by `jsc`,
   **bun** 1.4.3, `webkit2gtk-4.1` and `webkitgtk-6.0`.
 - **Qt 6 WebEngine**
@@ -187,13 +192,35 @@ POWERarm. That takes four changes:
   Code's, say) is an aarch64 guest with its own pacman database, so
   `omarchy-migrate` refuses to run there and asks for a native terminal.
 
+#### Superwhisper dictation
+
+Superwhisper, Omarchy 4.5's default dictation, is closed source and built for
+x86_64 and aarch64 only. On POWER, `superwhisper-bin` installs the vendor's
+signed **arm64** build and runs it under POWERarm, so dictation works the same
+as on x86. Local transcription runs on the GPU: Parakeet transcribes 7 s of
+speech in 1.5 s on the AC922's Radeon. It takes three things:
+
+- **The aarch64 libraries the guest root lacks**: GTK4 for the recording
+  indicator and tray icon, and fontconfig and xkbcommon for the settings window.
+  The package carries them itself, pinned on POWERarm's package snapshot, so
+  it works whatever else a user's guest holds.
+- **A native `python3` first on its `PATH`**, so its helper scripts use the
+  host's Python and its GTK bindings.
+- **A launcher that pins POWERarm's `vk` guest root**, which every POWER install
+  builds at login.
+
+The fcitx5 add-on that types text directly is an aarch64 module, which the
+host's native fcitx5 cannot load, so dictation is pasted instead.
+Muffle, which lowers other audio while recording, is unavailable for the same
+reason; Pause works. The recipe and its bump procedure are in
+[omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging),
+`superwhisper-bin/`.
+
 ### Not available yet
 
 | Package | Why |
 |---|---|
 | `localsend` | Flutter app; the Dart VM has no ppc64le back end yet |
-| `fcitx5-mozc` | builds with Bazel through bazelisk, which fetches a prebuilt Bazel, python-build-standalone and protoc, all x86_64 and aarch64 only. The other input-method engines build here |
-| `superwhisper-bin` | closed source, published for x86_64 and aarch64 only |
 | `limine`, `limine-snapper-sync` | not applicable; POWER boots through petitboot (below) |
 
 `omarchy-pkg-add` skips these with a notice, so a migration that installs one
