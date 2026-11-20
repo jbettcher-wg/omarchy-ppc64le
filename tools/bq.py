@@ -1363,6 +1363,18 @@ def build_env(sysroot, bwrapped):
     # while webkitgtk-6.0's scanner ran beside it. A build has no business in
     # the user's cache anyway.
     e["GI_SCANNER_DISABLE_CACHE"] = "1"
+    # Keep builds off the desktop's D-Bus session. A queue started over ssh
+    # passed DBUS_SESSION_BUS_ADDRESS (and XDG_RUNTIME_DIR, whose bus GLib
+    # falls back to if the variable is merely unset) straight through. Every
+    # GApplication a build ran then registered on the user's live bus, so
+    # parallel instances collided: gnupg 2.4.9-4's doc build runs
+    # ImageMagick -> inkscape (the host's inkscape shows through the /usr
+    # overlay) at -j21, the second inkscape forwarded to the first, which had
+    # already exited, and died with Gio::DBus::Error. Reproduced: 8 parallel
+    # SVG decodes on the session bus gave 2/8 PNGs; on an unreachable bus,
+    # 8/8. A build could also hand its export to an Inkscape the user had
+    # open. An unreachable address makes each instance run standalone.
+    e["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/nonexistent/bq-no-session-bus"
     layers = [sysroot] if isinstance(sysroot, str) else list(sysroot)
     sus = [os.path.join(l, "usr") for l in layers]   # bottom layer first
     su = sus[-1]                                     # topmost
