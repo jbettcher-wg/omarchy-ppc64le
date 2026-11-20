@@ -6,7 +6,9 @@
 # distro is to fetch it here, review it, and commit it. Only the recipe files
 # are kept (PKGBUILD, .install, patches, keys); the git dir, .SRCINFO and
 # .nvchecker.toml are dropped so the imported copy is regenerated from what we
-# actually build.
+# actually build. So is a .gitignore: AUR repos commonly carry "ignore *, then
+# allow PKGBUILD/.SRCINFO/<their files>", which made `git add` silently skip
+# every patch we added later (musicpod's first commit held 2 of its 9 files).
 set -euo pipefail
 
 # One local source of build scripts. A builder clones the packaging repo and
@@ -66,7 +68,7 @@ tmp=$(mktemp -d -p /var/tmp fetch.XXXXXX)
 trap 'rm -rf "$tmp"' EXIT
 GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "$url" "$tmp/$base"
 [ -f "$tmp/$base/PKGBUILD" ] || { echo "$src has no PKGBUILD for $base" >&2; exit 1; }
-rm -rf "$tmp/$base/.git" "$tmp/$base/.SRCINFO" "$tmp/$base/.nvchecker.toml"
+rm -rf "$tmp/$base/.git" "$tmp/$base/.SRCINFO" "$tmp/$base/.nvchecker.toml" "$tmp/$base/.gitignore"
 
 mkdir -p "$PACKAGING/$dest"
 cp -a "$tmp/$base"/. "$PACKAGING/$dest"/
