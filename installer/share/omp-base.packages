@@ -160,6 +160,7 @@ libvips
 libyaml
 libreoffice-fresh
 llvm
+localsend
 lua51
 luarocks
 mariadb-libs

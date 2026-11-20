@@ -48,7 +48,6 @@ broadcom-wl yt6801-dkms
 intel-ipu7-camera intel-lpmd thermald
 
 # --- no ppc64le target ---------------------------------------------------------
-localsend               # Flutter; the Dart VM has no ppc64le back end (a port target)
 mise-bin                # prebuilt x86_64 tarball -> replaced by `mise`, built from source
 qemu-user-static-binfmt # x86_64 user emulation is what FEX does here instead
 nvim                    # Arch POWER's package is `neovim`; `nvim` is Omarchy's own rebuild

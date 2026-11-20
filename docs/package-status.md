@@ -6,6 +6,13 @@ and `install/omarchy-other.packages` (60 pkgs) at upstream commit `49306774`,
 checked against the Arch POWER sync DB on `witherspoon-arkamedes` (repos: `base`,
 `base-any`).
 
+> **2026-11-20:** all 162 Omarchy base packages are now available on ppc64le.
+> The three this document lists as blocked before a compiler ran have all
+> shipped: `pinta` (on .NET 10), `obsidian` (on Electron 43) and `localsend`
+> (on the Dart and Flutter port). The counts and tables below are the
+> 2026-09 snapshot and have not been regenerated since; the README's status
+> table is current.
+
 ## Headline
 
 | | count | share |
