@@ -4,14 +4,17 @@
 # moves, a reviewer can diff omarchy-base.packages / omarchy-other.packages
 # against omp-base.packages and find every difference already accounted for.
 #
-# The audit, verbatim -- it should print nothing:
+# The audit, verbatim -- run from the repository root; it should print nothing.
+# It reads upstream's lists at the release we track (T) plus the ppc64le
+# platform's additions (from the ppc64le-platform branch of the same clone):
 #
-#   clean() { sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$1" | awk NF; }
-#   for m in omarchy-base.packages omarchy-other.packages; do
-#     comm -23 <(clean ../upstream/omarchy/install/$m | sort -u) \
-#              <(clean omp-base.packages | sort -u) |
-#     while read -r p; do grep -qw -- "$p" omp-clipped.packages || echo "UNACCOUNTED $p"; done
-#   done
+#   T=v4.5.0; U=upstream/omarchy; S=installer/share
+#   clean() { sed -e 's/#.*//' -e 's/[[:space:]]*$//' | tr -s ' \t' '\n' | awk NF; }
+#   { git -C $U show $T:install/omarchy-base.packages
+#     git -C $U show $T:install/omarchy-other.packages
+#     git -C $U show ppc64le-platform:install/omarchy-ppc64le.packages; } | clean | LC_ALL=C sort -u |
+#     LC_ALL=C comm -23 - <(clean < $S/omp-base.packages | LC_ALL=C sort -u) |
+#     while read -r p; do grep -qw -- "$p" $S/omp-clipped.packages || echo "UNACCOUNTED $p"; done
 
 # --- the boot chain (see README, "Bootloader") --------------------------------
 limine                  # x86/aarch64 UEFI+BIOS bootloader; POWER9 boots petitboot from flash
@@ -28,6 +31,8 @@ linux-ptl               # Intel Panther Lake kernel
 linux-ptl-headers
 linux-t2                # Apple T2 MacBook kernel
 linux-t2-headers
+linux-omarchy           # upstream's kernel (n1x, Qualcomm); ours of the same name is the
+linux-omarchy-headers   # baseline POWER kernel, and omp-install adds it per pool (--kernel)
 
 # --- x86 graphics / firmware --------------------------------------------------
 nvidia-dkms nvidia-open-dkms nvidia-utils
@@ -46,11 +51,19 @@ tuxedo-drivers-nocompatcheck-dkms
 macbook12-spi-driver-dkms apple-bcm-firmware apple-t2-audio-config t2fanrd
 broadcom-wl yt6801-dkms
 intel-ipu7-camera intel-lpmd thermald
+# Installed upstream only by a per-device hardware script, never by default:
+broadcom-wl-dkms                    # fix-bcm43xx.sh (Broadcom laptop wifi)
+linux-firmware-cirrus-dx13260       # dell-xps13-ptl-speaker-firmware.sh
+asus-proart-p14-speaker-firmware    # asus/fix-asus-proart-p14-speakers.sh
+apple-bcm-firmware-fetcher          # apple/fix-t2.sh
+pipewire-libcamera                  # qualcomm/camera.sh, lenovo/thinkpad-t14s-camera.sh
+v4l2loopback-dkms v4l2loopback-utils v4l2-relayd   # fix-elgato-camlink-4k.sh
 
 # --- no ppc64le target ---------------------------------------------------------
 mise-bin                # prebuilt x86_64 tarball -> replaced by `mise`, built from source
 qemu-user-static-binfmt # x86_64 user emulation is what FEX does here instead
-nvim                    # Arch POWER's package is `neovim`; `nvim` is Omarchy's own rebuild
+nvim                    # Omarchy's own rebuild; here `neovim` provides `nvim`, so the name
+                        # still resolves (omarchy-pkg-add nvim installs neovim)
 
 # --- debug packages -----------------------------------------------------------
 yay-debug               # separate debug package; the design keeps *-debug out of the

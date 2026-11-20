@@ -124,7 +124,6 @@ ddcutil
 docker
 docker-buildx
 docker-compose
-dua-cli
 evince
 expac
 eza
@@ -150,16 +149,13 @@ imagemagick
 imv
 inotify-tools
 inxi
-kdenlive
 kernel-modules-hook
-lazydocker
 lazygit
 libpulse
 libsecret
 libvips
 libyaml
 libreoffice-fresh
-llvm
 localsend
 lua51
 luarocks
@@ -174,7 +170,6 @@ neovim
 noto-fonts
 noto-fonts-cjk
 noto-fonts-emoji
-obs-studio
 obsidian
 omacalc
 omacut
@@ -184,14 +179,12 @@ pamixer
 pinta
 plocate
 postgresql-libs
-power-profiles-daemon
 python-gobject
 python-poetry-core
 qrencode
 qt6-imageformats
 ripgrep
 ruby
-tensaku
 slurp
 starship
 sushi
@@ -215,12 +208,47 @@ wireless-regdb
 wl-clipboard
 woff2-font-awesome
 wtype
-xournalpp
 yaru-icon-theme
 yay
 yt-dlp
 zbar
 zoxide
+
+# Omarchy 4.5 (install/omarchy-base.packages at v4.5.0). 4.5 replaced dua-cli
+# with disktree-bin (on POWER a transitional package that installs disktree
+# built from source), power-profiles-daemon with omarchy-power-profiles-daemon,
+# tensaku with omasnap for screenshots and xournalpp with signed for PDFs, and
+# stopped installing kdenlive, obs-studio, lazydocker and llvm (clang now comes
+# with the Rust dev environment; it stays here for clangd, below).
+disktree-bin
+omarchy-power-profiles-daemon
+omasnap
+signed
+gliff
+hype
+monologue
+owe
+omarchy-hyprland-titlebars
+ffmpeg
+vi
+xorg-xsetroot
+qt6-base
+qt6-declarative
+qt6-multimedia
+qt6-svg
+fcitx5-mozc
+fcitx5-chewing
+fcitx5-chinese-addons
+fcitx5-hangul
+fcitx5-table-extra
+superwhisper-bin        # the arm64 build under POWERarm; see the README
+
+# The ppc64le platform's own additions (install/omarchy-ppc64le.packages on the
+# ppc64le-platform branch): POWERarm runs aarch64 software, sleeve is its
+# aarch64 environment, and rtkit gives PipeWire realtime scheduling.
+powerarm
+sleeve
+rtkit
 
 # --- POWER9 hardware layer ---------------------------------------------------
 # Omarchy's own hardware layer is Intel/NVIDIA/Apple/Dell/Framework and is
@@ -230,7 +258,6 @@ lsp-plugins-lv2
 powerpc-utils
 opal-utils
 ipmitool
-alacritty
 
 # Language servers and formatters for Neovim.
 #
