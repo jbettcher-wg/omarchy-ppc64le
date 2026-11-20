@@ -9,9 +9,11 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-9fe870)](LICENSE)
 
 [Omarchy](https://github.com/omacom/omarchy) (Arch Linux + Hyprland), ported to
-**powerpc64le**. It's built on [Arch POWER](https://archlinuxpower.org) and
-runs on **POWER8 through POWER11**, with an optional POWER9-optimised pool on
-top.
+**powerpc64le**. It's built from Arch Linux's own recipes, carrying only the
+changes POWER needs, and runs on **POWER8 through POWER11**, with an optional
+POWER9-optimised pool on top. Packages that our pools don't carry yet still
+come from [Arch POWER](https://archlinuxpower.org)'s repositories; the pools
+are taking over the rest of the system as they catch up.
 
 ![Omarchy 4.5 on an IBM AC922 (POWER9): Neovim editing the LuaJIT ppc64le JIT backend, fastfetch, and btop across 176 threads](docs/images/desktop-2026-11.png)
 
@@ -171,7 +173,7 @@ Electron 42 / Chromium 148 / Node 24 -- running on Omarchy on an AC922, on our
 own 7.2.6 64K-page kernel. The file open in it is `PPC64Assembler.h` from the
 ppc64le JavaScriptCore port: an aarch64 editor being used to write POWER code.
 
-![Visual Studio Code, the arm64 build, running under POWERarm on Omarchy ppc64le](docs/images/powerarm-vscode.png)
+![Visual Studio Code, the arm64 build, running under POWERarm on Omarchy for POWER](docs/images/powerarm-vscode.png)
 
 POWERarm 0.20.1 and **sleeve** are default packages on every POWER platform.
 POWERarm builds each user's aarch64 guest root at login, and sleeve finds the
@@ -302,11 +304,13 @@ The repo is served from Cloudflare R2. Packages are **not signed yet**, which is
 why `SigLevel` is `PackageNever DatabaseOptional TrustAll`: `PackageNever` also
 stops pacman from asking for `.sig` files, whose 404 page is larger than
 pacman's signature size limit and would abort downloads under plain
-`Optional`. Signing them is planned.
+`Optional`. The signing key exists (`omarchy-ppc64le-keyring`), and signed
+packages will roll out first, with verification enforced later.
 
-Many packages here are rebuilds of Arch POWER packages under the same name. If
-something from `[omarchy-ppc64le]` or `[omarchy-power9]` misbehaves, report it
-here first rather than to Arch POWER.
+Packages here track Arch Linux's current releases, and many replace Arch POWER
+builds of the same name. If something from `[omarchy-ppc64le]` or
+`[omarchy-power9]` misbehaves, report it here first rather than to Arch or
+Arch POWER.
 
 Updates work through `omarchy update` or plain `pacman -Syu`. `omarchy
 update`'s keyring step works as on x86: both pools carry `omarchy-keyring`,
