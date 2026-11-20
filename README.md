@@ -4,7 +4,7 @@
 [![target: POWER8+](https://img.shields.io/badge/target-POWER8%2B-9fe870)](#status)
 [![baseline pool: omarchy-ppc64le](https://img.shields.io/badge/baseline%20pool-omarchy--ppc64le-3f4a5a)](docs/power8-secondary-target.md)
 [![Omarchy 4.5.0](https://img.shields.io/badge/Omarchy-4.5.0-0f62fe)](https://github.com/omacom/omarchy)
-[![base packages: 159/162](https://img.shields.io/badge/base%20packages-159%2F162-9fe870)](#not-available-yet)
+[![base packages: 162/162](https://img.shields.io/badge/base%20packages-162%2F162-9fe870)](#not-available-yet)
 [![last commit](https://img.shields.io/github/last-commit/jbettcher-wg/omarchy-ppc64le?color=0f62fe)](https://github.com/jbettcher-wg/omarchy-ppc64le/commits/master)
 [![license: MIT](https://img.shields.io/badge/license-MIT-9fe870)](LICENSE)
 
@@ -26,9 +26,9 @@ model, and POWER is in it as two platforms, `ppc64le` and `ppc64le-power9`
 
 | | |
 |---|---|
-| Omarchy base packages available | **161 of 162** (only `localsend` is missing, [below](#not-available-yet)) |
-| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | **1,302** |
-| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | **1,664** |
+| Omarchy base packages available | **all 162** (`localsend` was the last; [Dart and Flutter](#notable-ports) made it possible) |
+| Packages in the `omarchy-ppc64le` pool (baseline, runs on every ppc64le machine) | **1,314** |
+| Packages in the `omarchy-power9` pool (POWER9-optimised, opt-in) | **1,676** |
 | Build scripts in [omarchy-ppc64le-packaging](https://github.com/jbettcher-wg/omarchy-ppc64le-packaging) | 4,689 pkgbases |
 | Omarchy version | 4.5.0, stable channel (`omarchy` 4.5.0-9, `omarchy-settings` 4.5.0-5) |
 | Kernel | baseline `linux-omarchy` 7.3.5 (4K pages) and `linux-omarchy-64k`; POWER9 `linux-power9` 7.3.5 and `linux-power9-64k`, with `linux-power9-7.2` (7.2.9) kept as a fallback |
@@ -129,6 +129,17 @@ that is the default the tools assume.
   Bazel's execution log that every compile used the pool's `-mcpu`.
 - **WebKit's JavaScriptCore with a ppc64le JIT**, one port shared by `jsc`,
   **bun** 1.4.3, `webkit2gtk-4.1` and `webkitgtk-6.0`.
+- **Dart 3.11 and Flutter 3.41**, in both pools, with a native ppc64le back end
+  for the Dart VM (JIT and AOT) and the Flutter engine built from source. That
+  brought **LocalSend** 1.18.2, the last missing Omarchy base package, plus
+  **MusicPod** 2.16.0 and **Open Chess** 1.3.0. Compiled Dart code is
+  POWER8-legal in both pools. The baseline engine's `gen_snapshot` and
+  `flutter_tester` are checked under `qemu-ppc64le -cpu power8`, with the
+  POWER9 builds as the control that must fault there. MusicPod also needed a
+  fix in its `yaru_window_linux` plugin. Its pointer-enter handler takes a
+  `GdkEventCrossing` by value, and under the ppc64le ELFv2 ABI that overwrites
+  GTK's stack frame
+  ([upstream #75](https://github.com/ubuntu/yaru_window.dart/issues/75)).
 - **Qt 6 WebEngine**
 - The full **Hyprland** stack, **quickshell**, and Omarchy's own apps and tools
   (omacalc, omacut, omawrite, tensaku, herdr, cliamp, aether, ttfx, tobi-try).
@@ -141,6 +152,8 @@ that is the default the tools assume.
   generations are separate, conflicting sets).
 
 ![Obsidian on Electron 43, cliamp playing Omarchy Radio, and Pinta 3.1.2 on .NET 10](docs/images/apps.png)
+
+![LocalSend waiting to receive as omarchy-power9, and MusicPod's podcast directory, both Flutter apps on the ppc64le Flutter engine](docs/images/flutter-apps.png)
 
 ### POWERarm: aarch64 software on POWER9
 
@@ -220,7 +233,6 @@ reason; Pause works. The recipe and its bump procedure are in
 
 | Package | Why |
 |---|---|
-| `localsend` | Flutter app; the Dart VM has no ppc64le back end yet |
 | `limine`, `limine-snapper-sync` | not applicable; POWER boots through petitboot (below) |
 
 `omarchy-pkg-add` skips these with a notice, so a migration that installs one
