@@ -155,8 +155,12 @@ check_text() {
       # a shebang on any Linux, authored on Windows, shipped as-is by Arch.
       # Failing the whole package for those is a false positive. The FORBIDDEN
       # check just below still runs on them either way.
+      # #!/hint/<shell> is not an interpreter: it is pacman's shellcheck
+      # directive at the top of makepkg.conf and its drop-ins, files that are
+      # sourced and never executed (pacman 7.1.0-4.1 tripped this three times).
       case "$interp" in
         /usr/*|/bin/*|/sbin/*) ;;
+        /hint/*) ;;
         /*) echo "elf-pathguard: FAIL ${rel}: interpreter outside /usr: ${interp}"
             viol=$((viol+1)) ;;
         *)  echo "elf-pathguard: note ${rel}: non-absolute interpreter: ${interp}" ;;
