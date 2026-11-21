@@ -1136,8 +1136,8 @@ CLASSES = [
      "build system took a directory from a .pc whose prefix still pointed at "
      "the sysroot. Fix the recipe's DESTDIR/prefix handling; do not ship it."),
 
-    ("isa-guard",
-     r"isa-guard: FAIL",
+    ("gandalf",
+     r"(gandalf|isa-guard): FAIL",
      "Instructions above the lane's ISA floor (POWER9/POWER10 code in a "
      "POWER8 or POWER9 build). The guard output lists the files, mnemonics "
      "and likely source lines. Find what set its own -mcpu, target pragma or "
@@ -2161,14 +2161,14 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     # pacstrap create the home directory, which makes the installer's later
     # `useradd -m` decline to copy /etc/skel, which leaves a new account with no
     # shell or desktop config and nothing anywhere reporting an error.
-    # A third, isa-guard, reads *what instruction set* the code is: nothing
+    # A third, gandalf (the ISA guard), reads *what instruction set* the code is: nothing
     # above the lane's floor (ISA 2.07 in the baseline lane, 3.0 in the POWER9
     # lane) unless tools/isa-allow.tsv proves it is behind runtime dispatch.
     # Flags were never enough: libjxl ran POWER10 on a POWER9, firefox's
     # jxl_simd built a POWER9 tier, gcc's libgcc.a took the toolchain default.
     guards = [os.path.join(TOOLS, "elf-pathguard.sh"),
               os.path.join(TOOLS, "pkg-pathguard.sh"),
-              os.path.join(TOOLS, "isa-guard.sh")]
+              os.path.join(TOOLS, "gandalf.sh")]
     guard = guards[0]
     pkgdirs = []
     pkgroot = os.path.join(work, "pkg")
