@@ -1,7 +1,8 @@
 # pkgname	floor	max	reason
 # Per-package allowance for instructions above the lane's floor, for code that
 # is PROVEN to sit behind runtime dispatch. Every line names the evidence. A
-# package not listed here gets 0. tools/isa-guard.sh reads this file.
+# package not listed here gets 0. tools/gandalf.sh (formerly isa-guard.sh) reads
+# this file.
 # floor: power8 (baseline lane: anything above ISA 2.07 counts), power9 (POWER9
 # lane: ISA 3.1 counts), or *. Counts measured 2026-11-20, about 10% headroom.
 # A real leak is typically thousands over (libstdc++ built for POWER9: 4310).
@@ -29,3 +30,4 @@ nss	power8	10	8 measured. Constant tables in freebl's assembly that decode as im
 nss	power9	4	2 measured. The same freebl tables.
 firefox	power8	10	8 measured. Bundled NSS freebl, the same constant tables as nss.
 firefox	power9	4	2 measured. The same freebl tables.
+nodejs	power8	420	378 measured, all in usr/bin/node: 189 lxvx + 189 stxvx in V8's embedded builtins, which mksnapshot generates on the POWER9 builder with V8's SIMD paths included. V8 turns SIMD on only after its runtime CPU check finds POWER9: under qemu-ppc64le -cpu power8 (an lxvx control traps, rc 132) plain JS, zlib, crypto and regex run, and Wasm SIMD is refused ("Wasm SIMD unsupported"). Arch POWER's nodejs 26.4.0-1 carries the identical 378. Measured 2026-11-21.
