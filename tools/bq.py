@@ -103,6 +103,13 @@ REPO = os.environ.get("BQ_REPO", os.path.join(OMARCHY, "repo"))
 # Build under /var/tmp by default (NVMe disk). Building under /tmp uses tmpfs
 # RAM and exhausts memory/inodes on large package closures.
 BUILDROOT = os.environ.get("BQ_BUILDROOT", "/var/tmp/omarchy-bq")
+# One download stash for every lane. Each buildroot used to keep its own
+# srcdest, so the POWER9 and baseline lanes, which build the same recipes and
+# often at the same time, fetched every source twice (llvm 23.1.5 re-fetched
+# 179 MB in the second lane; TypeScript and noto-cjk mirror clones ran an
+# hour each and died). fetch_sources() locks each source before it is
+# downloaded, so two lanes sharing this directory never write one at once.
+SRCDEST = os.environ.get("BQ_SRCDEST", "/var/tmp/omarchy-srcdest")
 # Concurrent bq runs (a side build alongside a long queue) otherwise share one
 # state file AND one temp path; the second os.replace() then fails with
 # FileNotFoundError because the first already renamed the temp away, killing
@@ -1931,6 +1938,85 @@ class repo_db_lock:
         return False
 
 
+_VCS = ("git", "hg", "svn", "bzr", "fossil")
+
+
+def source_names(work):
+    """Local file names of a recipe's downloaded sources, as makepkg stores them
+    in SRCDEST: the part before '::' when given, else the URL's last path
+    component (a VCS checkout drops '.git'). Recipe-local files are skipped.
+    Only used to name locks, so both lanes just need to derive the same name."""
+    try:
+        r = subprocess.run(["makepkg", "--printsrcinfo"], cwd=work,
+                           capture_output=True, text=True, timeout=900)
+    except Exception:
+        return []
+    names = set()
+    for line in r.stdout.splitlines():
+        m = re.match(r"^\s*source(?:_%s)? = (.+)$" % CARCH, line)
+        if not m:
+            continue
+        name, _, url = m.group(1).rpartition("::")
+        if "://" not in url:
+            continue
+        if not name:
+            path = url.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+            name = path.rsplit("/", 1)[-1]
+            if url.split("://", 1)[0].split("+", 1)[0] in _VCS \
+                    and name.endswith(".git"):
+                name = name[:-4]
+        names.add(re.sub(r"[^A-Za-z0-9._+-]", "_", name) or "_")
+    return sorted(names)
+
+
+def fetch_sources(work, conf, pre, env, log, slot, timeout):
+    """Download and verify a recipe's sources into SRCDEST before the build,
+    holding an exclusive lock on each one, so two lanes (or two slots) that
+    want the same tarball or git mirror take turns instead of writing the same
+    .part file or racing one git fetch. Locks are taken in sorted order, so
+    two runs can never deadlock on each other.
+
+    A failure here is logged and otherwise ignored: the build's own makepkg
+    then downloads again and fails with its usual, classified error."""
+    names = source_names(work)
+    if not names:
+        return
+    lockdir = os.path.join(SRCDEST, ".bq-locks")
+    os.makedirs(lockdir, exist_ok=True)
+    fds = []
+    try:
+        with open(log, "a") as fh:
+            for n in names:
+                fd = os.open(os.path.join(lockdir, n + ".lock"),
+                             os.O_RDWR | os.O_CREAT, 0o644)
+                fds.append(fd)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    fh.write("bq: waiting for source %s (another build is "
+                             "fetching it)\n" % n)
+                    fh.flush()
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+            cmd = slot.wrap(pre + ["makepkg", "--config", conf,
+                                   "--verifysource", "-d", "--noconfirm",
+                                   "--skippgpcheck"])
+            fh.write("--- fetch-sources (%d, shared %s) ---\n$ %s\n"
+                     % (len(names), SRCDEST, " ".join(cmd)))
+            fh.flush()
+            try:
+                rc = subprocess.run(cmd, cwd=work, stdout=fh,
+                                    stderr=subprocess.STDOUT, env=env,
+                                    timeout=timeout).returncode
+            except subprocess.TimeoutExpired:
+                rc = 124
+            if rc != 0:
+                fh.write("bq: fetch-sources exited %d; the build will try "
+                         "the download itself\n" % rc)
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
 def build_one(pkgbase, recipe_src, args, st, slot):
     work = os.path.join(BUILDROOT, "build", pkgbase)
     logdir = os.path.join(BUILDROOT, "logs")
@@ -1978,8 +2064,7 @@ def build_one(pkgbase, recipe_src, args, st, slot):
                 "missing_deps": missing}
 
     conf = slot.conf
-    write_makepkg_conf(conf, args.pkgdest or REPO,
-                       os.path.join(BUILDROOT, "srcdest"), logdir,
+    write_makepkg_conf(conf, args.pkgdest or REPO, SRCDEST, logdir,
                        make_jobs=slot.make_jobs, ccache=args.ccache)
 
     sysroot = slot.layer            # where new deps get staged
@@ -2034,6 +2119,8 @@ def build_one(pkgbase, recipe_src, args, st, slot):
     # zbar got further as [2/2].
     pre = bwrap_prefix(layers)
     env = build_env(layers, bool(pre))
+
+    fetch_sources(work, conf, pre, env, log, slot, args.timeout)
 
     # taskset outermost: it must be inherited by bwrap and by everything under
     # it.  An affinity set inside the sandbox would not apply to bwrap's own
