@@ -1,0 +1,31 @@
+# pkgname	floor	max	reason
+# Per-package allowance for instructions above the lane's floor, for code that
+# is PROVEN to sit behind runtime dispatch. Every line names the evidence. A
+# package not listed here gets 0. tools/isa-guard.sh reads this file.
+# floor: power8 (baseline lane: anything above ISA 2.07 counts), power9 (POWER9
+# lane: ISA 3.1 counts), or *. Counts measured 2026-11-20, about 10% headroom.
+# A real leak is typically thousands over (libstdc++ built for POWER9: 4310).
+glibc	power8	22000	19791 measured. Multi-arch IFUNC POWER9/POWER10 string and math variants, plus scv. tools-local/glibc-power8-gate.sh: real baseline binaries run under qemu -cpu power8 with a SIGILL control.
+glibc	power9	400	359 measured. POWER10 IFUNC variants in libc, libm and static ldconfig/sln.
+gcc	power8	280	254 measured. libgcc.a's float128 IFUNC objects (_divkc3-hw, _mulkc3-hw, _powikf2-hw, float128-hw, float128-p10), selected by HWCAP2. tools-local/gcc-baseline-gate.sh PASS: libgcc.a per-object profile; __fixunstfdi runs under qemu power8.
+gcc	power9	10	4 measured. libgcc.a float128-p10.o, POWER10 IFUNC variant.
+libstdc++	power8	280	254 measured. libgcc float128 IFUNC objects linked in; mnemonic-for-mnemonic identical to libgcc.a's -hw objects. C++ programs run under qemu power8.
+libgfortran	power8	280	254 measured. Same libgcc float128 IFUNC objects. Fortran programs run under qemu power8.
+libgfortran	power9	10	4 measured. float128-p10 IFUNC variant.
+libquadmath	power8	280	254 measured. Same libgcc float128 IFUNC objects.
+libquadmath	power9	10	4 measured. float128-p10 IFUNC variant.
+libgccjit	power8	280	254 measured. Same libgcc float128 IFUNC objects.
+gcc-rust	power8	280	254 measured. Same libgcc float128 IFUNC objects, in crab1.
+dav1d	power8	9900	8960 measured. dav1d's PPC asm picks its POWER9 tier from dav1d_get_cpu_flags (HWCAP2). Documented runtime-dispatch class (CLAUDE.local 5a).
+libgcrypt	power8	3300	2939 measured. Cipher and hash implementations selected by libgcrypt's hwfeatures detection. Documented runtime-dispatch class.
+openssl	power8	1850	1663 measured. OPENSSL_ppccap selects the POWER9/POWER10 asm (PPC_MADD300 / PPC_BRD31). Documented runtime-dispatch class.
+openssl	power9	260	229 measured. OPENSSL_ppccap's POWER10 paths (PPC_BRD31).
+openssl-1.1	power8	1300	1144 measured. As openssl.
+openssl-1.1	power9	260	227 measured. As openssl.
+nettle	power8	110	99 measured. Nettle's fat build selects POWER9 code by HWCAP2. Documented runtime-dispatch class.
+zlib-ng-compat	power8	30	26 measured. zlib-ng's runtime CPU detection selects its POWER9 functions. Documented runtime-dispatch class.
+docker	power8	290	256 measured. docker-init is a static binary carrying static glibc's IFUNC variants and libgcc's float128 objects. The Go binaries are covered by the Go rule.
+nss	power8	10	8 measured. Constant tables in freebl's assembly that decode as impossible instructions (e.g. maddhd r3,r10,r20,r1); identical in every build.
+nss	power9	4	2 measured. The same freebl tables.
+firefox	power8	10	8 measured. Bundled NSS freebl, the same constant tables as nss.
+firefox	power9	4	2 measured. The same freebl tables.
